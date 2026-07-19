@@ -280,5 +280,15 @@ CREATE UNIQUE INDEX idx_diaries_user_date_active
 
 ## 5. 아직 결정 안 된 부분 (구현 전 확정 필요)
 
-- Row Level Security(RLS) 정책 — Supabase 사용 시 `user_id = auth.uid()` 기반 정책을 모든 사용자 데이터 테이블에 걸어야 함 (미착수)
+- [x] ~~RLS 정책~~ → `supabase/migrations/0001_init.sql`에서 모든 사용자 데이터 테이블에 적용 완료 (6번 참고)
 - `repeat_days`를 배열 대신 별도 조인 테이블로 정규화할지 — 1차 버전은 배열로 단순화, 요일별 통계 쿼리가 잦아지면 재검토
+
+## 6. 실제 마이그레이션 (2026-07-19, `supabase/migrations/0001_init.sql`)
+
+문서상 설계를 실제 SQL로 옮기면서 반영한 세부 사항:
+
+- **`users.id`는 독립 PK가 아니라 `auth.users(id)`를 참조**하도록 수정 — Supabase Auth(구글/카카오 로그인)가 자동으로 만드는 `auth.users` 행과 우리 앱 프로필 테이블을 같은 id로 묶기 위함. 회원가입 로직을 따로 안 만들어도 됨
+- **가입 트리거(`handle_new_user`)**: `auth.users`에 새 행이 생기면(로그인 최초 성공 시) `public.users` 프로필 + 기본 슬롯 4개를 자동 생성 — erd.md에 적어뒀던 "회원가입 시 4행 자동 insert"를 실제 트리거로 구현
+- **카카오 provider 값**: 트리거에서 `raw_app_meta_data ->> 'provider'`로 읽는데, 이건 Supabase 기본 OAuth(구글)엔 정상 동작하지만 **카카오는 Custom Token 방식이라 이 필드가 안 채워질 수 있음** — 실제 카카오 로그인 구현할 때(3-1) 커스텀 토큰 발급 로직에서 이 값을 명시적으로 세팅해줘야 함, 지금은 기본값 `'google'`로 임시 처리해둠
+- **enum 값 CHECK 제약 추가**: `auth_provider`, `slot_type`, `block_type`, `repeat_type` 각각에 허용값을 CHECK로 강제 (erd.md 원문엔 주석으로만 적혀있었음)
+- `categories`, `videos`, `streak_emoji_configs`는 로그인 유저 전체가 읽기만 가능하도록 RLS 설정 (쓰기는 관리자만, 앱에서 직접 쓰기 없음)
