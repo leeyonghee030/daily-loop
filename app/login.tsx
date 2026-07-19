@@ -6,13 +6,16 @@ import { signInWithGoogle } from '@/lib/google-signin';
 
 export default function LoginScreen() {
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleGoogleSignIn = async () => {
+    setErrorMessage(null);
     setIsSigningIn(true);
     try {
       await signInWithGoogle();
     } catch (error) {
       console.error('구글 로그인 실패:', error);
+      setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsSigningIn(false);
     }
@@ -30,6 +33,8 @@ export default function LoginScreen() {
           <Text style={styles.googleButtonText}>구글로 시작하기</Text>
         )}
       </Pressable>
+
+      {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
     </View>
   );
 }
@@ -64,5 +69,11 @@ const styles = StyleSheet.create({
     color: '#000',
     fontSize: 16,
     fontWeight: '600',
+  },
+  error: {
+    marginTop: 16,
+    color: '#FF6B6B',
+    fontSize: 13,
+    textAlign: 'center',
   },
 });
