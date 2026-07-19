@@ -1,16 +1,17 @@
 {
   "expo": {
-    "name": "dailyLoop-expo",
-    "slug": "dailyLoop-expo",
+    "name": "Daily Loop",
+    "slug": "daily-loop",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "dailyloopexpo",
+    "scheme": "dailyloop",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.dailyloop.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
