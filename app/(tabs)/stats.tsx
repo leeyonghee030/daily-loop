@@ -2,10 +2,10 @@ import { StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 
-export default function TodayScreen() {
+export default function StatsScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>오늘</Text>
+      <Text style={styles.title}>통계</Text>
     </View>
   );
 }
