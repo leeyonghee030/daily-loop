@@ -1,10 +1,13 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
+import { Chip } from '@/components/Chip';
+import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
+import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import {
   createRoutine,
   fetchRoutineById,
@@ -76,10 +79,14 @@ export default function RoutineFormScreen() {
   const [scheduledDate, setScheduledDate] = useState<Date>(new Date());
   const [isRequired, setIsRequired] = useState(false);
   const [skipHolidays, setSkipHolidays] = useState(false);
+  const [saveAsFavorite, setSaveAsFavorite] = useState(false);
   const [trackingUnit, setTrackingUnit] = useState('');
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [showFavoritePicker, setShowFavoritePicker] = useState(false);
+  const [isApplyingFavorite, setIsApplyingFavorite] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -91,6 +98,9 @@ export default function RoutineFormScreen() {
         );
       })
       .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'));
+    fetchFavorites(userId)
+      .then(setFavorites)
+      .catch(() => setErrorMessage('즐겨찾기를 불러오지 못했어요.'));
   }, [userId]);
 
   useEffect(() => {
@@ -122,6 +132,49 @@ export default function RoutineFormScreen() {
 
   function toggleRepeatDay(day: number) {
     setRepeatDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()));
+  }
+
+  function applyFavoriteToForm(favorite: Favorite) {
+    setTitle(favorite.title);
+    setBlockType(favorite.block_type);
+    setTrackingUnit(favorite.tracking_unit ?? '');
+    setIsRequired(favorite.is_required);
+    if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
+      setTimeMode('exact');
+      setStartTime(timeToDate(favorite.scheduled_time_start));
+      setEndTime(timeToDate(favorite.scheduled_time_end));
+    } else if (favorite.slot_id) {
+      setTimeMode('slot');
+      setSlotId(favorite.slot_id);
+    }
+    setShowFavoritePicker(false);
+  }
+
+  async function applyFavoriteInstantly(favorite: Favorite) {
+    if (!userId) return;
+    setIsApplyingFavorite(true);
+    setErrorMessage(null);
+    try {
+      await createRoutine(userId, {
+        title: favorite.title,
+        block_type: favorite.block_type,
+        repeat_type: 'daily',
+        repeat_days: null,
+        scheduled_time_start: favorite.scheduled_time_start,
+        scheduled_time_end: favorite.scheduled_time_end,
+        scheduled_date: null,
+        slot_id: favorite.slot_id,
+        is_required: favorite.is_required,
+        tracking_unit: favorite.tracking_unit,
+        skip_holidays: false,
+      });
+      setShowFavoritePicker(false);
+      router.back();
+    } catch (err) {
+      setErrorMessage('즐겨찾기 추가에 실패했어요.');
+    } finally {
+      setIsApplyingFavorite(false);
+    }
   }
 
   async function handleSave() {
@@ -165,6 +218,21 @@ export default function RoutineFormScreen() {
       } else {
         await createRoutine(userId, input);
       }
+      if (saveAsFavorite) {
+        try {
+          await createFavorite(userId, {
+            title: input.title,
+            block_type: input.block_type,
+            scheduled_time_start: input.scheduled_time_start,
+            scheduled_time_end: input.scheduled_time_end,
+            slot_id: input.slot_id,
+            is_required: input.is_required,
+            tracking_unit: input.tracking_unit,
+          });
+        } catch (favoriteErr) {
+          // 루틴 저장 자체는 성공했으니 즐겨찾기 저장 실패는 조용히 넘어감
+        }
+      }
       router.back();
     } catch (err) {
       setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
@@ -173,7 +241,7 @@ export default function RoutineFormScreen() {
     }
   }
 
-  async function handleDelete() {
+  async function performDelete() {
     if (!id) return;
     setIsSaving(true);
     try {
@@ -183,6 +251,17 @@ export default function RoutineFormScreen() {
       setErrorMessage('삭제에 실패했어요.');
       setIsSaving(false);
     }
+  }
+
+  function handleDelete() {
+    Alert.alert(
+      '루틴을 삭제할까요?',
+      `"${title}"에 해당하는 모든 예정(반복 전체)이 삭제돼요. 지금까지 체크·기록한 내역은 남아있어요.`,
+      [
+        { text: '취소', style: 'cancel' },
+        { text: '삭제', style: 'destructive', onPress: performDelete },
+      ]
+    );
   }
 
   function handleTimeChange(setter: (date: Date) => void, hide: () => void) {
@@ -202,6 +281,12 @@ export default function RoutineFormScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {!isEditing && (
+        <Pressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
+          <Text style={styles.favoriteButtonText}>⭐ 즐겨찾기에서 불러오기</Text>
+        </Pressable>
+      )}
+
       <Text style={styles.label}>제목</Text>
       <TextInput
         style={styles.input}
@@ -336,6 +421,15 @@ export default function RoutineFormScreen() {
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
+      <View style={styles.switchRow}>
+        <Text style={styles.label}>즐겨찾기에 추가</Text>
+        <Pressable
+          style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
+          onPress={() => setSaveAsFavorite((prev) => !prev)}>
+          <Text style={styles.starButtonText}>{saveAsFavorite ? '⭐' : '☆'}</Text>
+        </Pressable>
+      </View>
+
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
       <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
@@ -348,26 +442,33 @@ export default function RoutineFormScreen() {
 
       {isEditing && (
         <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-          <Text style={styles.deleteButtonText}>삭제</Text>
+          <Text style={styles.deleteButtonText}>루틴삭제</Text>
         </Pressable>
       )}
-    </ScrollView>
-  );
-}
 
-function Chip({
-  label,
-  selected,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable style={[styles.chip, selected && styles.chipSelected]} onPress={onPress}>
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
-    </Pressable>
+      <FavoritePicker
+        visible={showFavoritePicker}
+        onClose={() => setShowFavoritePicker(false)}
+        favorites={favorites}
+        slots={slots}
+        renderActions={(favorite) => (
+          <>
+            <Pressable
+              style={styles.favoriteActionButton}
+              disabled={isApplyingFavorite}
+              onPress={() => applyFavoriteInstantly(favorite)}>
+              <Text style={styles.favoriteActionText}>바로 추가</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.favoriteActionButton, styles.favoriteActionButtonOutline]}
+              disabled={isApplyingFavorite}
+              onPress={() => applyFavoriteToForm(favorite)}>
+              <Text style={[styles.favoriteActionText, styles.favoriteActionTextOutline]}>수정해서 추가</Text>
+            </Pressable>
+          </>
+        )}
+      />
+    </ScrollView>
   );
 }
 
@@ -390,6 +491,52 @@ const styles = StyleSheet.create({
     marginTop: 20,
     marginBottom: 8,
   },
+  favoriteButton: {
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  favoriteButtonText: {
+    color: '#7C5CFC',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  favoriteActionButton: {
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  favoriteActionButtonOutline: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+  },
+  favoriteActionText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  favoriteActionTextOutline: {
+    color: '#7C5CFC',
+  },
+  starButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderColor: '#ccc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  starButtonActive: {
+    borderColor: '#7C5CFC',
+  },
+  starButtonText: {
+    fontSize: 18,
+  },
   input: {
     borderWidth: 1,
     borderColor: '#ccc',
@@ -403,23 +550,6 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
-  },
-  chip: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  chipSelected: {
-    backgroundColor: '#7C5CFC',
-    borderColor: '#7C5CFC',
-  },
-  chipText: {
-    fontSize: 14,
-  },
-  chipTextSelected: {
-    color: '#fff',
   },
   timeButton: {
     borderWidth: 1,
@@ -451,11 +581,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   deleteButton: {
-    marginTop: 12,
+    marginTop: 24,
     paddingVertical: 12,
     alignItems: 'center',
+    backgroundColor: '#FF6B6B',
+    borderRadius: 10,
   },
   deleteButtonText: {
-    color: '#FF6B6B',
+    color: '#fff',
+    fontWeight: '600',
   },
 });

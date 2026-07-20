@@ -237,6 +237,43 @@ CREATE UNIQUE INDEX idx_diaries_user_date_active
 -- 소프트 삭제와 "날짜당 1개" 제약을 함께 만족시키기 위한 partial unique index
 ```
 
+### routine_presets / preset_items (신규, 0007 마이그레이션)
+
+루틴 모음집(프리셋) — "평일 일정", "주말", "학원"처럼 자주 쓰는 루틴 묶음을 미리 만들어두고 한 번에 적용하는 기능.
+
+| 테이블 | 컬럼 | 비고 |
+|---|---|---|
+| routine_presets | id, user_id, name, repeat_type, repeat_days, skip_holidays, created_at | 반복 규칙·공휴일 제외는 모음집 전체에 하나로 적용 (개별 항목마다 다르게는 못 줌) |
+| preset_items | id, preset_id, title, block_type, scheduled_time_start/end, slot_id, is_required, tracking_unit, sort_order | routines와 거의 동일한 필드 구조, 제약조건도 동일(시각/슬롯 XOR 등) |
+
+- "적용"하면 preset_items를 그대로 복사해서 실제 routines 행을 생성 (routine_presets의 repeat_type/repeat_days/skip_holidays를 각 routine에 채워 넣음)
+- 같은 루틴을 여러 모음집에 중복으로 넣어도 됨. 같은 날 여러 모음집을 적용해서 루틴이 중복 생성돼도 자동으로 걸러내지 않음 (사용자가 직접 지우면 됨)
+- RLS: 본인 프리셋만 조회/수정 (본인 소유 여부는 preset_items도 상위 routine_presets.user_id를 참조해서 확인)
+
+### routine_skip_dates (신규, 0009 마이그레이션)
+
+루틴을 완전히 삭제하지 않고 "오늘 하루만" 목록에서 빼기 위한 예외 날짜 기록. 오늘 탭 스와이프 삭제가 이걸 씀.
+
+| 컬럼 | 비고 |
+|---|---|
+| id, routine_id, skip_date | `UNIQUE (routine_id, skip_date)` |
+
+- 오늘 탭 조회 시 `matchesToday` 판정과 별개로, 오늘 날짜가 이 테이블에 있는 루틴은 무조건 제외
+- 반복 규칙 자체는 안 바뀌므로 다음 날부터는 다시 정상적으로 나타남
+- 루틴 전체를 지우는 것(`routines.deleted_at` 소프트 삭제, 루틴 수정 화면의 "삭제" 버튼)과는 별개 기능
+- RLS: 본인 루틴에 속한 것만 조회/수정 (routine_completions와 동일한 서브쿼리 패턴)
+
+### routine_favorites (신규, 0008 마이그레이션)
+
+루틴 즐겨찾기 — 자주 쓰는 개별 루틴을 "제목/타입/시간/필수여부" 템플릿으로 저장. 모음집(routine_presets)과 달리 반복 규칙이 없음(낱개 루틴 하나의 템플릿).
+
+| 컬럼 | 비고 |
+|---|---|
+| id, user_id, title, block_type, scheduled_time_start/end, slot_id, is_required, tracking_unit, created_at | routines/preset_items와 거의 동일한 필드+제약(시각/슬롯 XOR 등) |
+
+- 쓰이는 곳 2군데: (1) 루틴 추가 화면에서 "바로 추가"(반복=매일 기본값으로 즉시 생성) 또는 "수정해서 추가"(폼에 값 채워넣고 사용자가 반복 등 마저 입력), (2) 모음집 항목 추가 시 값 채워진 새 항목으로 바로 삽입
+- RLS: 본인 것만 조회/수정
+
 ### holidays (신규, 0006 마이그레이션)
 
 | 컬럼 | 타입 | 제약 | 비고 |

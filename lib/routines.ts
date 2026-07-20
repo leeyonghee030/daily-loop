@@ -129,9 +129,23 @@ export async function fetchTodayRoutines(userId: string): Promise<{
 
   if (routinesError) throw routinesError;
 
+  const allIds = (routines ?? []).map((r) => r.id);
+  const { data: skipRows, error: skipError } =
+    allIds.length > 0
+      ? await supabase
+          .from('routine_skip_dates')
+          .select('routine_id')
+          .eq('skip_date', todayDate)
+          .in('routine_id', allIds)
+      : { data: [], error: null };
+  if (skipError) throw skipError;
+  const skippedIds = new Set((skipRows ?? []).map((row) => row.routine_id));
+
   const isHoliday = Boolean(holiday);
   const todays = sortRoutines(
-    (routines ?? []).filter((r) => matchesToday(r as Routine, todayDate, todayDow, isHoliday))
+    (routines ?? []).filter(
+      (r) => !skippedIds.has(r.id) && matchesToday(r as Routine, todayDate, todayDow, isHoliday)
+    )
   );
 
   const ids = todays.map((r) => r.id);
@@ -148,6 +162,13 @@ export async function fetchTodayRoutines(userId: string): Promise<{
   if (completionsError) throw completionsError;
 
   return { routines: todays, completions: completions ?? [], holiday };
+}
+
+export async function skipRoutineToday(routineId: string): Promise<void> {
+  const { error } = await supabase
+    .from('routine_skip_dates')
+    .insert({ routine_id: routineId, skip_date: formatLocalDate(new Date()) });
+  if (error) throw error;
 }
 
 export async function toggleCheckCompletion(

@@ -11,6 +11,7 @@ import {
   StyleSheet,
   TextInput,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
@@ -19,6 +20,7 @@ import {
   fetchTodayRoutines,
   isHappeningNow,
   saveTrackingValue,
+  skipRoutineToday,
   toggleCheckCompletion,
   SLOT_LABELS,
   type Holiday,
@@ -115,6 +117,15 @@ export default function TodayScreen() {
     }
   }
 
+  async function handleSkipToday(routine: Routine) {
+    try {
+      await skipRoutineToday(routine.id);
+      setRoutines((prev) => prev.filter((r) => r.id !== routine.id));
+    } catch (err) {
+      setErrorMessage('삭제에 실패했어요.');
+    }
+  }
+
   async function handleSaveTracking(routine: Routine) {
     const raw = trackingInputs[routine.id];
     const value = Number(raw);
@@ -145,9 +156,14 @@ export default function TodayScreen() {
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.title}>오늘</Text>
-          <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
-            <Text style={styles.addButtonText}>+ 루틴 추가</Text>
-          </Pressable>
+          <View style={styles.headerButtons}>
+            <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
+              <Text style={styles.presetButtonText}>📦 모음집</Text>
+            </Pressable>
+            <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
+              <Text style={styles.addButtonText}>+ 루틴 추가</Text>
+            </Pressable>
+          </View>
         </View>
         <Text style={styles.email}>{session?.user.email}</Text>
       </View>
@@ -174,47 +190,55 @@ export default function TodayScreen() {
           const isNow = isHappeningNow(item);
 
           return (
-            <View style={[styles.row, isNow && styles.rowHighlighted]}>
-              <Text style={styles.time}>{timeLabel(item)}</Text>
-              <View style={styles.rowMain}>
-                <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>
-                  {item.title}
-                  {item.is_required ? ' · 필수' : ''}
-                </Text>
-
-                {item.block_type === 'tracking' ? (
-                  <View style={styles.trackingRow}>
-                    <TextInput
-                      style={styles.trackingInput}
-                      keyboardType="numeric"
-                      value={trackingInputs[item.id] ?? ''}
-                      onChangeText={(text) =>
-                        setTrackingInputs((prev) => ({ ...prev, [item.id]: text }))
-                      }
-                      placeholder="0"
-                    />
-                    <Text style={styles.unit}>{item.tracking_unit}</Text>
-                    <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
-                      <Text style={styles.saveButtonText}>저장</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-              </View>
-
-              {item.block_type === 'check' && (
-                <Pressable
-                  style={[styles.checkbox, isDone && styles.checkboxDone]}
-                  onPress={() => handleToggleCheck(item)}>
-                  {isDone && <Text style={styles.checkmark}>✓</Text>}
+            <Swipeable
+              overshootRight={false}
+              renderRightActions={() => (
+                <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
+                  <Text style={styles.deleteActionText}>오늘 삭제</Text>
                 </Pressable>
-              )}
+              )}>
+              <View style={[styles.row, isNow && styles.rowHighlighted]}>
+                <Text style={styles.time}>{timeLabel(item)}</Text>
+                <View style={styles.rowMain}>
+                  <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>
+                    {item.title}
+                    {item.is_required ? ' · 필수' : ''}
+                  </Text>
 
-              <Pressable
-                style={styles.editButton}
-                onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
-                <Text style={styles.editButtonText}>✎</Text>
-              </Pressable>
-            </View>
+                  {item.block_type === 'tracking' ? (
+                    <View style={styles.trackingRow}>
+                      <TextInput
+                        style={styles.trackingInput}
+                        keyboardType="numeric"
+                        value={trackingInputs[item.id] ?? ''}
+                        onChangeText={(text) =>
+                          setTrackingInputs((prev) => ({ ...prev, [item.id]: text }))
+                        }
+                        placeholder="0"
+                      />
+                      <Text style={styles.unit}>{item.tracking_unit}</Text>
+                      <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
+                        <Text style={styles.saveButtonText}>저장</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+
+                {item.block_type === 'check' && (
+                  <Pressable
+                    style={[styles.checkbox, isDone && styles.checkboxDone]}
+                    onPress={() => handleToggleCheck(item)}>
+                    {isDone && <Text style={styles.checkmark}>✓</Text>}
+                  </Pressable>
+                )}
+
+                <Pressable
+                  style={styles.editButton}
+                  onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+                  <Text style={styles.editButtonText}>✎</Text>
+                </Pressable>
+              </View>
+            </Swipeable>
           );
         }}
       />
@@ -248,6 +272,22 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 20,
     fontWeight: 'bold',
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  presetButton: {
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  presetButtonText: {
+    color: '#7C5CFC',
+    fontSize: 13,
+    fontWeight: '600',
   },
   addButton: {
     backgroundColor: '#7C5CFC',
@@ -375,6 +415,19 @@ const styles = StyleSheet.create({
   editButtonText: {
     fontSize: 15,
     opacity: 0.5,
+  },
+  deleteAction: {
+    backgroundColor: '#FF6B6B',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 84,
+    borderRadius: 10,
+    marginVertical: 2,
+  },
+  deleteActionText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   signOutButton: {
     alignSelf: 'center',

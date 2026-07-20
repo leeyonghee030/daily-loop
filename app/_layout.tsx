@@ -5,6 +5,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { View } from '@/components/Themed';
@@ -45,9 +46,11 @@ export default function RootLayout() {
   }
 
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <GestureHandlerRootView style={styles.flex}>
+      <AuthProvider>
+        <RootLayoutNav />
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -84,6 +87,16 @@ function RootLayoutNav() {
             name="routine-form"
             options={{ presentation: 'modal', title: '루틴' }}
           />
+          <Stack.Screen name="presets" options={{ title: '모음집' }} />
+          <Stack.Screen
+            name="preset-form"
+            options={{ presentation: 'modal', title: '모음집' }}
+          />
+          <Stack.Screen name="favorites" options={{ title: '즐겨찾기' }} />
+          <Stack.Screen
+            name="favorite-form"
+            options={{ presentation: 'modal', title: '즐겨찾기' }}
+          />
         </Stack>
       )}
     </ThemeProvider>
@@ -91,6 +104,9 @@ function RootLayoutNav() {
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
   loading: {
     flex: 1,
     alignItems: 'center',
