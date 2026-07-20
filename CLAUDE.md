@@ -2,15 +2,25 @@
 
 루틴 관리 앱 "Daily Loop". 1인 개발, **바이브 코딩으로 배우면서 만드는 학습 프로젝트** (학원 병행, 하루 약 2시간 작업 가능).
 
-## 현재 진행 상황 (2026-07-19 기준 — 새 세션 시작 시 여기부터 확인)
+## 현재 진행 상황 (2026-07-20 기준 — 새 세션 시작 시 여기부터 확인)
 
 - ✅ 로드맵(`project-spec.md` 8-1) 1단계 환경 세팅, 2단계 기초 골격 완료
 - ✅ Supabase DB 8개 테이블 + RLS 실제 생성됨 (`supabase/migrations/`)
 - ✅ 하단 탭 3개(오늘/캘린더/통계) 네비게이션 뼈대 완료
 - ✅ 구글 로그인 완료 (브라우저 기반 OAuth, `lib/google-signin.ts` + `lib/auth-context.tsx`) — 로그인 화면 뜨고 정상 동작 확인함
 - ⬜ 카카오 로그인은 아직 안 함 (Firebase Custom Token 절차 필요, 나중으로 미룸)
-- ⬜ **다음 작업: 로드맵 3단계 "오늘 탭 UI"** — 루틴 리스트(시간순+슬롯 정렬), 체크/트래킹 입력
+- ✅ 로드맵 3단계 "오늘 탭 UI" 완료 — `app/(tabs)/index.tsx` + `lib/routines.ts`, 실기 테스트로 체크/트래킹 저장 확인함
+  - `routines.scheduled_date` 컬럼 추가 완료 (`supabase/migrations/0004_...sql`, 1회성 루틴용 날짜), Supabase에도 반영됨
+  - 테스트용 더미 데이터는 `supabase/seed_today_test.sql`로 넣음 — 4단계에서 실제 추가 폼 생기면 필요 없어짐
+  - 드래그 순서변경(sort_order UI)과 루틴 수정은 아직 없음 (수정은 4단계 스코프, 드래그 정렬은 단계 미정 — 나중 필요시 논의)
+- 🔄 **로드맵 4단계 "루틴 추가/수정 폼" 코드 구현 완료, 실기 테스트 대기 중** — `app/routine-form.tsx` (모달), `lib/routines.ts`의 CRUD 함수
+  - 오늘 탭 헤더 "+ 루틴 추가" 버튼 / 각 루틴 행의 "✎" 버튼으로 진입
+  - 카테고리/영상연결/알림 필드는 이번 폼에서 제외함 (해당 기능 자체가 아직 없어서, 6/11/12단계에서 다시 추가하기로 함)
+  - `@react-native-community/datetimepicker` 신규 설치함 (시간 선택 UI)
+  - 3단계에서 만든 `supabase/seed_today_test.sql` 더미데이터는 이제 이 폼으로 대체 가능 (필요시 폼에서 직접 만들고 지우면 됨)
+- 🔄 **공휴일 기능 추가** — `holidays` 테이블 신규(`supabase/migrations/0006_add_holidays.sql`), 2026~2027년 한국 공휴일 시드 (한 번 틀렸던 걸 재검증해서 수정함 — 노동절·제헌절이 2026년부터 새로 법정 공휴일 지정된 것 반영, 대체공휴일 규칙도 언론 보도로 교차확인. 그래도 100% 보장은 아니니 틀린 날짜 보이면 테이블에서 직접 수정). 루틴에 `skip_holidays` 토글 추가 — 켜면 공휴일엔 반복 규칙 무관하게 오늘 탭에서 제외. 오늘 탭 상단에 공휴일 배너 표시. **아직 Supabase에 0006 마이그레이션 실행 안 됨**
 - 개발 서버는 `npx expo start`로 실행, 포트 충돌 나면 `--port` 옵션으로 다른 포트 사용
+- **구글 로그인 테스트 시 주의**: Expo Go의 `exp://192.168.x.x:PORT/...` 주소는 호스트가 IP 형태라 Supabase Auth 서버 버그로 리다이렉트가 항상 막힘 (`supabase/auth#2039`, 와일드카드 등록해도 소용없음). 로그인 테스트할 때는 `npx expo start --tunnel`로 실행하고, Supabase 대시보드 Redirect URLs에 `exp://*.exp.direct/**` 등록해서 우회. 평소 개발은 그냥 `npx expo start`(LAN 모드)면 충분
 - `.env`에 Supabase URL/anon key 있음 (git에는 없음, 로컬에만 존재 — 새 기기에서 작업 시 다시 채워야 함)
 
 ## 문서 구조 (`docs/`)

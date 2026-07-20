@@ -80,6 +80,10 @@ function RootLayoutNav() {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
           <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="routine-form"
+            options={{ presentation: 'modal', title: '루틴' }}
+          />
         </Stack>
       )}
     </ThemeProvider>

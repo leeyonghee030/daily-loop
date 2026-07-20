@@ -166,7 +166,9 @@ CREATE INDEX idx_videos_category ON videos (category_id);
 | block_type | text | NOT NULL | `'check'` \| `'tracking'` |
 | repeat_type | text | NOT NULL | `'daily'`\|`'weekday'`\|`'weekend'`\|`'custom'`\|`'once'` |
 | repeat_days | smallint[] | NULL | `repeat_type='custom'`일 때만 사용, 0=일~6=토 |
-| scheduled_time | time | NULL | 정확한 시각 지정 시 |
+| scheduled_time_start | time | NULL | 정확한 시각 지정 시 시작 시각 (0005 마이그레이션에서 `scheduled_time`을 이 이름으로 변경) |
+| scheduled_time_end | time | NULL | 정확한 시각 지정 시 종료 시각 — `scheduled_time_start`와 항상 함께 채워짐 (0005 마이그레이션 신규). 오늘 탭에서 "지금 시각이 이 범위 안" 테두리 강조 판정에 사용 |
+| scheduled_date | date | NULL | `repeat_type='once'`일 때만 사용 — 몇 번째 날짜에 할지 (신규, 0004 마이그레이션). 추가 화면(4-9) 기본값은 오늘 날짜 |
 | slot_id | uuid | FK → slots.id, NULL | 시각 대신 슬롯 지정 시 |
 | is_required | boolean | NOT NULL, default false | 캘린더 빨간 표시 판단 기준 (4-4) |
 | notify_enabled | boolean | NOT NULL, default false | 루틴 단위 개별 알림 |
@@ -174,19 +176,26 @@ CREATE INDEX idx_videos_category ON videos (category_id);
 | video_id | uuid | FK → videos.id, NULL | |
 | tracking_unit | text | NULL | `block_type='tracking'`일 때만 (프리셋 또는 자유 텍스트) |
 | sort_order | integer | NOT NULL, default 0 | 같은 시각/슬롯 내 사용자 지정 순서 |
+| skip_holidays | boolean | NOT NULL, default false | true면 공휴일(`holidays` 테이블 기준)에는 반복 규칙과 무관하게 오늘 탭에서 제외 (0006 마이그레이션 신규) |
 | created_at | timestamptz | NOT NULL, default `now()` | |
 | deleted_at | timestamptz | NULL | 소프트 삭제 (3-2) |
 
 **제약 조건**
 ```sql
-CHECK ( (scheduled_time IS NOT NULL) <> (slot_id IS NOT NULL) )
+CHECK ( (scheduled_time_start IS NOT NULL) <> (slot_id IS NOT NULL) )
 -- 시각과 슬롯 중 정확히 하나만 채워져야 함 (user-flow 3번 확정)
+
+CHECK ( scheduled_time_start IS NULL OR scheduled_time_end IS NOT NULL )
+-- 정확한 시각 지정이면 시작~종료 범위가 항상 함께 있어야 함 (0005 마이그레이션, 오늘 탭 시간 강조용)
 
 CHECK ( repeat_type <> 'custom' OR repeat_days IS NOT NULL )
 -- custom 반복이면 요일 배열 필수
 
 CHECK ( block_type <> 'tracking' OR tracking_unit IS NOT NULL )
 -- 트래킹형이면 단위 필수
+
+CHECK ( repeat_type <> 'once' OR scheduled_date IS NOT NULL )
+-- 1회성이면 날짜 필수 (0004 마이그레이션에서 추가)
 ```
 
 **인덱스**
@@ -227,6 +236,17 @@ CREATE UNIQUE INDEX idx_diaries_user_date_active
   ON diaries (user_id, entry_date) WHERE deleted_at IS NULL;
 -- 소프트 삭제와 "날짜당 1개" 제약을 함께 만족시키기 위한 partial unique index
 ```
+
+### holidays (신규, 0006 마이그레이션)
+
+| 컬럼 | 타입 | 제약 | 비고 |
+|---|---|---|---|
+| date | date | PK | |
+| name | text | NOT NULL | 예: "설날", "대체공휴일(광복절)" |
+
+- 카테고리/영상처럼 전역 공용 데이터 (유저별 아님), 로그인 유저는 읽기만 가능
+- 2026~2027년치를 웹 검색+언론 보도 교차 확인해서 미리 시드해둠. 노동절·제헌절은 2026년부터 새로 법정 공휴일로 지정된 것까지 반영함 (노동절은 대체공휴일 미적용, 제헌절은 적용). 매년 갱신 필요 (연말에 다음 해 날짜 추가)
+- 루틴의 `skip_holidays=true`면, 이 테이블에 오늘 날짜가 있을 때 반복 규칙과 무관하게 오늘 탭에서 제외됨
 
 ### streak_emoji_configs
 
