@@ -40,6 +40,13 @@ export type RoutineCompletion = {
   tracking_value: number | null;
 };
 
+export type StreakConfig = {
+  min_days: number;
+  max_days: number | null;
+  emoji: string;
+  label: string;
+};
+
 export const SLOT_LABELS: Record<SlotType, string> = {
   morning: '아침',
   lunch: '점심',
@@ -169,6 +176,93 @@ export async function skipRoutineToday(routineId: string): Promise<void> {
     .from('routine_skip_dates')
     .insert({ routine_id: routineId, skip_date: formatLocalDate(new Date()) });
   if (error) throw error;
+}
+
+export async function fetchStreakConfigs(): Promise<StreakConfig[]> {
+  const { data, error } = await supabase
+    .from('streak_emoji_configs')
+    .select('min_days, max_days, emoji, label')
+    .order('min_days', { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export function emojiForStreak(days: number, configs: StreakConfig[]): string | null {
+  const tier = configs.find((c) => days >= c.min_days && (c.max_days === null || days <= c.max_days));
+  return tier?.emoji ?? null;
+}
+
+function computeStreakForRoutine(
+  routine: Routine,
+  todayDate: string,
+  completedDates: Set<string>,
+  skipDates: Set<string>,
+  holidayDates: Set<string>
+): number {
+  let streak = 0;
+  const cursor = new Date(`${todayDate}T00:00:00`);
+  for (let i = 0; i < 400; i++) {
+    const dateStr = formatLocalDate(cursor);
+    const dow = cursor.getDay();
+    const isHoliday = holidayDates.has(dateStr);
+    const scheduled = !skipDates.has(dateStr) && matchesToday(routine, dateStr, dow, isHoliday);
+    if (scheduled) {
+      if (completedDates.has(dateStr)) {
+        streak++;
+      } else if (dateStr !== todayDate) {
+        break;
+      }
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+export async function fetchStreaks(
+  routines: Routine[],
+  todayDate: string
+): Promise<Record<string, number>> {
+  const repeatables = routines.filter((r) => r.repeat_type !== 'once');
+  if (repeatables.length === 0) return {};
+
+  const ids = repeatables.map((r) => r.id);
+  const [{ data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
+    await Promise.all([
+      supabase
+        .from('routine_completions')
+        .select('routine_id, completed_date')
+        .in('routine_id', ids)
+        .lte('completed_date', todayDate),
+      supabase.from('routine_skip_dates').select('routine_id, skip_date').in('routine_id', ids),
+      supabase.from('holidays').select('date'),
+    ]);
+  if (completionsError) throw completionsError;
+  if (skipError) throw skipError;
+  if (holidayError) throw holidayError;
+
+  const completedByRoutine = new Map<string, Set<string>>();
+  for (const row of completionRows ?? []) {
+    if (!completedByRoutine.has(row.routine_id)) completedByRoutine.set(row.routine_id, new Set());
+    completedByRoutine.get(row.routine_id)!.add(row.completed_date);
+  }
+  const skipByRoutine = new Map<string, Set<string>>();
+  for (const row of skipRows ?? []) {
+    if (!skipByRoutine.has(row.routine_id)) skipByRoutine.set(row.routine_id, new Set());
+    skipByRoutine.get(row.routine_id)!.add(row.skip_date);
+  }
+  const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
+
+  const result: Record<string, number> = {};
+  for (const routine of repeatables) {
+    result[routine.id] = computeStreakForRoutine(
+      routine,
+      todayDate,
+      completedByRoutine.get(routine.id) ?? new Set(),
+      skipByRoutine.get(routine.id) ?? new Set(),
+      holidayDates
+    );
+  }
+  return result;
 }
 
 export async function toggleCheckCompletion(

@@ -17,7 +17,11 @@ import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import {
+  emojiForStreak,
+  fetchStreakConfigs,
+  fetchStreaks,
   fetchTodayRoutines,
+  formatLocalDate,
   isHappeningNow,
   saveTrackingValue,
   skipRoutineToday,
@@ -26,6 +30,7 @@ import {
   type Holiday,
   type Routine,
   type RoutineCompletion,
+  type StreakConfig,
 } from '@/lib/routines';
 
 function formatTime(time: string): string {
@@ -52,6 +57,8 @@ export default function TodayScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   const [holiday, setHoliday] = useState<Holiday | null>(null);
+  const [streaks, setStreaks] = useState<Record<string, number>>({});
+  const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -77,10 +84,17 @@ export default function TodayScreen() {
       }
       setCompletions(completionMap);
       setTrackingInputs(inputMap);
+
+      const streakResult = await fetchStreaks(fetchedRoutines, formatLocalDate(new Date()));
+      setStreaks(streakResult);
     } catch (err) {
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
   }, [userId]);
+
+  useEffect(() => {
+    fetchStreakConfigs().then(setStreakConfigs).catch(() => {});
+  }, []);
 
   useEffect(() => {
     setIsLoading(true);
@@ -99,6 +113,11 @@ export default function TodayScreen() {
     setIsRefreshing(false);
   }
 
+  async function refreshStreaks() {
+    const streakResult = await fetchStreaks(routines, formatLocalDate(new Date()));
+    setStreaks(streakResult);
+  }
+
   async function handleToggleCheck(routine: Routine) {
     const existing = completions[routine.id] ?? null;
     try {
@@ -112,6 +131,7 @@ export default function TodayScreen() {
         }
         return next;
       });
+      await refreshStreaks();
     } catch (err) {
       setErrorMessage('체크 처리에 실패했어요.');
     }
@@ -135,6 +155,7 @@ export default function TodayScreen() {
     try {
       const result = await saveTrackingValue(routine.id, existing?.id ?? null, value);
       setCompletions((prev) => ({ ...prev, [routine.id]: result }));
+      await refreshStreaks();
     } catch (err) {
       setErrorMessage('기록 저장에 실패했어요.');
     }
@@ -188,6 +209,8 @@ export default function TodayScreen() {
           const completion = completions[item.id];
           const isDone = Boolean(completion);
           const isNow = isHappeningNow(item);
+          const streakDays = streaks[item.id] ?? 0;
+          const streakEmoji = emojiForStreak(streakDays, streakConfigs);
 
           return (
             <Swipeable
@@ -200,10 +223,16 @@ export default function TodayScreen() {
               <View style={[styles.row, isNow && styles.rowHighlighted]}>
                 <Text style={styles.time}>{timeLabel(item)}</Text>
                 <View style={styles.rowMain}>
-                  <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>
-                    {item.title}
-                    {item.is_required ? ' · 필수' : ''}
-                  </Text>
+                  <View style={styles.titleLine}>
+                    <View style={item.is_required ? styles.requiredHighlight : undefined}>
+                      <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>{item.title}</Text>
+                    </View>
+                    {streakEmoji && (
+                      <Text style={styles.streakBadge}>
+                        {streakEmoji} {streakDays}일
+                      </Text>
+                    )}
+                  </View>
 
                   {item.block_type === 'tracking' ? (
                     <View style={styles.trackingRow}>
@@ -242,6 +271,24 @@ export default function TodayScreen() {
           );
         }}
       />
+
+      {routines.length > 0 && (
+        <View style={styles.summaryBar}>
+          <Text style={styles.summaryText}>
+            오늘 완료 {routines.filter((r) => completions[r.id]).length}/{routines.length} (
+            {Math.round((routines.filter((r) => completions[r.id]).length / routines.length) * 100)}%)
+          </Text>
+          {(() => {
+            const bestStreak = Math.max(0, ...Object.values(streaks));
+            const bestEmoji = emojiForStreak(bestStreak, streakConfigs);
+            return bestEmoji ? (
+              <Text style={styles.summaryText}>
+                최고 기록 {bestEmoji} {bestStreak}일
+              </Text>
+            ) : null;
+          })()}
+        </View>
+      )}
 
       <Pressable style={styles.signOutButton} onPress={() => supabase.auth.signOut()}>
         <Text style={styles.signOutText}>로그아웃</Text>
@@ -355,12 +402,28 @@ const styles = StyleSheet.create({
   rowMain: {
     flex: 1,
   },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   rowTitle: {
     fontSize: 15,
   },
   rowTitleDone: {
     opacity: 0.4,
     textDecorationLine: 'line-through',
+  },
+  requiredHighlight: {
+    backgroundColor: 'rgba(255, 107, 107, 0.35)',
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    transform: [{ rotate: '-1.5deg' }],
+  },
+  streakBadge: {
+    fontSize: 12,
+    opacity: 0.7,
   },
   trackingRow: {
     flexDirection: 'row',
@@ -428,6 +491,16 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  summaryBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  summaryText: {
+    fontSize: 13,
+    opacity: 0.7,
   },
   signOutButton: {
     alignSelf: 'center',
