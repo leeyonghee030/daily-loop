@@ -1,13 +1,15 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
+import { VideoPicker } from '@/components/VideoPicker';
 import { useAuth } from '@/lib/auth-context';
 import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
+import { fetchCategories, fetchVideoById, type Category, type Video } from '@/lib/videos';
 import {
   createRoutine,
   fetchRoutineById,
@@ -87,6 +89,10 @@ export default function RoutineFormScreen() {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
   const [isApplyingFavorite, setIsApplyingFavorite] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
+  const [showVideoPicker, setShowVideoPicker] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -101,6 +107,9 @@ export default function RoutineFormScreen() {
     fetchFavorites(userId)
       .then(setFavorites)
       .catch(() => setErrorMessage('즐겨찾기를 불러오지 못했어요.'));
+    fetchCategories()
+      .then(setCategories)
+      .catch(() => setErrorMessage('카테고리를 불러오지 못했어요.'));
   }, [userId]);
 
   useEffect(() => {
@@ -114,6 +123,10 @@ export default function RoutineFormScreen() {
         setIsRequired(routine.is_required);
         setSkipHolidays(routine.skip_holidays);
         setTrackingUnit(routine.tracking_unit ?? '');
+        setCategoryId(routine.category_id);
+        if (routine.video_id) {
+          fetchVideoById(routine.video_id).then(setSelectedVideo).catch(() => {});
+        }
         if (routine.scheduled_time_start && routine.scheduled_time_end) {
           setTimeMode('exact');
           setStartTime(timeToDate(routine.scheduled_time_start));
@@ -167,6 +180,8 @@ export default function RoutineFormScreen() {
         is_required: favorite.is_required,
         tracking_unit: favorite.tracking_unit,
         skip_holidays: false,
+        category_id: null,
+        video_id: null,
       });
       setShowFavoritePicker(false);
       router.back();
@@ -208,6 +223,8 @@ export default function RoutineFormScreen() {
       is_required: isRequired,
       tracking_unit: blockType === 'tracking' ? trackingUnit.trim() : null,
       skip_holidays: skipHolidays,
+      category_id: categoryId,
+      video_id: selectedVideo?.id ?? null,
     };
 
     setIsSaving(true);
@@ -416,6 +433,35 @@ export default function RoutineFormScreen() {
         <Switch value={isRequired} onValueChange={setIsRequired} />
       </View>
 
+      <Text style={styles.label}>카테고리</Text>
+      <View style={styles.chipRow}>
+        {categories.map((cat) => (
+          <Chip
+            key={cat.id}
+            label={cat.name}
+            selected={categoryId === cat.id}
+            onPress={() => setCategoryId((prev) => (prev === cat.id ? null : cat.id))}
+          />
+        ))}
+      </View>
+
+      <Text style={styles.label}>영상 연결</Text>
+      {selectedVideo ? (
+        <Pressable style={styles.selectedVideoRow} onPress={() => setShowVideoPicker(true)}>
+          <Image source={{ uri: selectedVideo.thumbnail_url }} style={styles.selectedVideoThumb} />
+          <Text style={styles.selectedVideoTitle} numberOfLines={2}>
+            {selectedVideo.title}
+          </Text>
+          <Pressable onPress={() => setSelectedVideo(null)}>
+            <Text style={styles.removeVideoText}>✕</Text>
+          </Pressable>
+        </Pressable>
+      ) : (
+        <Pressable style={styles.videoConnectButton} onPress={() => setShowVideoPicker(true)}>
+          <Text style={styles.videoConnectButtonText}>🎬 영상 선택하기</Text>
+        </Pressable>
+      )}
+
       <View style={styles.switchRow}>
         <Text style={styles.label}>공휴일 제외</Text>
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
@@ -467,6 +513,12 @@ export default function RoutineFormScreen() {
             </Pressable>
           </>
         )}
+      />
+
+      <VideoPicker
+        visible={showVideoPicker}
+        onClose={() => setShowVideoPicker(false)}
+        onSelect={setSelectedVideo}
       />
     </ScrollView>
   );
@@ -590,5 +642,41 @@ const styles = StyleSheet.create({
   deleteButtonText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  videoConnectButton: {
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  videoConnectButtonText: {
+    color: '#7C5CFC',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  selectedVideoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 10,
+    padding: 8,
+  },
+  selectedVideoThumb: {
+    width: 60,
+    height: 34,
+    borderRadius: 6,
+    backgroundColor: '#eee',
+  },
+  selectedVideoTitle: {
+    flex: 1,
+    fontSize: 13,
+  },
+  removeVideoText: {
+    fontSize: 16,
+    opacity: 0.5,
+    paddingHorizontal: 4,
   },
 });

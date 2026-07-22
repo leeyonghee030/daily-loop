@@ -25,7 +25,10 @@ export type Routine = {
   tracking_unit: string | null;
   sort_order: number;
   skip_holidays: boolean;
+  category_id: number | null;
+  video_id: string | null;
   slots: Slot | null;
+  created_at: string;
 };
 
 export type Holiday = {
@@ -299,6 +302,8 @@ export type RoutineInput = {
   is_required: boolean;
   tracking_unit: string | null;
   skip_holidays: boolean;
+  category_id: number | null;
+  video_id: string | null;
 };
 
 export async function fetchSlots(userId: string): Promise<Slot[]> {
@@ -349,6 +354,103 @@ export async function softDeleteRoutine(routineId: string): Promise<void> {
   if (error) throw error;
 }
 
+export type DayStatus = 'done' | 'partial' | 'missed_required';
+
+export type DayRoutine = {
+  routine: Routine;
+  completion: RoutineCompletion | null;
+};
+
+export type MonthData = {
+  routines: Routine[];
+  completionsByRoutine: Map<string, Map<string, RoutineCompletion>>;
+  skipDatesByRoutine: Map<string, Set<string>>;
+  holidayDates: Set<string>;
+};
+
+export async function fetchMonthData(
+  userId: string,
+  year: number,
+  month: number
+): Promise<MonthData> {
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+  const monthEndDate = new Date(year, month, 0);
+  const monthEnd = formatLocalDate(monthEndDate);
+
+  const { data: routines, error: routinesError } = await supabase
+    .from('routines')
+    .select('*, slots(*)')
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+  if (routinesError) throw routinesError;
+
+  const ids = (routines ?? []).map((r) => r.id);
+  const [{ data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
+    await Promise.all([
+      ids.length > 0
+        ? supabase
+            .from('routine_completions')
+            .select('*')
+            .in('routine_id', ids)
+            .gte('completed_date', monthStart)
+            .lte('completed_date', monthEnd)
+        : Promise.resolve({ data: [], error: null }),
+      ids.length > 0
+        ? supabase
+            .from('routine_skip_dates')
+            .select('routine_id, skip_date')
+            .in('routine_id', ids)
+            .gte('skip_date', monthStart)
+            .lte('skip_date', monthEnd)
+        : Promise.resolve({ data: [], error: null }),
+      supabase.from('holidays').select('date').gte('date', monthStart).lte('date', monthEnd),
+    ]);
+  if (completionsError) throw completionsError;
+  if (skipError) throw skipError;
+  if (holidayError) throw holidayError;
+
+  const completionsByRoutine = new Map<string, Map<string, RoutineCompletion>>();
+  for (const row of completionRows ?? []) {
+    if (!completionsByRoutine.has(row.routine_id)) completionsByRoutine.set(row.routine_id, new Map());
+    completionsByRoutine.get(row.routine_id)!.set(row.completed_date, row);
+  }
+  const skipDatesByRoutine = new Map<string, Set<string>>();
+  for (const row of skipRows ?? []) {
+    if (!skipDatesByRoutine.has(row.routine_id)) skipDatesByRoutine.set(row.routine_id, new Set());
+    skipDatesByRoutine.get(row.routine_id)!.add(row.skip_date);
+  }
+  const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
+
+  return { routines: (routines ?? []) as Routine[], completionsByRoutine, skipDatesByRoutine, holidayDates };
+}
+
+export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {
+  const d = new Date(`${dateStr}T00:00:00`);
+  const dow = d.getDay();
+  const isHoliday = month.holidayDates.has(dateStr);
+
+  return sortRoutines(
+    month.routines.filter((r) => {
+      if (month.skipDatesByRoutine.get(r.id)?.has(dateStr)) return false;
+      return matchesToday(r, dateStr, dow, isHoliday);
+    })
+  ).map((routine) => ({
+    routine,
+    completion: month.completionsByRoutine.get(routine.id)?.get(dateStr) ?? null,
+  }));
+}
+
+export function computeDayStatus(dateStr: string, month: MonthData): DayStatus | null {
+  const scheduled = routinesForDate(dateStr, month);
+  if (scheduled.length === 0) return null;
+
+  const missedRequired = scheduled.some((s) => s.routine.is_required && !s.completion);
+  if (missedRequired) return 'missed_required';
+
+  const allDone = scheduled.every((s) => s.completion !== null);
+  return allDone ? 'done' : 'partial';
+}
+
 export async function saveTrackingValue(
   routineId: string,
   existingCompletionId: string | null,
@@ -376,4 +478,130 @@ export async function saveTrackingValue(
     .single();
   if (error) throw error;
   return data;
+}
+
+export type RoutineStats = {
+  routine: Routine;
+  currentStreak: number;
+  bestStreak: number;
+  scheduledCount: number;
+  completedCount: number;
+};
+
+export type StatsSummary = {
+  recentScheduled: number;
+  recentCompleted: number;
+  routines: RoutineStats[];
+};
+
+function computeLifetimeStats(
+  routine: Routine,
+  createdDate: string,
+  todayDate: string,
+  completedDates: Set<string>,
+  skipDates: Set<string>,
+  holidayDates: Set<string>
+): { bestStreak: number; scheduledCount: number; completedCount: number } {
+  let running = 0;
+  let best = 0;
+  let scheduledCount = 0;
+  let completedCount = 0;
+  const cursor = new Date(`${createdDate}T00:00:00`);
+  const end = new Date(`${todayDate}T00:00:00`);
+  while (cursor <= end) {
+    const dateStr = formatLocalDate(cursor);
+    const dow = cursor.getDay();
+    const isHoliday = holidayDates.has(dateStr);
+    const scheduled = !skipDates.has(dateStr) && matchesToday(routine, dateStr, dow, isHoliday);
+    if (scheduled) {
+      scheduledCount++;
+      if (completedDates.has(dateStr)) {
+        completedCount++;
+        running++;
+        if (running > best) best = running;
+      } else {
+        running = 0;
+      }
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return { bestStreak: best, scheduledCount, completedCount };
+}
+
+export async function fetchStats(userId: string): Promise<StatsSummary> {
+  const todayDate = formatLocalDate(new Date());
+
+  const { data: routines, error: routinesError } = await supabase
+    .from('routines')
+    .select('*, slots(*)')
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+  if (routinesError) throw routinesError;
+
+  const active = (routines ?? []) as Routine[];
+  const ids = active.map((r) => r.id);
+
+  const [
+    { data: completionRows, error: completionsError },
+    { data: skipRows, error: skipError },
+    { data: holidayRows, error: holidayError },
+  ] = await Promise.all([
+    ids.length > 0
+      ? supabase.from('routine_completions').select('routine_id, completed_date').in('routine_id', ids)
+      : Promise.resolve({ data: [], error: null }),
+    ids.length > 0
+      ? supabase.from('routine_skip_dates').select('routine_id, skip_date').in('routine_id', ids)
+      : Promise.resolve({ data: [], error: null }),
+    supabase.from('holidays').select('date'),
+  ]);
+  if (completionsError) throw completionsError;
+  if (skipError) throw skipError;
+  if (holidayError) throw holidayError;
+
+  const completedByRoutine = new Map<string, Set<string>>();
+  for (const row of completionRows ?? []) {
+    if (!completedByRoutine.has(row.routine_id)) completedByRoutine.set(row.routine_id, new Set());
+    completedByRoutine.get(row.routine_id)!.add(row.completed_date);
+  }
+  const skipByRoutine = new Map<string, Set<string>>();
+  for (const row of skipRows ?? []) {
+    if (!skipByRoutine.has(row.routine_id)) skipByRoutine.set(row.routine_id, new Set());
+    skipByRoutine.get(row.routine_id)!.add(row.skip_date);
+  }
+  const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
+
+  const routineStats: RoutineStats[] = active.map((routine) => {
+    const completedDates = completedByRoutine.get(routine.id) ?? new Set();
+    const skipDates = skipByRoutine.get(routine.id) ?? new Set();
+    const createdDate = routine.created_at.slice(0, 10);
+    const { bestStreak, scheduledCount, completedCount } = computeLifetimeStats(
+      routine,
+      createdDate,
+      todayDate,
+      completedDates,
+      skipDates,
+      holidayDates
+    );
+    const currentStreak = computeStreakForRoutine(routine, todayDate, completedDates, skipDates, holidayDates);
+    return { routine, currentStreak, bestStreak, scheduledCount, completedCount };
+  });
+
+  let recentScheduled = 0;
+  let recentCompleted = 0;
+  for (let i = 0; i < 7; i++) {
+    const cursor = new Date(`${todayDate}T00:00:00`);
+    cursor.setDate(cursor.getDate() - i);
+    const dateStr = formatLocalDate(cursor);
+    const dow = cursor.getDay();
+    const isHoliday = holidayDates.has(dateStr);
+    for (const routine of active) {
+      const skipDates = skipByRoutine.get(routine.id) ?? new Set();
+      if (skipDates.has(dateStr)) continue;
+      if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
+      recentScheduled++;
+      if (completedByRoutine.get(routine.id)?.has(dateStr)) recentCompleted++;
+    }
+  }
+
+  return { recentScheduled, recentCompleted, routines: routineStats };
 }

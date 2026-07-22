@@ -178,6 +178,14 @@ export default function TodayScreen() {
         <View style={styles.headerTop}>
           <Text style={styles.title}>오늘</Text>
           <View style={styles.headerButtons}>
+            <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
+              <Text style={styles.presetButtonText}>🎬 영상</Text>
+            </Pressable>
+            <Pressable
+              style={styles.presetButton}
+              onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
+              <Text style={styles.presetButtonText}>📔 일기</Text>
+            </Pressable>
             <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
               <Text style={styles.presetButtonText}>📦 모음집</Text>
             </Pressable>
@@ -252,6 +260,14 @@ export default function TodayScreen() {
                     </View>
                   ) : null}
                 </View>
+
+                {item.video_id && (
+                  <Pressable
+                    style={styles.playButton}
+                    onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
+                    <Text style={styles.playButtonText}>▶</Text>
+                  </Pressable>
+                )}
 
                 {item.block_type === 'check' && (
                   <Pressable
@@ -478,6 +494,14 @@ const styles = StyleSheet.create({
   editButtonText: {
     fontSize: 15,
     opacity: 0.5,
+  },
+  playButton: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  playButtonText: {
+    fontSize: 14,
+    color: '#7C5CFC',
   },
   deleteAction: {
     backgroundColor: '#FF6B6B',
