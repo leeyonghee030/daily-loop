@@ -1,7 +1,7 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { Calendar, type DateData } from 'react-native-calendars';
 
 import { Text, View } from '@/components/Themed';
@@ -13,6 +13,7 @@ import {
   formatLocalDate,
   routinesForDate,
   fetchMonthData,
+  toggleCheckCompletion,
   SLOT_LABELS,
   type DayStatus,
   type MonthData,
@@ -44,6 +45,7 @@ export default function CalendarScreen() {
   const [monthData, setMonthData] = useState<MonthData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const load = useCallback(
     async (y: number, m: number) => {
@@ -68,6 +70,26 @@ export default function CalendarScreen() {
   function handleMonthChange(date: DateData) {
     setYear(date.year);
     setMonth(date.month);
+  }
+
+  async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
+    try {
+      const result = await toggleCheckCompletion(routineId, existingCompletionId);
+      setMonthData((prev) => {
+        if (!prev) return prev;
+        const completionsByRoutine = new Map(prev.completionsByRoutine);
+        const routineMap = new Map(completionsByRoutine.get(routineId) ?? []);
+        if (result) {
+          routineMap.set(result.completed_date, result);
+        } else if (existingCompletionId) {
+          routineMap.delete(formatLocalDate(new Date()));
+        }
+        completionsByRoutine.set(routineId, routineMap);
+        return { ...prev, completionsByRoutine };
+      });
+    } catch {
+      setErrorMessage('체크 처리에 실패했어요.');
+    }
   }
 
   const todayStr = formatLocalDate(today);
@@ -166,32 +188,45 @@ export default function CalendarScreen() {
                 <Text style={styles.diaryButtonText}>📔 일기 보기</Text>
               </Pressable>
             </View>
+            {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+
             {detail.length === 0 ? (
               <Text style={styles.emptyText}>이 날은 예정된 루틴이 없어요</Text>
             ) : (
-              detail.map(({ routine, completion }) => (
-                <View key={routine.id} style={styles.detailRow}>
-                  <View
-                    style={[
-                      styles.detailCheckbox,
-                      completion && styles.detailCheckboxDone,
-                    ]}>
-                    {completion && <Text style={styles.detailCheckmark}>✓</Text>}
-                  </View>
-                  <View style={styles.detailMain}>
-                    <Text style={styles.detailTitle}>
-                      {routine.title}
-                      {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
-                    </Text>
-                    <Text style={styles.detailTime}>{timeLabel(routine)}</Text>
-                  </View>
-                  {routine.block_type === 'tracking' && completion?.tracking_value !== null && (
-                    <Text style={styles.detailValue}>
-                      {completion?.tracking_value} {routine.tracking_unit}
-                    </Text>
-                  )}
-                </View>
-              ))
+              <ScrollView style={styles.detailList}>
+                {detail.map(({ routine, completion }) => {
+                  const isToday = selectedDate === todayStr;
+                  const row = (
+                    <View style={styles.detailRow}>
+                      <View style={[styles.detailCheckbox, completion && styles.detailCheckboxDone]}>
+                        {completion && <Text style={styles.detailCheckmark}>✓</Text>}
+                      </View>
+                      <View style={styles.detailMain}>
+                        <Text style={styles.detailTitle}>
+                          {routine.title}
+                          {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
+                        </Text>
+                        <Text style={styles.detailTime}>{timeLabel(routine)}</Text>
+                      </View>
+                      {!isToday && routine.block_type === 'tracking' && completion?.tracking_value !== null && (
+                        <Text style={styles.detailValue}>
+                          {completion?.tracking_value} {routine.tracking_unit}
+                        </Text>
+                      )}
+                    </View>
+                  );
+
+                  return isToday ? (
+                    <Pressable
+                      key={routine.id}
+                      onPress={() => handleToggleToday(routine.id, completion?.id ?? null)}>
+                      {row}
+                    </Pressable>
+                  ) : (
+                    <View key={routine.id}>{row}</View>
+                  );
+                })}
+              </ScrollView>
             )}
             <Pressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
               <Text style={styles.closeButtonText}>닫기</Text>
@@ -245,10 +280,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.4)',
   },
   modalSheet: {
+    height: '70%',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    maxHeight: '70%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -274,6 +309,13 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     opacity: 0.5,
+  },
+  error: {
+    color: '#FF6B6B',
+    marginBottom: 8,
+  },
+  detailList: {
+    flex: 1,
   },
   detailRow: {
     flexDirection: 'row',

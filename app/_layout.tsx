@@ -97,6 +97,15 @@ function RootLayoutNav() {
             name="favorite-form"
             options={{ presentation: 'modal', title: '즐겨찾기' }}
           />
+          <Stack.Screen
+            name="diary-form"
+            options={{ presentation: 'modal', title: '일기' }}
+          />
+          <Stack.Screen name="videos" options={{ title: '영상' }} />
+          <Stack.Screen
+            name="video-player"
+            options={{ title: '영상 재생', gestureEnabled: false }}
+          />
         </Stack>
       )}
     </ThemeProvider>

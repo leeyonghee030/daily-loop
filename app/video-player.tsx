@@ -1,7 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, StyleSheet } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
+import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { Text, View } from '@/components/Themed';
 import { extractYoutubeId, fetchVideoById, type Video } from '@/lib/videos';
@@ -9,11 +9,17 @@ import { extractYoutubeId, fetchVideoById, type Video } from '@/lib/videos';
 export default function VideoPlayerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [video, setVideo] = useState<Video | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const { width } = useWindowDimensions();
 
   useEffect(() => {
     if (!id) return;
     fetchVideoById(id).then(setVideo);
   }, [id]);
+
+  const onStateChange = useCallback((state: string) => {
+    if (state === 'error') setLoadFailed(true);
+  }, []);
 
   if (!video) {
     return (
@@ -24,17 +30,20 @@ export default function VideoPlayerScreen() {
   }
 
   const youtubeId = extractYoutubeId(video.youtube_url);
+  const playerHeight = (width * 9) / 16;
 
   return (
     <View style={styles.container}>
-      {youtubeId ? (
-        <WebView
-          style={styles.player}
-          source={{ uri: `https://www.youtube.com/embed/${youtubeId}` }}
-          allowsFullscreenVideo
+      {youtubeId && !loadFailed ? (
+        <YoutubePlayer
+          height={playerHeight}
+          width={width}
+          videoId={youtubeId}
+          play={false}
+          onChangeState={onStateChange}
         />
       ) : (
-        <View style={[styles.player, styles.centered]}>
+        <View style={[styles.player, { height: playerHeight }, styles.centered]}>
           <Text style={styles.errorText}>영상을 불러올 수 없어요</Text>
         </View>
       )}
@@ -61,10 +70,10 @@ const styles = StyleSheet.create({
   },
   player: {
     width: '100%',
-    aspectRatio: 16 / 9,
   },
   info: {
     padding: 20,
+    paddingBottom: 48,
   },
   title: {
     fontSize: 16,

@@ -1,6 +1,17 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  TouchableWithoutFeedback,
+} from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
@@ -82,28 +93,35 @@ export default function DiaryFormScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <Text style={styles.title}>{formatDateLabel(date)}</Text>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <ScrollView
+          contentContainerStyle={styles.inner}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled">
+          <Text style={styles.title}>{formatDateLabel(date)}</Text>
 
-      <TextInput
-        style={styles.textArea}
-        value={content}
-        onChangeText={setContent}
-        placeholder="오늘 하루 어땠나요?"
-        multiline
-        textAlignVertical="top"
-      />
+          <TextInput
+            style={styles.textArea}
+            value={content}
+            onChangeText={setContent}
+            placeholder="오늘 하루 어땠나요?"
+            multiline
+            textAlignVertical="top"
+          />
 
-      {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+          {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
-        {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>저장</Text>}
-      </Pressable>
+          <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+            {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>저장</Text>}
+          </Pressable>
 
-      {diaryId && (
-        <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-          <Text style={styles.deleteButtonText}>일기 삭제</Text>
-        </Pressable>
-      )}
+          {diaryId && (
+            <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
+              <Text style={styles.deleteButtonText}>일기 삭제</Text>
+            </Pressable>
+          )}
+        </ScrollView>
+      </TouchableWithoutFeedback>
     </KeyboardAvoidingView>
   );
 }
@@ -111,12 +129,15 @@ export default function DiaryFormScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 20,
   },
   centered: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  inner: {
+    flexGrow: 1,
+    padding: 20,
   },
   title: {
     fontSize: 18,
