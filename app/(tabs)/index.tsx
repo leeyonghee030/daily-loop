@@ -15,6 +15,12 @@ import { Swipeable } from 'react-native-gesture-handler';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
+import {
+  requestNotificationPermissions,
+  setupNotificationChannel,
+  syncReminderAlarm,
+  syncSlotAlarms,
+} from '@/lib/notifications';
 import { supabase } from '@/lib/supabase';
 import {
   emojiForStreak,
@@ -66,6 +72,11 @@ export default function TodayScreen() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    setupNotificationChannel();
+    requestNotificationPermissions();
+  }, []);
+
   const load = useCallback(async () => {
     if (!userId) return;
     setErrorMessage(null);
@@ -87,6 +98,9 @@ export default function TodayScreen() {
 
       const streakResult = await fetchStreaks(fetchedRoutines, formatLocalDate(new Date()));
       setStreaks(streakResult);
+
+      syncSlotAlarms(userId).catch(() => {});
+      syncReminderAlarm(userId).catch(() => {});
     } catch (err) {
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
@@ -132,6 +146,7 @@ export default function TodayScreen() {
         return next;
       });
       await refreshStreaks();
+      if (userId) syncReminderAlarm(userId).catch(() => {});
     } catch (err) {
       setErrorMessage('체크 처리에 실패했어요.');
     }
@@ -141,6 +156,7 @@ export default function TodayScreen() {
     try {
       await skipRoutineToday(routine.id);
       setRoutines((prev) => prev.filter((r) => r.id !== routine.id));
+      if (userId) syncReminderAlarm(userId).catch(() => {});
     } catch (err) {
       setErrorMessage('삭제에 실패했어요.');
     }
@@ -156,6 +172,7 @@ export default function TodayScreen() {
       const result = await saveTrackingValue(routine.id, existing?.id ?? null, value);
       setCompletions((prev) => ({ ...prev, [routine.id]: result }));
       await refreshStreaks();
+      if (userId) syncReminderAlarm(userId).catch(() => {});
     } catch (err) {
       setErrorMessage('기록 저장에 실패했어요.');
     }

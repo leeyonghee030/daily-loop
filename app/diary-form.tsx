@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -12,6 +13,9 @@ import {
   TextInput,
   TouchableWithoutFeedback,
 } from 'react-native';
+
+// 내용이 짧아 화면을 안 채울 때도 드래그 제스처가 스크롤로 인식되도록 확보하는 여백 높이
+const SCROLL_SPACER_HEIGHT = Math.round(Dimensions.get('window').height * 0.8);
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
@@ -97,7 +101,8 @@ export default function DiaryFormScreen() {
         <ScrollView
           contentContainerStyle={styles.inner}
           keyboardDismissMode="on-drag"
-          keyboardShouldPersistTaps="handled">
+          keyboardShouldPersistTaps="handled"
+          onScrollBeginDrag={Keyboard.dismiss}>
           <Text style={styles.title}>{formatDateLabel(date)}</Text>
 
           <TextInput
@@ -120,6 +125,8 @@ export default function DiaryFormScreen() {
               <Text style={styles.deleteButtonText}>일기 삭제</Text>
             </Pressable>
           )}
+
+          <View style={{ height: SCROLL_SPACER_HEIGHT }} />
         </ScrollView>
       </TouchableWithoutFeedback>
     </KeyboardAvoidingView>
@@ -145,7 +152,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   textArea: {
-    flex: 1,
+    minHeight: 220,
     borderWidth: 1,
     borderColor: '#ccc',
     borderRadius: 10,

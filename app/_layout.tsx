@@ -106,6 +106,7 @@ function RootLayoutNav() {
             name="video-player"
             options={{ title: '영상 재생', gestureEnabled: false }}
           />
+          <Stack.Screen name="settings" options={{ title: '설정' }} />
         </Stack>
       )}
     </ThemeProvider>

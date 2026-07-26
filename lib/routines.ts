@@ -9,6 +9,7 @@ export type Slot = {
   slot_type: SlotType;
   start_time: string;
   end_time: string;
+  notify_enabled: boolean;
 };
 
 export type Routine = {
@@ -309,10 +310,24 @@ export type RoutineInput = {
 export async function fetchSlots(userId: string): Promise<Slot[]> {
   const { data, error } = await supabase
     .from('slots')
-    .select('id, slot_type, start_time, end_time')
+    .select('id, slot_type, start_time, end_time, notify_enabled')
     .eq('user_id', userId);
   if (error) throw error;
   return data ?? [];
+}
+
+export async function updateSlot(
+  slotId: string,
+  input: { start_time: string; end_time: string; notify_enabled: boolean }
+): Promise<Slot> {
+  const { data, error } = await supabase
+    .from('slots')
+    .update(input)
+    .eq('id', slotId)
+    .select('id, slot_type, start_time, end_time, notify_enabled')
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 export async function fetchRoutineById(routineId: string): Promise<Routine> {
