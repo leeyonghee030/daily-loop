@@ -15,6 +15,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
+import { fetchLlmQuota, type LlmQuota } from '@/lib/llm';
 import {
   requestNotificationPermissions,
   setupNotificationChannel,
@@ -65,7 +66,15 @@ export default function TodayScreen() {
   const [holiday, setHoliday] = useState<Holiday | null>(null);
   const [streaks, setStreaks] = useState<Record<string, number>>({});
   const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
+  const [llmQuota, setLlmQuota] = useState<LlmQuota | null>(null);
   const [, setTick] = useState(0);
+
+  // LLM 남은 횟수: 화면에 들어올 때마다 갱신 (배너 표시용)
+  useFocusEffect(
+    useCallback(() => {
+      fetchLlmQuota().then(setLlmQuota).catch(() => {});
+    }, [])
+  );
 
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 60 * 1000);
@@ -214,6 +223,15 @@ export default function TodayScreen() {
         <Text style={styles.email}>{session?.user.email}</Text>
       </View>
 
+      <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
+        <Text style={styles.llmBannerText}>✨ 말로 루틴 추가하기</Text>
+        {llmQuota && (
+          <Text style={styles.llmBannerCount}>
+            남은 {llmQuota.remaining}/{llmQuota.limit}회
+          </Text>
+        )}
+      </Pressable>
+
       {holiday && (
         <View style={styles.holidayBanner}>
           <Text style={styles.holidayBannerText}>🎉 오늘은 {holiday.name}이에요</Text>
@@ -343,6 +361,26 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     marginBottom: 12,
+  },
+  llmBanner: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    backgroundColor: '#7C5CFC',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  llmBannerText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  llmBannerCount: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
   },
   headerTop: {
     flexDirection: 'row',

@@ -1,6 +1,6 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
@@ -59,8 +59,20 @@ function formatLocalDate(date: Date): string {
 }
 
 export default function RoutineFormScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const params = useLocalSearchParams<{
+    id?: string;
+    // LLM 미리보기에서 넘어온 프리필 값 (app/llm-input.tsx)
+    title?: string;
+    repeatType?: string;
+    repeatDays?: string;
+    scheduledTime?: string;
+    isRequired?: string;
+    blockType?: string;
+    trackingUnit?: string;
+  }>();
+  const { id } = params;
   const isEditing = Boolean(id);
+  const prefilled = useRef(false);
   const router = useRouter();
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -142,6 +154,29 @@ export default function RoutineFormScreen() {
       .catch(() => setErrorMessage('루틴 정보를 불러오지 못했어요.'))
       .finally(() => setIsLoading(false));
   }, [id]);
+
+  // LLM 미리보기에서 넘어온 프리필 값을 폼에 한 번만 반영 (신규 추가일 때만)
+  useEffect(() => {
+    if (isEditing || prefilled.current) return;
+    if (!params.title && !params.repeatType && !params.scheduledTime) return;
+    prefilled.current = true;
+
+    if (params.title) setTitle(params.title);
+    if (params.blockType === 'tracking') setBlockType('tracking');
+    if (params.trackingUnit) setTrackingUnit(params.trackingUnit);
+    if (params.repeatType) setRepeatType(params.repeatType as RepeatType);
+    if (params.repeatDays) {
+      setRepeatDays(params.repeatDays.split(',').filter(Boolean).map(Number));
+    }
+    if (params.isRequired === 'true') setIsRequired(true);
+    if (params.scheduledTime) {
+      // LLM은 시작 시각만 주므로 정확한 시각 모드로 두고 종료는 +1시간
+      setTimeMode('exact');
+      const start = timeToDate(params.scheduledTime);
+      setStartTime(start);
+      setEndTime(new Date(start.getTime() + 60 * 60 * 1000));
+    }
+  }, [isEditing, params]);
 
   function toggleRepeatDay(day: number) {
     setRepeatDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()));
