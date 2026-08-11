@@ -105,14 +105,15 @@ export default function LlmInputScreen() {
       {errorState === 'error' && (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>
-            지금은 AI 배치가 어려워요. 잠시 후 다시 시도하거나 직접 추가해주세요.
+            지금은 AI 배치가 잠시 쉬고 있어요. 복구까지 시간이 걸릴 수 있으니, 지금은 직접
+            추가하는 걸 추천해요.
           </Text>
           <View style={styles.errorButtons}>
+            <Pressable style={styles.errorPrimaryButton} onPress={goManualAdd}>
+              <Text style={styles.errorPrimaryButtonText}>직접 추가하기</Text>
+            </Pressable>
             <Pressable style={styles.secondaryButton} onPress={handleSubmit}>
               <Text style={styles.secondaryButtonText}>다시 시도</Text>
-            </Pressable>
-            <Pressable style={styles.secondaryButton} onPress={goManualAdd}>
-              <Text style={styles.secondaryButtonText}>직접 추가</Text>
             </Pressable>
           </View>
         </View>
@@ -225,6 +226,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     backgroundColor: 'transparent',
+  },
+  errorPrimaryButton: {
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  errorPrimaryButtonText: {
+    color: '#fff',
+    fontWeight: '700',
   },
   secondaryButton: {
     borderWidth: 1,
