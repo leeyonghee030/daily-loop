@@ -8,6 +8,14 @@ import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
 
 type ErrorState = 'none' | 'quota' | 'error';
 
+// 화면을 벗어났다 뒤로가기로 돌아와도 마지막 입력을 복원하기 위한 모듈 스코프 저장소
+let persistedText = '';
+
+// 루틴이 실제로 저장 완료됐을 때만 routine-form 쪽에서 호출 — 다음엔 빈 화면에서 새로 시작
+export function clearPersistedLlmText() {
+  persistedText = '';
+}
+
 // 파싱 초안을 routine-form 프리필 파라미터(문자열)로 변환
 function draftToParams(draft: ParsedRoutineDraft): Record<string, string> {
   const params: Record<string, string> = {
@@ -24,8 +32,9 @@ function draftToParams(draft: ParsedRoutineDraft): Record<string, string> {
 
 export default function LlmInputScreen() {
   const router = useRouter();
-  const [text, setText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [text, setText] = useState(persistedText);
+  const [loadingMode, setLoadingMode] = useState<'none' | 'auto' | 'ai'>('none');
+  const isLoading = loadingMode !== 'none';
   const [errorState, setErrorState] = useState<ErrorState>('none');
   const [quota, setQuota] = useState<LlmQuota | null>(null);
 
@@ -33,15 +42,21 @@ export default function LlmInputScreen() {
     fetchLlmQuota().then(setQuota).catch(() => {});
   }, []);
 
-  async function handleSubmit() {
+  useEffect(() => {
+    persistedText = text;
+  }, [text]);
+
+  async function handleSubmit(forceLlm = false) {
     const trimmed = text.trim();
     if (!trimmed || isLoading) return;
-    setIsLoading(true);
+    setLoadingMode(forceLlm ? 'ai' : 'auto');
     setErrorState('none');
     try {
-      const result = await parseRoutine(trimmed);
+      const result = await parseRoutine(trimmed, forceLlm);
+      // 미리보기 화면에서 뒤로가기로 돌아와도 방금 쓴 문장이 남아있도록 여기서는 지우지 않는다.
+      // replace가 아니라 push라서, 뒤로가기하면 (오늘 탭이 아니라) 이 입력 화면으로 돌아온다.
       // 미리보기 = routine-form을 프리필해서 재사용 (기획 4-8 ③ / 4-9)
-      router.replace({ pathname: '/routine-form', params: draftToParams(result.draft) });
+      router.push({ pathname: '/routine-form', params: draftToParams(result.draft) });
     } catch (err) {
       if (err instanceof QuotaExceededError) {
         setErrorState('quota');
@@ -49,7 +64,7 @@ export default function LlmInputScreen() {
         setErrorState('error');
       }
     } finally {
-      setIsLoading(false);
+      setLoadingMode('none');
     }
   }
 
@@ -65,10 +80,14 @@ export default function LlmInputScreen() {
           <Text style={styles.bigEmoji}>✨</Text>
           <Text style={styles.quotaTitle}>무료 AI 배치 횟수를 모두 사용했어요</Text>
           <Text style={styles.quotaBody}>
-            요금제는 곧 출시돼요, 조금만 기다려주세요! 루틴은 직접 추가할 수 있어요.
+            요금제는 곧 출시돼요, 조금만 기다려주세요! "매일 아침 7시" 처럼 간단한 문장은 AI 없이도
+            계속 무료로 쓸 수 있어요.
           </Text>
-          <Pressable style={styles.primaryButton} onPress={goManualAdd}>
-            <Text style={styles.primaryButtonText}>직접 추가하기 →</Text>
+          <Pressable style={styles.primaryButton} onPress={() => setErrorState('none')}>
+            <Text style={styles.primaryButtonText}>간단한 문장으로 다시 써보기</Text>
+          </Pressable>
+          <Pressable style={styles.secondaryButton} onPress={goManualAdd}>
+            <Text style={styles.secondaryButtonText}>직접 추가하기</Text>
           </Pressable>
         </View>
       </View>
@@ -99,7 +118,7 @@ export default function LlmInputScreen() {
 
       <Text style={styles.hint}>
         💡 이런 걸 넣으면 더 정확해요 — 언제(매일·평일·월수금) · 몇 시(아침 7시) · 꼭 할 것(꼭·반드시) ·
-        횟수(물 8잔·30분)
+        횟수(물 8잔·30분). 문장이 복잡하면 아래 &quot;AI로 정확하게 분석&quot; 버튼을 눌러보세요.
       </Text>
 
       {errorState === 'error' && (
@@ -112,7 +131,7 @@ export default function LlmInputScreen() {
             <Pressable style={styles.errorPrimaryButton} onPress={goManualAdd}>
               <Text style={styles.errorPrimaryButtonText}>직접 추가하기</Text>
             </Pressable>
-            <Pressable style={styles.secondaryButton} onPress={handleSubmit}>
+            <Pressable style={styles.secondaryButton} onPress={() => handleSubmit()}>
               <Text style={styles.secondaryButtonText}>다시 시도</Text>
             </Pressable>
           </View>
@@ -121,15 +140,29 @@ export default function LlmInputScreen() {
 
       <Pressable
         style={[styles.primaryButton, (!text.trim() || isLoading) && styles.primaryButtonDisabled]}
-        onPress={handleSubmit}
+        onPress={() => handleSubmit()}
         disabled={!text.trim() || isLoading}>
-        {isLoading ? (
+        {loadingMode === 'auto' ? (
           <View style={styles.loadingRow}>
             <ActivityIndicator color="#fff" />
-            <Text style={styles.primaryButtonText}>AI가 분석 중...</Text>
+            <Text style={styles.primaryButtonText}>분석 중...</Text>
           </View>
         ) : (
           <Text style={styles.primaryButtonText}>미리보기 만들기</Text>
+        )}
+      </Pressable>
+
+      <Pressable
+        style={[styles.aiButton, (!text.trim() || isLoading) && styles.primaryButtonDisabled]}
+        onPress={() => handleSubmit(true)}
+        disabled={!text.trim() || isLoading}>
+        {loadingMode === 'ai' ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color="#7C5CFC" />
+            <Text style={styles.aiButtonText}>AI가 분석 중...</Text>
+          </View>
+        ) : (
+          <Text style={styles.aiButtonText}>🤖 AI로 정확하게 분석</Text>
         )}
       </Pressable>
     </View>
@@ -190,6 +223,19 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  aiButton: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  aiButtonText: {
+    color: '#7C5CFC',
+    fontSize: 14,
     fontWeight: '600',
   },
   loadingRow: {
