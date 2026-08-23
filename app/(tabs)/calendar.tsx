@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { Calendar, type DateData } from 'react-native-calendars';
 
@@ -13,6 +13,7 @@ import {
   formatLocalDate,
   routinesForDate,
   fetchMonthData,
+  fetchWeekData,
   toggleCheckCompletion,
   SLOT_LABELS,
   type DayStatus,
@@ -25,6 +26,8 @@ const STATUS_COLORS: Record<DayStatus, string> = {
   missed_required: '#FF6B6B',
 };
 
+const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
 function timeLabel(routine: MonthData['routines'][number]): string {
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
@@ -33,6 +36,13 @@ function timeLabel(routine: MonthData['routines'][number]): string {
   return '';
 }
 
+function sundayOf(date: Date): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+
+
 export default function CalendarScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -40,20 +50,44 @@ export default function CalendarScreen() {
   const router = useRouter();
 
   const today = new Date();
+  const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
+  const [weekStart, setWeekStart] = useState(() => formatLocalDate(sundayOf(today)));
   const [monthData, setMonthData] = useState<MonthData | null>(null);
+  const [weekData, setWeekData] = useState<MonthData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const activeData = viewMode === 'week' ? weekData : monthData;
+  const hasLoadedMonthRef = useRef(false);
+  const hasLoadedWeekRef = useRef(false);
+
+  // 월/주 이동할 때마다 전체 화면 스피너가 깜빡이지 않도록, 처음 한 번만 로딩 표시를 켠다
   const load = useCallback(
     async (y: number, m: number) => {
       if (!userId) return;
-      setIsLoading(true);
+      if (!hasLoadedMonthRef.current) setIsLoading(true);
       try {
         const data = await fetchMonthData(userId, y, m);
         setMonthData(data);
+        hasLoadedMonthRef.current = true;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [userId]
+  );
+
+  const loadWeek = useCallback(
+    async (start: string) => {
+      if (!userId) return;
+      if (!hasLoadedWeekRef.current) setIsLoading(true);
+      try {
+        const data = await fetchWeekData(userId, start);
+        setWeekData(data);
+        hasLoadedWeekRef.current = true;
       } finally {
         setIsLoading(false);
       }
@@ -63,8 +97,9 @@ export default function CalendarScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      load(year, month);
-    }, [load, year, month])
+      if (viewMode === 'month') load(year, month);
+      else loadWeek(weekStart);
+    }, [viewMode, load, year, month, loadWeek, weekStart])
   );
 
   function handleMonthChange(date: DateData) {
@@ -72,21 +107,30 @@ export default function CalendarScreen() {
     setMonth(date.month);
   }
 
+  function shiftWeek(days: number) {
+    const d = new Date(`${weekStart}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    setWeekStart(formatLocalDate(d));
+  }
+
   async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
+    const applyUpdate = (prev: MonthData | null, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
+      if (!prev) return prev;
+      const completionsByRoutine = new Map(prev.completionsByRoutine);
+      const routineMap = new Map(completionsByRoutine.get(routineId) ?? []);
+      if (result) {
+        routineMap.set(result.completed_date, result);
+      } else if (existingCompletionId) {
+        routineMap.delete(formatLocalDate(new Date()));
+      }
+      completionsByRoutine.set(routineId, routineMap);
+      return { ...prev, completionsByRoutine };
+    };
+
     try {
       const result = await toggleCheckCompletion(routineId, existingCompletionId);
-      setMonthData((prev) => {
-        if (!prev) return prev;
-        const completionsByRoutine = new Map(prev.completionsByRoutine);
-        const routineMap = new Map(completionsByRoutine.get(routineId) ?? []);
-        if (result) {
-          routineMap.set(result.completed_date, result);
-        } else if (existingCompletionId) {
-          routineMap.delete(formatLocalDate(new Date()));
-        }
-        completionsByRoutine.set(routineId, routineMap);
-        return { ...prev, completionsByRoutine };
-      });
+      setMonthData((prev) => applyUpdate(prev, result));
+      setWeekData((prev) => applyUpdate(prev, result));
     } catch {
       setErrorMessage('체크 처리에 실패했어요.');
     }
@@ -124,25 +168,103 @@ export default function CalendarScreen() {
     };
   }
 
-  const detail = selectedDate && monthData ? routinesForDate(selectedDate, monthData) : [];
+  const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
+
+  const weekDates: string[] = [];
+  if (viewMode === 'week') {
+    const start = new Date(`${weekStart}T00:00:00`);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      weekDates.push(formatLocalDate(d));
+    }
+  }
+  const weekEndLabel = weekDates.length > 0 ? weekDates[6].slice(5).replace('-', '/') : '';
+  const weekStartLabel = weekStart.slice(5).replace('-', '/');
 
   return (
     <View style={styles.container}>
-      <Calendar
-        current={`${year}-${String(month).padStart(2, '0')}-01`}
-        onMonthChange={handleMonthChange}
-        onDayPress={(date) => setSelectedDate(date.dateString)}
-        markingType="custom"
-        markedDates={markedDates}
-        theme={{
-          calendarBackground: Colors[theme].background,
-          dayTextColor: Colors[theme].text,
-          monthTextColor: Colors[theme].text,
-          textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
-          arrowColor: Colors[theme].tint,
-          todayTextColor: Colors[theme].tint,
-        }}
-      />
+      <View style={styles.viewModeTabs}>
+        <Pressable
+          style={[styles.viewModeTab, viewMode === 'month' && styles.viewModeTabActive]}
+          onPress={() => setViewMode('month')}>
+          <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>월</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.viewModeTab, viewMode === 'week' && styles.viewModeTabActive]}
+          onPress={() => setViewMode('week')}>
+          <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>주</Text>
+        </Pressable>
+      </View>
+
+      {viewMode === 'month' ? (
+        <Calendar
+          current={`${year}-${String(month).padStart(2, '0')}-01`}
+          onMonthChange={handleMonthChange}
+          onDayPress={(date) => setSelectedDate(date.dateString)}
+          markingType="custom"
+          markedDates={markedDates}
+          theme={{
+            calendarBackground: Colors[theme].background,
+            dayTextColor: Colors[theme].text,
+            monthTextColor: Colors[theme].text,
+            textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
+            arrowColor: Colors[theme].tint,
+            todayTextColor: Colors[theme].tint,
+          }}
+        />
+      ) : (
+        <View style={styles.weekContainer}>
+          <View style={styles.weekHeader}>
+            <Pressable onPress={() => shiftWeek(-7)} hitSlop={8}>
+              <Text style={styles.weekArrow}>‹</Text>
+            </Pressable>
+            <Text style={styles.weekRangeText}>
+              {weekStartLabel} - {weekEndLabel}
+            </Text>
+            <Pressable onPress={() => shiftWeek(7)} hitSlop={8}>
+              <Text style={styles.weekArrow}>›</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {weekData &&
+              weekDates.map((dateStr, index) => {
+                const isFuture = dateStr > todayStr;
+                const status = !isFuture ? computeDayStatus(dateStr, weekData) : null;
+                const dayNum = Number(dateStr.slice(8, 10));
+                const scheduled = isFuture ? [] : routinesForDate(dateStr, weekData);
+                return (
+                  <Pressable
+                    key={dateStr}
+                    style={[styles.weekColumn, dateStr === todayStr && styles.weekColumnToday]}
+                    onPress={() => setSelectedDate(dateStr)}>
+                    <View style={styles.weekColumnHeader}>
+                      <Text style={styles.weekRowWeekday}>{WEEKDAY_LABELS[index]}</Text>
+                      <Text style={styles.weekRowDay}>{dayNum}</Text>
+                      {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
+                    </View>
+                    <ScrollView style={styles.weekColumnBody} nestedScrollEnabled>
+                      {scheduled.length === 0 ? (
+                        <Text style={styles.weekColumnEmpty}>{isFuture ? '' : '-'}</Text>
+                      ) : (
+                        scheduled.map(({ routine, completion }) => (
+                          <Text
+                            key={routine.id}
+                            style={[styles.weekChip, completion && styles.weekChipDone]}
+                            numberOfLines={1}>
+                            {completion ? '✓ ' : ''}
+                            {routine.title}
+                          </Text>
+                        ))
+                      )}
+                    </ScrollView>
+                  </Pressable>
+                );
+              })}
+          </ScrollView>
+        </View>
+      )}
 
       <View style={styles.legend}>
         <View style={styles.legendItem}>
@@ -242,6 +364,104 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     paddingTop: 60,
+  },
+  viewModeTabs: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginBottom: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    padding: 4,
+    gap: 4,
+  },
+  viewModeTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  viewModeTabActive: {
+    backgroundColor: '#7C5CFC',
+  },
+  viewModeTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  viewModeTabTextActive: {
+    color: '#fff',
+    opacity: 1,
+  },
+  weekContainer: {
+    paddingHorizontal: 20,
+  },
+  weekHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+    paddingVertical: 10,
+  },
+  weekArrow: {
+    fontSize: 20,
+    color: '#7C5CFC',
+    fontWeight: '700',
+    paddingHorizontal: 12,
+  },
+  weekRangeText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  weekColumn: {
+    width: 110,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+  },
+  weekColumnToday: {
+    borderColor: '#7C5CFC',
+    backgroundColor: 'rgba(124, 92, 252, 0.06)',
+  },
+  weekColumnHeader: {
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 2,
+  },
+  weekColumnBody: {
+    maxHeight: 130,
+  },
+  weekColumnEmpty: {
+    fontSize: 11,
+    opacity: 0.3,
+    textAlign: 'center',
+  },
+  weekChip: {
+    fontSize: 11,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    marginBottom: 3,
+    borderRadius: 4,
+    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+  },
+  weekChipDone: {
+    opacity: 0.5,
+    textDecorationLine: 'line-through',
+  },
+  weekRowWeekday: {
+    fontSize: 11,
+    opacity: 0.5,
+  },
+  weekRowDay: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  weekStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   legend: {
     flexDirection: 'row',

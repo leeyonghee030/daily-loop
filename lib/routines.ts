@@ -1,3 +1,6 @@
+import { decode } from 'base64-arraybuffer';
+import * as FileSystem from 'expo-file-system/legacy';
+
 import { supabase } from '@/lib/supabase';
 
 export type BlockType = 'check' | 'tracking';
@@ -28,6 +31,9 @@ export type Routine = {
   skip_holidays: boolean;
   category_id: number | null;
   video_id: string | null;
+  hide_from_stats: boolean;
+  memo: string | null;
+  photo_url: string | null;
   slots: Slot | null;
   created_at: string;
 };
@@ -102,6 +108,17 @@ function effectiveTime(routine: Routine): string {
   return routine.scheduled_time_start ?? routine.slots?.start_time ?? '99:99:99';
 }
 
+// 타임라인 뷰 등에서 재사용: 루틴의 시작/종료 시각(정확한 시각 없으면 슬롯 시간대)
+export function effectiveTimeRange(routine: Routine): { start: string; end: string } | null {
+  if (routine.scheduled_time_start && routine.scheduled_time_end) {
+    return { start: routine.scheduled_time_start, end: routine.scheduled_time_end };
+  }
+  if (routine.slots) {
+    return { start: routine.slots.start_time, end: routine.slots.end_time };
+  }
+  return null;
+}
+
 export function isHappeningNow(routine: Routine): boolean {
   if (!routine.scheduled_time_start || !routine.scheduled_time_end) return false;
   const nowTime = formatLocalTime(new Date());
@@ -173,6 +190,25 @@ export async function fetchTodayRoutines(userId: string): Promise<{
   if (completionsError) throw completionsError;
 
   return { routines: todays, completions: completions ?? [], holiday };
+}
+
+// "내 루틴" 전체보기 화면용 — 오늘 예정 여부와 무관하게 삭제되지 않은 루틴 전체.
+// 시간순이 아니라 sort_order 기준(사용자가 직접 드래그로 바꾸는 순서)으로 정렬한다.
+export async function fetchAllRoutines(userId: string): Promise<Routine[]> {
+  const { data, error } = await supabase
+    .from('routines')
+    .select('*, slots(*)')
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+  if (error) throw error;
+  return ((data ?? []) as Routine[]).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+// 드래그 정렬 결과 저장 — sort_order를 새 순서(0,1,2...)로 일괄 반영
+export async function updateSortOrder(orderedIds: string[]): Promise<void> {
+  await Promise.all(
+    orderedIds.map((id, index) => supabase.from('routines').update({ sort_order: index }).eq('id', id))
+  );
 }
 
 export async function skipRoutineToday(routineId: string): Promise<void> {
@@ -305,6 +341,8 @@ export type RoutineInput = {
   skip_holidays: boolean;
   category_id: number | null;
   video_id: string | null;
+  memo: string | null;
+  photo_url: string | null;
 };
 
 export async function fetchSlots(userId: string): Promise<Slot[]> {
@@ -338,6 +376,18 @@ export async function fetchRoutineById(routineId: string): Promise<Routine> {
     .single();
   if (error) throw error;
   return data;
+}
+
+// 루틴 사진 업로드 — localUri(expo-image-picker 결과)를 routine-photos 버킷의 내 폴더에 저장하고 공개 URL을 돌려줌
+export async function uploadRoutinePhoto(userId: string, localUri: string): Promise<string> {
+  const base64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+  const path = `${userId}/${Date.now()}.jpg`;
+  const { error } = await supabase.storage
+    .from('routine-photos')
+    .upload(path, decode(base64), { contentType: 'image/jpeg' });
+  if (error) throw error;
+  const { data } = supabase.storage.from('routine-photos').getPublicUrl(path);
+  return data.publicUrl;
 }
 
 export async function createRoutine(userId: string, input: RoutineInput): Promise<Routine> {
@@ -383,15 +433,7 @@ export type MonthData = {
   holidayDates: Set<string>;
 };
 
-export async function fetchMonthData(
-  userId: string,
-  year: number,
-  month: number
-): Promise<MonthData> {
-  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
-  const monthEndDate = new Date(year, month, 0);
-  const monthEnd = formatLocalDate(monthEndDate);
-
+async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string): Promise<MonthData> {
   const { data: routines, error: routinesError } = await supabase
     .from('routines')
     .select('*, slots(*)')
@@ -407,18 +449,18 @@ export async function fetchMonthData(
             .from('routine_completions')
             .select('*')
             .in('routine_id', ids)
-            .gte('completed_date', monthStart)
-            .lte('completed_date', monthEnd)
+            .gte('completed_date', rangeStart)
+            .lte('completed_date', rangeEnd)
         : Promise.resolve({ data: [], error: null }),
       ids.length > 0
         ? supabase
             .from('routine_skip_dates')
             .select('routine_id, skip_date')
             .in('routine_id', ids)
-            .gte('skip_date', monthStart)
-            .lte('skip_date', monthEnd)
+            .gte('skip_date', rangeStart)
+            .lte('skip_date', rangeEnd)
         : Promise.resolve({ data: [], error: null }),
-      supabase.from('holidays').select('date').gte('date', monthStart).lte('date', monthEnd),
+      supabase.from('holidays').select('date').gte('date', rangeStart).lte('date', rangeEnd),
     ]);
   if (completionsError) throw completionsError;
   if (skipError) throw skipError;
@@ -437,6 +479,20 @@ export async function fetchMonthData(
   const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
 
   return { routines: (routines ?? []) as Routine[], completionsByRoutine, skipDatesByRoutine, holidayDates };
+}
+
+export async function fetchMonthData(userId: string, year: number, month: number): Promise<MonthData> {
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+  const monthEnd = formatLocalDate(new Date(year, month, 0));
+  return fetchRangeData(userId, monthStart, monthEnd);
+}
+
+// weekStartStr(일요일 등 주 시작일)부터 6일 뒤까지 한 주치 데이터
+export async function fetchWeekData(userId: string, weekStartStr: string): Promise<MonthData> {
+  const start = new Date(`${weekStartStr}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  return fetchRangeData(userId, weekStartStr, formatLocalDate(end));
 }
 
 export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {
@@ -503,10 +559,16 @@ export type RoutineStats = {
   completedCount: number;
 };
 
+export type PeriodSummary = {
+  scheduled: number;
+  completed: number;
+};
+
 export type StatsSummary = {
-  recentScheduled: number;
-  recentCompleted: number;
+  weekly: PeriodSummary;
+  monthly: PeriodSummary;
   routines: RoutineStats[];
+  hiddenRoutines: RoutineStats[];
 };
 
 function computeLifetimeStats(
@@ -585,7 +647,7 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
   }
   const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
 
-  const routineStats: RoutineStats[] = active.map((routine) => {
+  function buildRoutineStats(routine: Routine): RoutineStats {
     const completedDates = completedByRoutine.get(routine.id) ?? new Set();
     const skipDates = skipByRoutine.get(routine.id) ?? new Set();
     const createdDate = routine.created_at.slice(0, 10);
@@ -599,24 +661,42 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
     );
     const currentStreak = computeStreakForRoutine(routine, todayDate, completedDates, skipDates, holidayDates);
     return { routine, currentStreak, bestStreak, scheduledCount, completedCount };
-  });
-
-  let recentScheduled = 0;
-  let recentCompleted = 0;
-  for (let i = 0; i < 7; i++) {
-    const cursor = new Date(`${todayDate}T00:00:00`);
-    cursor.setDate(cursor.getDate() - i);
-    const dateStr = formatLocalDate(cursor);
-    const dow = cursor.getDay();
-    const isHoliday = holidayDates.has(dateStr);
-    for (const routine of active) {
-      const skipDates = skipByRoutine.get(routine.id) ?? new Set();
-      if (skipDates.has(dateStr)) continue;
-      if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
-      recentScheduled++;
-      if (completedByRoutine.get(routine.id)?.has(dateStr)) recentCompleted++;
-    }
   }
 
-  return { recentScheduled, recentCompleted, routines: routineStats };
+  const visible = active.filter((r) => !r.hide_from_stats);
+  const hidden = active.filter((r) => r.hide_from_stats);
+  const routineStats = visible.map(buildRoutineStats);
+  const hiddenRoutineStats = hidden.map(buildRoutineStats);
+
+  function computePeriodSummary(days: number): PeriodSummary {
+    let scheduled = 0;
+    let completed = 0;
+    for (let i = 0; i < days; i++) {
+      const cursor = new Date(`${todayDate}T00:00:00`);
+      cursor.setDate(cursor.getDate() - i);
+      const dateStr = formatLocalDate(cursor);
+      const dow = cursor.getDay();
+      const isHoliday = holidayDates.has(dateStr);
+      for (const routine of visible) {
+        const skipDates = skipByRoutine.get(routine.id) ?? new Set();
+        if (skipDates.has(dateStr)) continue;
+        if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
+        scheduled++;
+        if (completedByRoutine.get(routine.id)?.has(dateStr)) completed++;
+      }
+    }
+    return { scheduled, completed };
+  }
+
+  return {
+    weekly: computePeriodSummary(7),
+    monthly: computePeriodSummary(30),
+    routines: routineStats,
+    hiddenRoutines: hiddenRoutineStats,
+  };
+}
+
+export async function setHideFromStats(routineId: string, hide: boolean): Promise<void> {
+  const { error } = await supabase.from('routines').update({ hide_from_stats: hide }).eq('id', routineId);
+  if (error) throw error;
 }

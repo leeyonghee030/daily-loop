@@ -8,6 +8,7 @@ import {
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   TextInput,
 } from 'react-native';
@@ -24,6 +25,7 @@ import {
 } from '@/lib/notifications';
 import { supabase } from '@/lib/supabase';
 import {
+  effectiveTimeRange,
   emojiForStreak,
   fetchStreakConfigs,
   fetchStreaks,
@@ -52,6 +54,244 @@ function timeLabel(routine: Routine): string {
   return '';
 }
 
+const HOUR_HEIGHT = 56;
+
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+type TimedBlock = { id: string; top: number; height: number };
+
+// 같은 시간대(또는 겹치는 시간대)에 여러 루틴이 있으면 겹쳐 그리지 않고 옆으로 나란히 배치한다
+function assignColumns(items: TimedBlock[]): Map<string, { col: number; totalCols: number }> {
+  const sorted = [...items].sort((a, b) => a.top - b.top);
+  const result = new Map<string, { col: number; totalCols: number }>();
+  let cluster: TimedBlock[] = [];
+  let clusterMaxBottom = -Infinity;
+
+  function flushCluster() {
+    if (cluster.length === 0) return;
+    const colEnds: number[] = [];
+    for (const item of cluster) {
+      let col = colEnds.findIndex((end) => end <= item.top);
+      if (col === -1) {
+        col = colEnds.length;
+        colEnds.push(item.top + item.height);
+      } else {
+        colEnds[col] = item.top + item.height;
+      }
+      result.set(item.id, { col, totalCols: -1 }); // totalCols는 클러스터 끝나고 일괄 채움
+    }
+    const totalCols = colEnds.length;
+    for (const item of cluster) result.set(item.id, { col: result.get(item.id)!.col, totalCols });
+    cluster = [];
+  }
+
+  for (const item of sorted) {
+    if (item.top >= clusterMaxBottom) flushCluster();
+    clusterMaxBottom = Math.max(clusterMaxBottom, item.top + item.height);
+    cluster.push(item);
+  }
+  flushCluster();
+  return result;
+}
+
+// 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
+function TimelineView({
+  routines,
+  completions,
+  onToggleCheck,
+  onEdit,
+}: {
+  routines: Routine[];
+  completions: Record<string, RoutineCompletion>;
+  onToggleCheck: (routine: Routine) => void;
+  onEdit: (routine: Routine) => void;
+}) {
+  const timed = routines
+    .map((routine) => ({
+      routine,
+      range: effectiveTimeRange(routine),
+      isExact: Boolean(routine.scheduled_time_start && routine.scheduled_time_end),
+    }))
+    .filter(
+      (r): r is { routine: Routine; range: { start: string; end: string }; isExact: boolean } => r.range !== null
+    );
+
+  if (timed.length === 0) {
+    return (
+      <View style={timelineStyles.emptyContainer}>
+        <Text style={timelineStyles.emptyText}>시간 정보가 있는 루틴이 없어요</Text>
+      </View>
+    );
+  }
+
+  // 슬롯(아침/점심 등)은 범위 전체를 채우지 않고 시작 시각에 작은 블록으로만 표시 —
+  // 안 그러면 슬롯 범위(예: 5~11시)가 통째로 다른 블록과 겹쳐서 클릭이 씹힌다
+  const startHours = timed.map((r) => Math.floor(toMinutes(r.range.start) / 60));
+  const endHours = timed.map((r) => (r.isExact ? Math.ceil(toMinutes(r.range.end) / 60) : startHours[0]));
+  const minHour = Math.max(0, Math.min(6, ...startHours));
+  const maxHour = Math.min(24, Math.max(22, ...timed.map((r, i) => (r.isExact ? endHours[i] : startHours[i] + 1))));
+  const totalHeight = (maxHour - minHour) * HOUR_HEIGHT;
+
+  const hours = Array.from({ length: maxHour - minHour + 1 }, (_, i) => minHour + i);
+
+  const positioned = timed.map(({ routine, range, isExact }) => {
+    const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
+    const rawHeight = isExact ? (toMinutes(range.end) - toMinutes(range.start)) * (HOUR_HEIGHT / 60) : 0;
+    const height = Math.max(rawHeight, 34);
+    return { routine, range, top, height };
+  });
+  const columns = assignColumns(positioned.map((p) => ({ id: p.routine.id, top: p.top, height: p.height })));
+
+  return (
+    <ScrollView style={timelineStyles.container} contentContainerStyle={{ height: totalHeight + 20 }}>
+      {hours.map((hour) => (
+        <View
+          key={hour}
+          style={[timelineStyles.hourLine, { top: (hour - minHour) * HOUR_HEIGHT }]}>
+          <Text style={timelineStyles.hourLabel}>{String(hour).padStart(2, '0')}:00</Text>
+        </View>
+      ))}
+
+      <View style={timelineStyles.blocksArea}>
+        {positioned.map(({ routine, range, top, height }) => {
+          const completion = completions[routine.id];
+          const isDone = Boolean(completion);
+          const { col, totalCols } = columns.get(routine.id) ?? { col: 0, totalCols: 1 };
+          const widthPercent = 100 / totalCols;
+          const gap = totalCols > 1 ? 2 : 0;
+          return (
+            <View
+              key={routine.id}
+              style={[
+                timelineStyles.block,
+                {
+                  top,
+                  height,
+                  left: `${col * widthPercent}%`,
+                  width: `${Math.max(widthPercent - gap, 10)}%`,
+                },
+                isDone && timelineStyles.blockDone,
+              ]}>
+              <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
+                {totalCols === 1 && <Text style={timelineStyles.blockTime}>{formatTime(range.start)}</Text>}
+                <Text style={[timelineStyles.blockTitle, isDone && timelineStyles.blockTitleDone]} numberOfLines={1}>
+                  {routine.title}
+                </Text>
+              </Pressable>
+              {routine.block_type === 'check' ? (
+                <Pressable
+                  hitSlop={8}
+                  style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
+                  onPress={() => onToggleCheck(routine)}>
+                  {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
+                </Pressable>
+              ) : totalCols === 1 ? (
+                <Text style={timelineStyles.blockTrackingValue}>
+                  {completion?.tracking_value ?? '-'} {routine.tracking_unit}
+                </Text>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
+const timelineStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    marginHorizontal: 20,
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyText: {
+    opacity: 0.5,
+  },
+  hourLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: '#eee',
+    justifyContent: 'center',
+  },
+  hourLabel: {
+    fontSize: 10,
+    opacity: 0.4,
+    position: 'absolute',
+    top: -7,
+  },
+  blocksArea: {
+    position: 'absolute',
+    left: 46,
+    right: 0,
+    top: 0,
+    bottom: 0,
+  },
+  block: {
+    position: 'absolute',
+    backgroundColor: 'rgba(124, 92, 252, 0.12)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#7C5CFC',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    paddingRight: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  blockDone: {
+    opacity: 0.5,
+  },
+  blockContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  blockTime: {
+    fontSize: 11,
+    opacity: 0.6,
+    width: 36,
+  },
+  blockTitle: {
+    flex: 1,
+    fontSize: 13,
+  },
+  blockTitleDone: {
+    textDecorationLine: 'line-through',
+  },
+  blockCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: '#7C5CFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  blockCheckboxDone: {
+    backgroundColor: '#7C5CFC',
+  },
+  blockCheckmark: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  blockTrackingValue: {
+    fontSize: 12,
+    opacity: 0.7,
+  },
+});
+
 export default function TodayScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -67,6 +307,7 @@ export default function TodayScreen() {
   const [streaks, setStreaks] = useState<Record<string, number>>({});
   const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
   const [llmQuota, setLlmQuota] = useState<LlmQuota | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   const [, setTick] = useState(0);
 
   // LLM 남은 횟수: 화면에 들어올 때마다 갱신 (배너 표시용)
@@ -201,26 +442,47 @@ export default function TodayScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}>
       <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <Text style={styles.title}>오늘</Text>
-          <View style={styles.headerButtons}>
-            <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
-              <Text style={styles.presetButtonText}>🎬 영상</Text>
-            </Pressable>
-            <Pressable
-              style={styles.presetButton}
-              onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
-              <Text style={styles.presetButtonText}>📔 일기</Text>
-            </Pressable>
-            <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
-              <Text style={styles.presetButtonText}>📦 모음집</Text>
-            </Pressable>
-            <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
-              <Text style={styles.addButtonText}>+ 루틴 추가</Text>
-            </Pressable>
-          </View>
-        </View>
+        <Text style={styles.title}>오늘</Text>
         <Text style={styles.email}>{session?.user.email}</Text>
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.headerButtonsScroll}
+        contentContainerStyle={styles.headerButtonsContent}>
+        <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
+          <Text style={styles.presetButtonText}>🎬 영상</Text>
+        </Pressable>
+        <Pressable
+          style={styles.presetButton}
+          onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
+          <Text style={styles.presetButtonText}>📔 일기</Text>
+        </Pressable>
+        <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
+          <Text style={styles.presetButtonText}>📦 모음집</Text>
+        </Pressable>
+        <Pressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
+          <Text style={styles.presetButtonText}>📋 내 루틴</Text>
+        </Pressable>
+        <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
+          <Text style={styles.addButtonText}>+ 루틴 추가</Text>
+        </Pressable>
+      </ScrollView>
+
+      <View style={styles.viewModeTabs}>
+        <Pressable
+          style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
+          onPress={() => setViewMode('list')}>
+          <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>리스트</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
+          onPress={() => setViewMode('timeline')}>
+          <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
+            타임라인
+          </Text>
+        </Pressable>
       </View>
 
       <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
@@ -240,6 +502,14 @@ export default function TodayScreen() {
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
+      {viewMode === 'timeline' ? (
+        <TimelineView
+          routines={routines}
+          completions={completions}
+          onToggleCheck={handleToggleCheck}
+          onEdit={(routine) => router.push({ pathname: '/routine-form', params: { id: routine.id } })}
+        />
+      ) : (
       <FlatList
         style={styles.list}
         contentContainerStyle={routines.length === 0 ? styles.emptyContainer : undefined}
@@ -322,6 +592,7 @@ export default function TodayScreen() {
           );
         }}
       />
+      )}
 
       {routines.length > 0 && (
         <View style={styles.summaryBar}>
@@ -382,17 +653,16 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.85)',
     fontSize: 13,
   },
-  headerTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
   title: {
     fontSize: 20,
     fontWeight: 'bold',
   },
-  headerButtons: {
-    flexDirection: 'row',
+  headerButtonsScroll: {
+    flexGrow: 0,
+    marginBottom: 12,
+  },
+  headerButtonsContent: {
+    paddingHorizontal: 20,
     gap: 8,
   },
   presetButton: {
@@ -422,6 +692,33 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 13,
     opacity: 0.6,
+  },
+  viewModeTabs: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginBottom: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    padding: 4,
+    gap: 4,
+  },
+  viewModeTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  viewModeTabActive: {
+    backgroundColor: '#7C5CFC',
+  },
+  viewModeTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  viewModeTabTextActive: {
+    color: '#fff',
+    opacity: 1,
   },
   error: {
     color: '#FF6B6B',

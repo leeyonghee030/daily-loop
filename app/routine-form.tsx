@@ -1,5 +1,6 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
@@ -7,15 +8,17 @@ import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { VideoPicker } from '@/components/VideoPicker';
+import { clearPersistedLlmText } from '@/app/llm-input';
 import { useAuth } from '@/lib/auth-context';
 import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
-import { fetchCategories, fetchVideoById, type Category, type Video } from '@/lib/videos';
+import { fetchVideoById, type Video } from '@/lib/videos';
 import {
   createRoutine,
   fetchRoutineById,
   fetchSlots,
   softDeleteRoutine,
   updateRoutine,
+  uploadRoutinePhoto,
   SLOT_LABELS,
   type BlockType,
   type RepeatType,
@@ -101,10 +104,13 @@ export default function RoutineFormScreen() {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
   const [isApplyingFavorite, setIsApplyingFavorite] = useState(false);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [showVideoPicker, setShowVideoPicker] = useState(false);
+  const [memo, setMemo] = useState('');
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [newPhotoUri, setNewPhotoUri] = useState<string | null>(null);
+  const [isPickingPhoto, setIsPickingPhoto] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -119,9 +125,6 @@ export default function RoutineFormScreen() {
     fetchFavorites(userId)
       .then(setFavorites)
       .catch(() => setErrorMessage('즐겨찾기를 불러오지 못했어요.'));
-    fetchCategories()
-      .then(setCategories)
-      .catch(() => setErrorMessage('카테고리를 불러오지 못했어요.'));
   }, [userId]);
 
   useEffect(() => {
@@ -136,6 +139,8 @@ export default function RoutineFormScreen() {
         setSkipHolidays(routine.skip_holidays);
         setTrackingUnit(routine.tracking_unit ?? '');
         setCategoryId(routine.category_id);
+        setMemo(routine.memo ?? '');
+        setPhotoUrl(routine.photo_url);
         if (routine.video_id) {
           fetchVideoById(routine.video_id).then(setSelectedVideo).catch(() => {});
         }
@@ -217,6 +222,8 @@ export default function RoutineFormScreen() {
         skip_holidays: false,
         category_id: null,
         video_id: null,
+        memo: null,
+        photo_url: null,
       });
       setShowFavoritePicker(false);
       router.back();
@@ -246,6 +253,22 @@ export default function RoutineFormScreen() {
       return;
     }
 
+    setIsSaving(true);
+    setErrorMessage(null);
+
+    // 사진 업로드가 실패해도 나머지 변경사항(제목/카테고리 등)까지 저장이 막히면 안 되니,
+    // 실패 시 사진만 빼고(기존 사진 유지) 저장을 계속 진행한다
+    let finalPhotoUrl = photoUrl;
+    let photoUploadFailed = false;
+    if (newPhotoUri) {
+      try {
+        finalPhotoUrl = await uploadRoutinePhoto(userId, newPhotoUri);
+      } catch {
+        photoUploadFailed = true;
+        finalPhotoUrl = photoUrl;
+      }
+    }
+
     const input: RoutineInput = {
       title: title.trim(),
       block_type: blockType,
@@ -260,10 +283,10 @@ export default function RoutineFormScreen() {
       skip_holidays: skipHolidays,
       category_id: categoryId,
       video_id: selectedVideo?.id ?? null,
+      memo: memo.trim() ? memo.trim() : null,
+      photo_url: finalPhotoUrl,
     };
 
-    setIsSaving(true);
-    setErrorMessage(null);
     try {
       if (isEditing && id) {
         await updateRoutine(id, input);
@@ -285,7 +308,15 @@ export default function RoutineFormScreen() {
           // 루틴 저장 자체는 성공했으니 즐겨찾기 저장 실패는 조용히 넘어감
         }
       }
-      router.back();
+      // 말로 루틴 추가에서 넘어온 초안이 실제로 저장 완료됐을 때만 입력 문장을 비운다
+      if (prefilled.current && !isEditing) clearPersistedLlmText();
+      if (photoUploadFailed) {
+        Alert.alert('저장은 됐어요', '다만 사진 업로드는 실패했어요. 나중에 다시 첨부해주세요.', [
+          { text: '확인', onPress: () => router.back() },
+        ]);
+      } else {
+        router.back();
+      }
     } catch (err) {
       setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
     } finally {
@@ -323,6 +354,31 @@ export default function RoutineFormScreen() {
     };
   }
 
+  async function pickPhoto() {
+    setIsPickingPhoto(true);
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('사진 접근 권한이 꺼져있어요', '기기 설정에서 사진 접근 권한을 허용해주세요.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.6,
+      });
+      if (!result.canceled && result.assets[0]) {
+        setNewPhotoUri(result.assets[0].uri);
+      }
+    } finally {
+      setIsPickingPhoto(false);
+    }
+  }
+
+  function removePhoto() {
+    setNewPhotoUri(null);
+    setPhotoUrl(null);
+  }
+
   if (isLoading) {
     return (
       <View style={styles.centered}>
@@ -334,9 +390,14 @@ export default function RoutineFormScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {!isEditing && (
-        <Pressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
-          <Text style={styles.favoriteButtonText}>⭐ 즐겨찾기에서 불러오기</Text>
-        </Pressable>
+        <>
+          <Pressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
+            <Text style={styles.favoriteButtonText}>⭐ 즐겨찾기에서 불러오기</Text>
+          </Pressable>
+          <Text style={styles.favoriteHint}>
+            저장해둔 루틴 템플릿을 불러와서 바로 추가하거나, 수정해서 추가할 수 있어요.
+          </Text>
+        </>
       )}
 
       <Text style={styles.label}>제목</Text>
@@ -468,18 +529,6 @@ export default function RoutineFormScreen() {
         <Switch value={isRequired} onValueChange={setIsRequired} />
       </View>
 
-      <Text style={styles.label}>카테고리</Text>
-      <View style={styles.chipRow}>
-        {categories.map((cat) => (
-          <Chip
-            key={cat.id}
-            label={cat.name}
-            selected={categoryId === cat.id}
-            onPress={() => setCategoryId((prev) => (prev === cat.id ? null : cat.id))}
-          />
-        ))}
-      </View>
-
       <Text style={styles.label}>영상 연결</Text>
       {selectedVideo ? (
         <Pressable style={styles.selectedVideoRow} onPress={() => setShowVideoPicker(true)}>
@@ -497,13 +546,44 @@ export default function RoutineFormScreen() {
         </Pressable>
       )}
 
+      <Text style={styles.label}>메모</Text>
+      <TextInput
+        style={[styles.input, styles.memoInput]}
+        value={memo}
+        onChangeText={setMemo}
+        placeholder="이 루틴에 대해 간단히 적어두세요 (선택)"
+        multiline
+      />
+
+      <Text style={styles.label}>사진</Text>
+      {newPhotoUri || photoUrl ? (
+        <View style={styles.selectedVideoRow}>
+          <Image source={{ uri: newPhotoUri ?? photoUrl! }} style={styles.selectedPhotoThumb} />
+          <Text style={styles.selectedVideoTitle}>사진 1장 첨부됨</Text>
+          <Pressable onPress={removePhoto}>
+            <Text style={styles.removeVideoText}>✕</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable style={styles.videoConnectButton} onPress={pickPhoto} disabled={isPickingPhoto}>
+          {isPickingPhoto ? (
+            <ActivityIndicator color="#7C5CFC" />
+          ) : (
+            <Text style={styles.videoConnectButtonText}>📷 사진 추가하기</Text>
+          )}
+        </Pressable>
+      )}
+
       <View style={styles.switchRow}>
         <Text style={styles.label}>공휴일 제외</Text>
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
       <View style={styles.switchRow}>
-        <Text style={styles.label}>즐겨찾기에 추가</Text>
+        <View style={styles.switchRowLabelColumn}>
+          <Text style={styles.label}>즐겨찾기에 추가</Text>
+          <Text style={styles.favoriteHint}>켜두면 이 내용을 템플릿으로 저장해서 다음에 또 빠르게 추가할 수 있어요.</Text>
+        </View>
         <Pressable
           style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
           onPress={() => setSaveAsFavorite((prev) => !prev)}>
@@ -589,6 +669,16 @@ const styles = StyleSheet.create({
     color: '#7C5CFC',
     fontSize: 14,
     fontWeight: '600',
+  },
+  favoriteHint: {
+    fontSize: 12,
+    opacity: 0.55,
+    marginTop: 6,
+    lineHeight: 16,
+  },
+  switchRowLabelColumn: {
+    flex: 1,
+    marginRight: 12,
   },
   favoriteActionButton: {
     backgroundColor: '#7C5CFC',
@@ -713,5 +803,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     opacity: 0.5,
     paddingHorizontal: 4,
+  },
+  memoInput: {
+    minHeight: 70,
+    textAlignVertical: 'top',
+  },
+  selectedPhotoThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: '#eee',
   },
 });
