@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
@@ -33,7 +33,6 @@ export default function StatsScreen() {
   const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
-  const listRef = useRef<FlatList<RoutineStats>>(null);
 
   const load = useCallback(async () => {
     if (!userId) return;
@@ -86,11 +85,6 @@ export default function StatsScreen() {
       await refreshSummary();
     } catch {
       await refreshSummary();
-    }
-    // 다시 보이기는 목록이 위로 자라서 "숨긴 항목" 섹션이 아래로 밀려나므로,
-    // 여러 개를 연달아 되돌릴 수 있게 그 섹션(맨 아래)으로 다시 스크롤해준다
-    if (!hide) {
-      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
     }
   }
 
@@ -183,7 +177,6 @@ export default function StatsScreen() {
       </View>
 
       <FlatList
-        ref={listRef}
         style={styles.list}
         data={summary.routines}
         keyExtractor={(item) => item.routine.id}
@@ -194,27 +187,29 @@ export default function StatsScreen() {
             <Text style={styles.emptyText}>표시할 통계가 없어요 (전부 숨김 상태)</Text>
           ) : null
         }
-        ListFooterComponent={
-          summary.hiddenRoutines.length > 0 ? (
-            <View style={styles.hiddenSection}>
-              <Pressable onPress={() => setShowHidden((v) => !v)}>
-                <Text style={styles.hiddenToggle}>
-                  {showHidden ? '숨긴 항목 접기 ▲' : `숨긴 항목 ${summary.hiddenRoutines.length}개 보기 ▼`}
-                </Text>
-              </Pressable>
-              {showHidden &&
-                summary.hiddenRoutines.map((item) => (
-                  <View key={item.routine.id} style={styles.hiddenRow}>
-                    <Text style={styles.hiddenRowTitle}>{item.routine.title}</Text>
-                    <Pressable onPress={() => handleToggleHide(item, false)} hitSlop={8}>
-                      <Text style={styles.unhideLink}>다시 보이기</Text>
-                    </Pressable>
-                  </View>
-                ))}
-            </View>
-          ) : null
-        }
       />
+
+      {summary.hiddenRoutines.length > 0 && (
+        <View style={styles.hiddenSection}>
+          <Pressable onPress={() => setShowHidden((v) => !v)}>
+            <Text style={styles.hiddenToggle}>
+              {showHidden ? '숨긴 항목 접기 ▲' : `숨긴 항목 ${summary.hiddenRoutines.length}개 보기 ▼`}
+            </Text>
+          </Pressable>
+          {showHidden && (
+            <ScrollView style={styles.hiddenList}>
+              {summary.hiddenRoutines.map((item) => (
+                <View key={item.routine.id} style={styles.hiddenRow}>
+                  <Text style={styles.hiddenRowTitle}>{item.routine.title}</Text>
+                  <Pressable onPress={() => handleToggleHide(item, false)} hitSlop={8}>
+                    <Text style={styles.unhideLink}>다시 보이기</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -222,7 +217,7 @@ export default function StatsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 60,
+    paddingTop: 24,
   },
   centered: {
     flex: 1,
@@ -368,7 +363,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#7C5CFC',
   },
   hiddenSection: {
-    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    paddingHorizontal: 20,
+  },
+  hiddenList: {
+    maxHeight: 160,
   },
   hiddenToggle: {
     fontSize: 13,

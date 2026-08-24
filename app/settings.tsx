@@ -10,6 +10,7 @@ import {
   syncSlotAlarms,
 } from '@/lib/notifications';
 import { fetchSlots, updateSlot, SLOT_LABELS, type Slot, type SlotType } from '@/lib/routines';
+import { supabase } from '@/lib/supabase';
 
 const SLOT_ORDER: SlotType[] = ['morning', 'lunch', 'evening', 'before_sleep'];
 
@@ -129,6 +130,12 @@ export default function SettingsScreen() {
           )}
         </View>
       ))}
+
+      <Text style={styles.sectionTitle}>계정</Text>
+      <Text style={styles.accountEmail}>{session?.user.email}</Text>
+      <Pressable style={styles.signOutButton} onPress={() => supabase.auth.signOut()}>
+        <Text style={styles.signOutText}>로그아웃</Text>
+      </Pressable>
     </ScrollView>
   );
 }
@@ -189,5 +196,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  accountEmail: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 12,
+  },
+  signOutButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#FF6B6B',
+    borderRadius: 8,
+  },
+  signOutText: {
+    color: '#FF6B6B',
+    fontWeight: '600',
   },
 });

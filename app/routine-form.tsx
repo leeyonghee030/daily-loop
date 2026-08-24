@@ -1,4 +1,5 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useNavigation } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
@@ -76,7 +77,10 @@ export default function RoutineFormScreen() {
   const { id } = params;
   const isEditing = Boolean(id);
   const prefilled = useRef(false);
+  const savedRef = useRef(false);
+  const redirectingRef = useRef(false);
   const router = useRouter();
+  const navigation = useNavigation();
   const { session } = useAuth();
   const userId = session?.user.id;
 
@@ -182,6 +186,20 @@ export default function RoutineFormScreen() {
       setEndTime(new Date(start.getTime() + 60 * 60 * 1000));
     }
   }, [isEditing, params]);
+
+  // 말로 루틴 추가에서 넘어온 미리보기 화면은, 저장 없이 뒤로 나갈 땐 항상 그 입력 화면(/llm-input)으로
+  // 돌아가게 고정한다 — routine-form이 모달로 열려서 그냥 두면 뒤로가기가 오늘 탭까지 건너뛰는 문제가 있었음.
+  // router.replace 자체가 이 화면의 제거를 유발해 beforeRemove를 다시 발생시키므로,
+  // redirectingRef로 재진입을 막지 않으면 무한 재귀(콜스택 초과)로 이어진다.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (savedRef.current || isEditing || !prefilled.current || redirectingRef.current) return;
+      e.preventDefault();
+      redirectingRef.current = true;
+      router.replace('/llm-input');
+    });
+    return unsubscribe;
+  }, [navigation, isEditing, router]);
 
   function toggleRepeatDay(day: number) {
     setRepeatDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()));
@@ -309,13 +327,17 @@ export default function RoutineFormScreen() {
         }
       }
       // 말로 루틴 추가에서 넘어온 초안이 실제로 저장 완료됐을 때만 입력 문장을 비운다
-      if (prefilled.current && !isEditing) clearPersistedLlmText();
+      const cameFromLlm = prefilled.current && !isEditing;
+      if (cameFromLlm) clearPersistedLlmText();
+      savedRef.current = true;
+      // 말로 루틴 추가 경로로 왔을 땐 저장 후 그 입력 화면(/llm-input)이 아니라 오늘 탭으로 바로 나간다
+      const exit = () => (cameFromLlm ? router.dismissTo('/(tabs)') : router.back());
       if (photoUploadFailed) {
         Alert.alert('저장은 됐어요', '다만 사진 업로드는 실패했어요. 나중에 다시 첨부해주세요.', [
-          { text: '확인', onPress: () => router.back() },
+          { text: '확인', onPress: exit },
         ]);
       } else {
-        router.back();
+        exit();
       }
     } catch (err) {
       setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');

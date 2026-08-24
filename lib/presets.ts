@@ -24,6 +24,7 @@ export type RoutinePreset = {
   repeat_type: RepeatType;
   repeat_days: number[] | null;
   skip_holidays: boolean;
+  deleted_at: string | null;
 };
 
 export type PresetInput = {
@@ -38,9 +39,46 @@ export async function fetchPresets(userId: string): Promise<RoutinePreset[]> {
     .from('routine_presets')
     .select('*')
     .eq('user_id', userId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return data ?? [];
+}
+
+// "루틴 복구" 화면용 — 삭제된 모음집만
+export async function fetchDeletedPresets(userId: string): Promise<RoutinePreset[]> {
+  const { data, error } = await supabase
+    .from('routine_presets')
+    .select('*')
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function restorePreset(presetId: string): Promise<void> {
+  const { error } = await supabase.from('routine_presets').update({ deleted_at: null }).eq('id', presetId);
+  if (error) throw error;
+}
+
+// "루틴 복구" 화면에서 사용자가 직접 골라 완전 삭제(2주를 안 기다리고 즉시)할 때 사용
+export async function hardDeletePreset(presetId: string): Promise<void> {
+  const { error } = await supabase.from('routine_presets').delete().eq('id', presetId);
+  if (error) throw error;
+}
+
+// 삭제된 지 2주 지난 모음집을 완전히 지운다 — 앱 열 때 하루 한 번 조용히 실행되는 용도
+export async function purgeOldDeletedPresets(userId: string): Promise<void> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 14);
+  const { error } = await supabase
+    .from('routine_presets')
+    .delete()
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .lt('deleted_at', cutoff.toISOString());
+  if (error) throw error;
 }
 
 export async function fetchPresetWithItems(
@@ -98,7 +136,10 @@ export async function savePreset(
 }
 
 export async function deletePreset(presetId: string): Promise<void> {
-  const { error } = await supabase.from('routine_presets').delete().eq('id', presetId);
+  const { error } = await supabase
+    .from('routine_presets')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', presetId);
   if (error) throw error;
 }
 
@@ -119,6 +160,7 @@ export async function applyPreset(userId: string, presetId: string): Promise<num
     is_required: item.is_required,
     tracking_unit: item.tracking_unit,
     skip_holidays: preset.skip_holidays,
+    preset_id: presetId,
   }));
 
   const { error } = await supabase.from('routines').insert(routines);

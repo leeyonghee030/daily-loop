@@ -1,11 +1,12 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { applyPreset, deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
+import { pauseRoutinesByPreset, softDeleteRoutinesByPreset } from '@/lib/routines';
 
 const REPEAT_LABELS: Record<string, string> = {
   daily: '매일',
@@ -56,13 +57,46 @@ export default function PresetsScreen() {
     }
   }
 
-  async function handleDelete(preset: RoutinePreset) {
+  function handleDelete(preset: RoutinePreset) {
+    Alert.alert(
+      '모음집을 삭제할까요?',
+      `"${preset.name}" 모음집과, 여기서 만들어진 루틴이 전부 삭제돼요. "내 루틴 → 루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: async () => {
+            setBusyId(preset.id);
+            setErrorMessage(null);
+            try {
+              await softDeleteRoutinesByPreset(preset.id);
+              await deletePreset(preset.id);
+              setPresets((prev) => prev.filter((p) => p.id !== preset.id));
+            } catch (err) {
+              setErrorMessage('삭제에 실패했어요.');
+            } finally {
+              setBusyId(null);
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleBulkPause(preset: RoutinePreset, paused: boolean) {
     setBusyId(preset.id);
+    setStatusMessage(null);
+    setErrorMessage(null);
     try {
-      await deletePreset(preset.id);
-      setPresets((prev) => prev.filter((p) => p.id !== preset.id));
+      await pauseRoutinesByPreset(preset.id, paused);
+      setStatusMessage(
+        paused
+          ? `"${preset.name}"에서 만든 루틴을 모두 일시정지했어요.`
+          : `"${preset.name}"에서 만든 루틴을 모두 다시 활성화했어요.`
+      );
     } catch (err) {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage('처리에 실패했어요.');
     } finally {
       setBusyId(null);
     }
@@ -116,6 +150,22 @@ export default function PresetsScreen() {
               disabled={busyId === preset.id}
               onPress={() => handleDelete(preset)}>
               <Text style={styles.deleteButtonText}>삭제</Text>
+            </Pressable>
+          </View>
+
+          <Text style={styles.bulkSectionLabel}>이 모음집으로 만든 루틴 일괄 관리</Text>
+          <View style={styles.cardActions}>
+            <Pressable
+              style={styles.bulkButton}
+              disabled={busyId === preset.id}
+              onPress={() => handleBulkPause(preset, true)}>
+              <Text style={styles.bulkButtonText}>전체 비활성화</Text>
+            </Pressable>
+            <Pressable
+              style={styles.bulkButton}
+              disabled={busyId === preset.id}
+              onPress={() => handleBulkPause(preset, false)}>
+              <Text style={styles.bulkButtonText}>전체 활성화</Text>
             </Pressable>
           </View>
         </View>
@@ -220,5 +270,22 @@ const styles = StyleSheet.create({
   deleteButtonText: {
     fontSize: 13,
     color: '#FF6B6B',
+  },
+  bulkSectionLabel: {
+    fontSize: 11,
+    opacity: 0.45,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  bulkButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  bulkButtonText: {
+    fontSize: 12,
   },
 });

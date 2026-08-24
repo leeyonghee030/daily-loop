@@ -1,14 +1,14 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { fetchFavorites, type Favorite } from '@/lib/favorites';
-import { deletePreset, fetchPresetWithItems, savePreset, type PresetItemInput } from '@/lib/presets';
+import { applyPreset, deletePreset, fetchPresetWithItems, savePreset, type PresetItemInput } from '@/lib/presets';
 import { fetchSlots, SLOT_LABELS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
 
 const REPEAT_OPTIONS: { value: Exclude<RepeatType, 'once'>; label: string }[] = [
@@ -217,7 +217,7 @@ export default function PresetFormScreen() {
     setIsSaving(true);
     setErrorMessage(null);
     try {
-      await savePreset(
+      const presetId = await savePreset(
         userId,
         id ?? null,
         {
@@ -228,7 +228,19 @@ export default function PresetFormScreen() {
         },
         items.map(({ key, collapsed, ...rest }) => ({ ...rest, title: rest.title.trim() }))
       );
-      router.back();
+      // 새로 만든 모음집은 저장과 동시에 오늘 목록에도 바로 적용한다 —
+      // "만들었는데 내 루틴에 안 보인다"는 혼란을 줄이기 위함. 원치 않는 루틴은 "일시정지"로 끄면 됨.
+      // 기존 모음집 수정은 이미 적용된 루틴에 영향 없이 템플릿만 바뀜(기존 동작 유지)
+      if (!isEditing) {
+        const count = await applyPreset(userId, presetId);
+        Alert.alert(
+          '모음집을 만들었어요',
+          `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`,
+          [{ text: '확인', onPress: () => router.back() }]
+        );
+      } else {
+        router.back();
+      }
     } catch (err) {
       setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
     } finally {

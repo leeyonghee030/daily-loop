@@ -227,7 +227,7 @@ export default function CalendarScreen() {
             </Pressable>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView horizontal showsHorizontalScrollIndicator persistentScrollbar>
             {weekData &&
               weekDates.map((dateStr, index) => {
                 const isFuture = dateStr > todayStr;
@@ -413,8 +413,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   weekColumn: {
-    width: 110,
-    marginRight: 8,
+    width: 80,
+    marginRight: 6,
     borderWidth: 1,
     borderColor: '#eee',
     borderRadius: 10,

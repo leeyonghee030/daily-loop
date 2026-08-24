@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -17,13 +18,13 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota, type LlmQuota } from '@/lib/llm';
+import { purgeOldDeletedPresets } from '@/lib/presets';
 import {
   requestNotificationPermissions,
   setupNotificationChannel,
   syncReminderAlarm,
   syncSlotAlarms,
 } from '@/lib/notifications';
-import { supabase } from '@/lib/supabase';
 import {
   effectiveTimeRange,
   emojiForStreak,
@@ -32,6 +33,7 @@ import {
   fetchTodayRoutines,
   formatLocalDate,
   isHappeningNow,
+  purgeOldDeletedRoutines,
   saveTrackingValue,
   skipRoutineToday,
   toggleCheckCompletion,
@@ -41,6 +43,8 @@ import {
   type RoutineCompletion,
   type StreakConfig,
 } from '@/lib/routines';
+
+const PURGE_LAST_RUN_KEY = 'deleted_routines_purge_last_run_date';
 
 function formatTime(time: string): string {
   return time.slice(0, 5);
@@ -97,6 +101,12 @@ function assignColumns(items: TimedBlock[]): Map<string, { col: number; totalCol
   return result;
 }
 
+type TimedEntry = { routine: Routine; range: { start: string; end: string }; isExact: boolean };
+type TimelineBlock = { key: string; top: number; height: number; start: string; isExact: boolean; items: TimedEntry[] };
+
+const SLOT_HINT_DISMISSED_KEY = 'timeline_slot_hint_dismissed';
+const SLOT_HINT_LAST_SHOWN_KEY = 'timeline_slot_hint_last_shown_date';
+
 // 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
 function TimelineView({
   routines,
@@ -109,15 +119,51 @@ function TimelineView({
   onToggleCheck: (routine: Routine) => void;
   onEdit: (routine: Routine) => void;
 }) {
+  const [showSlotHint, setShowSlotHint] = useState(false);
+  const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
+
   const timed = routines
     .map((routine) => ({
       routine,
       range: effectiveTimeRange(routine),
       isExact: Boolean(routine.scheduled_time_start && routine.scheduled_time_end),
     }))
-    .filter(
-      (r): r is { routine: Routine; range: { start: string; end: string }; isExact: boolean } => r.range !== null
-    );
+    .filter((r): r is TimedEntry => r.range !== null);
+
+  // 같은 슬롯(예: 아침)에 루틴이 여러 개 몰리면 옆으로 계속 쪼개져 좁아지는 대신
+  // 한 블록 안에 세로로 쌓아서 보여준다 — 정확한 시각 루틴은 각자 실제 시간대로 따로 배치
+  const groups = new Map<string, TimedEntry[]>();
+  for (const entry of timed) {
+    const groupKey = entry.isExact ? `exact-${entry.routine.id}` : `slot-${entry.range.start}`;
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey)!.push(entry);
+  }
+  const hasSlotCollision = Array.from(groups.values()).some((items) => !items[0].isExact && items.length > 1);
+
+  // 같은 슬롯에 2개 이상 몰린 날에만, 하루 한 번(또는 "다시 안 보기" 선택 시 영구히) 순서 변경 안내를 띄운다
+  useEffect(() => {
+    if (!hasSlotCollision) return;
+    let cancelled = false;
+    (async () => {
+      const dismissed = await AsyncStorage.getItem(SLOT_HINT_DISMISSED_KEY);
+      if (cancelled || dismissed === 'true') return;
+      const lastShown = await AsyncStorage.getItem(SLOT_HINT_LAST_SHOWN_KEY);
+      if (cancelled || lastShown === formatLocalDate(new Date())) return;
+      setShowSlotHint(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSlotCollision]);
+
+  async function closeSlotHint() {
+    setShowSlotHint(false);
+    if (dontShowSlotHintAgain) {
+      await AsyncStorage.setItem(SLOT_HINT_DISMISSED_KEY, 'true');
+    } else {
+      await AsyncStorage.setItem(SLOT_HINT_LAST_SHOWN_KEY, formatLocalDate(new Date()));
+    }
+  }
 
   if (timed.length === 0) {
     return (
@@ -127,26 +173,49 @@ function TimelineView({
     );
   }
 
-  // 슬롯(아침/점심 등)은 범위 전체를 채우지 않고 시작 시각에 작은 블록으로만 표시 —
-  // 안 그러면 슬롯 범위(예: 5~11시)가 통째로 다른 블록과 겹쳐서 클릭이 씹힌다
   const startHours = timed.map((r) => Math.floor(toMinutes(r.range.start) / 60));
-  const endHours = timed.map((r) => (r.isExact ? Math.ceil(toMinutes(r.range.end) / 60) : startHours[0]));
   const minHour = Math.max(0, Math.min(6, ...startHours));
-  const maxHour = Math.min(24, Math.max(22, ...timed.map((r, i) => (r.isExact ? endHours[i] : startHours[i] + 1))));
+  const maxHour = Math.min(
+    24,
+    Math.max(22, ...timed.map((r) => (r.isExact ? Math.ceil(toMinutes(r.range.end) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1)))
+  );
   const totalHeight = (maxHour - minHour) * HOUR_HEIGHT;
 
   const hours = Array.from({ length: maxHour - minHour + 1 }, (_, i) => minHour + i);
 
-  const positioned = timed.map(({ routine, range, isExact }) => {
+  const blocks: TimelineBlock[] = Array.from(groups.entries()).map(([key, items]) => {
+    const { range, isExact } = items[0];
     const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
     const rawHeight = isExact ? (toMinutes(range.end) - toMinutes(range.start)) * (HOUR_HEIGHT / 60) : 0;
-    const height = Math.max(rawHeight, 34);
-    return { routine, range, top, height };
+    const height = isExact ? Math.max(rawHeight, 34) : 34 * items.length;
+    return { key, top, height, start: range.start, isExact, items };
   });
-  const columns = assignColumns(positioned.map((p) => ({ id: p.routine.id, top: p.top, height: p.height })));
+  const columns = assignColumns(blocks.map((b) => ({ id: b.key, top: b.top, height: b.height })));
 
   return (
-    <ScrollView style={timelineStyles.container} contentContainerStyle={{ height: totalHeight + 20 }}>
+    <View style={timelineStyles.wrapper}>
+      {showSlotHint && (
+        <View style={timelineStyles.hintBanner}>
+          <Text style={timelineStyles.hintText}>
+            같은 시간대에 루틴이 여러 개 있으면, 쌓이는 순서는 &quot;내 루틴&quot; 탭에서 드래그로 바꿀 수 있어요.
+          </Text>
+          <View style={timelineStyles.hintFooter}>
+            <Pressable
+              style={timelineStyles.hintCheckboxRow}
+              onPress={() => setDontShowSlotHintAgain((v) => !v)}
+              hitSlop={6}>
+              <View style={[timelineStyles.hintCheckbox, dontShowSlotHintAgain && timelineStyles.hintCheckboxChecked]}>
+                {dontShowSlotHintAgain && <Text style={timelineStyles.hintCheckmark}>✓</Text>}
+              </View>
+              <Text style={timelineStyles.hintCheckboxLabel}>다시 안 보기</Text>
+            </Pressable>
+            <Pressable onPress={closeSlotHint} hitSlop={6}>
+              <Text style={timelineStyles.hintCloseText}>닫기</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+      <ScrollView style={timelineStyles.container} contentContainerStyle={{ height: totalHeight + 20 }}>
       {hours.map((hour) => (
         <View
           key={hour}
@@ -156,52 +225,114 @@ function TimelineView({
       ))}
 
       <View style={timelineStyles.blocksArea}>
-        {positioned.map(({ routine, range, top, height }) => {
-          const completion = completions[routine.id];
-          const isDone = Boolean(completion);
-          const { col, totalCols } = columns.get(routine.id) ?? { col: 0, totalCols: 1 };
+        {blocks.map((block) => {
+          const { col, totalCols } = columns.get(block.key) ?? { col: 0, totalCols: 1 };
           const widthPercent = 100 / totalCols;
           const gap = totalCols > 1 ? 2 : 0;
+          const showTime = totalCols === 1;
           return (
             <View
-              key={routine.id}
+              key={block.key}
               style={[
                 timelineStyles.block,
                 {
-                  top,
-                  height,
+                  top: block.top,
+                  height: block.height,
                   left: `${col * widthPercent}%`,
                   width: `${Math.max(widthPercent - gap, 10)}%`,
                 },
-                isDone && timelineStyles.blockDone,
               ]}>
-              <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
-                {totalCols === 1 && <Text style={timelineStyles.blockTime}>{formatTime(range.start)}</Text>}
-                <Text style={[timelineStyles.blockTitle, isDone && timelineStyles.blockTitleDone]} numberOfLines={1}>
-                  {routine.title}
-                </Text>
-              </Pressable>
-              {routine.block_type === 'check' ? (
-                <Pressable
-                  hitSlop={8}
-                  style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
-                  onPress={() => onToggleCheck(routine)}>
-                  {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
-                </Pressable>
-              ) : totalCols === 1 ? (
-                <Text style={timelineStyles.blockTrackingValue}>
-                  {completion?.tracking_value ?? '-'} {routine.tracking_unit}
-                </Text>
-              ) : null}
+              {block.items.map(({ routine }, index) => {
+                const completion = completions[routine.id];
+                const isDone = Boolean(completion);
+                return (
+                  <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
+                    <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
+                      {showTime && index === 0 && (
+                        <Text style={timelineStyles.blockTime}>{formatTime(block.start)}</Text>
+                      )}
+                      <Text
+                        style={[timelineStyles.blockTitle, isDone && timelineStyles.blockTitleDone]}
+                        numberOfLines={1}>
+                        {routine.title}
+                      </Text>
+                    </Pressable>
+                    {routine.block_type === 'check' ? (
+                      <Pressable
+                        hitSlop={8}
+                        style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
+                        onPress={() => onToggleCheck(routine)}>
+                        {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
+                      </Pressable>
+                    ) : showTime ? (
+                      <Text style={timelineStyles.blockTrackingValue}>
+                        {completion?.tracking_value ?? '-'} {routine.tracking_unit}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              })}
             </View>
           );
         })}
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const timelineStyles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+  },
+  hintBanner: {
+    marginHorizontal: 20,
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(124, 92, 252, 0.1)',
+    gap: 8,
+  },
+  hintText: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  hintFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  hintCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  hintCheckbox: {
+    width: 16,
+    height: 16,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#7C5CFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hintCheckboxChecked: {
+    backgroundColor: '#7C5CFC',
+  },
+  hintCheckmark: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  hintCheckboxLabel: {
+    fontSize: 11,
+    opacity: 0.6,
+  },
+  hintCloseText: {
+    fontSize: 12,
+    color: '#7C5CFC',
+    fontWeight: '600',
+  },
   container: {
     flex: 1,
     marginHorizontal: 20,
@@ -241,14 +372,17 @@ const timelineStyles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: '#7C5CFC',
     borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    paddingRight: 4,
+    overflow: 'hidden',
+  },
+  blockRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    paddingRight: 4,
   },
-  blockDone: {
+  blockRowDone: {
     opacity: 0.5,
   },
   blockContent: {
@@ -326,6 +460,23 @@ export default function TodayScreen() {
     setupNotificationChannel();
     requestNotificationPermissions();
   }, []);
+
+  // 소프트 삭제된 지 2주 지난 루틴/모음집을 완전히 정리 — 앱 켤 때마다 하루 한 번만 조용히 실행
+  useEffect(() => {
+    if (!userId) return;
+    (async () => {
+      const today = formatLocalDate(new Date());
+      const lastRun = await AsyncStorage.getItem(PURGE_LAST_RUN_KEY);
+      if (lastRun === today) return;
+      try {
+        await purgeOldDeletedRoutines(userId);
+        await purgeOldDeletedPresets(userId);
+      } catch {
+        // 실패해도 조용히 무시 — 다음에 앱 열 때 다시 시도됨
+      }
+      await AsyncStorage.setItem(PURGE_LAST_RUN_KEY, today);
+    })();
+  }, [userId]);
 
   const load = useCallback(async () => {
     if (!userId) return;
@@ -443,7 +594,9 @@ export default function TodayScreen() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}>
       <View style={styles.header}>
         <Text style={styles.title}>오늘</Text>
-        <Text style={styles.email}>{session?.user.email}</Text>
+        <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
+          <Text style={styles.addButtonText}>+ 루틴 추가</Text>
+        </Pressable>
       </View>
 
       <ScrollView
@@ -464,9 +617,6 @@ export default function TodayScreen() {
         </Pressable>
         <Pressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
           <Text style={styles.presetButtonText}>📋 내 루틴</Text>
-        </Pressable>
-        <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
-          <Text style={styles.addButtonText}>+ 루틴 추가</Text>
         </Pressable>
       </ScrollView>
 
@@ -612,9 +762,6 @@ export default function TodayScreen() {
         </View>
       )}
 
-      <Pressable style={styles.signOutButton} onPress={() => supabase.auth.signOut()}>
-        <Text style={styles.signOutText}>로그아웃</Text>
-      </Pressable>
     </KeyboardAvoidingView>
   );
 }
@@ -622,7 +769,7 @@ export default function TodayScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 60,
+    paddingTop: 24,
   },
   centered: {
     flex: 1,
@@ -630,6 +777,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     marginBottom: 12,
   },
@@ -687,11 +837,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontWeight: '600',
-  },
-  email: {
-    marginTop: 4,
-    fontSize: 13,
-    opacity: 0.6,
   },
   viewModeTabs: {
     flexDirection: 'row',
@@ -877,14 +1022,5 @@ const styles = StyleSheet.create({
   summaryText: {
     fontSize: 13,
     opacity: 0.7,
-  },
-  signOutButton: {
-    alignSelf: 'center',
-    marginVertical: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  signOutText: {
-    color: '#FF6B6B',
   },
 });

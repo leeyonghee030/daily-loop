@@ -107,6 +107,7 @@ function RootLayoutNav() {
             options={{ title: '영상 재생', gestureEnabled: false }}
           />
           <Stack.Screen name="settings" options={{ title: '설정' }} />
+          <Stack.Screen name="routine-trash" options={{ title: '루틴 복구' }} />
         </Stack>
       )}
     </ThemeProvider>

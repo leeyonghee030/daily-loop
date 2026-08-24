@@ -34,8 +34,12 @@ export type Routine = {
   hide_from_stats: boolean;
   memo: string | null;
   photo_url: string | null;
+  preset_id: string | null;
+  is_paused: boolean;
   slots: Slot | null;
+  preset: { name: string } | null;
   created_at: string;
+  deleted_at: string | null;
 };
 
 export type Holiday = {
@@ -77,6 +81,7 @@ function matchesToday(
   todayDow: number,
   isHoliday: boolean
 ): boolean {
+  if (routine.is_paused) return false;
   if (routine.skip_holidays && isHoliday) return false;
 
   switch (routine.repeat_type) {
@@ -197,11 +202,31 @@ export async function fetchTodayRoutines(userId: string): Promise<{
 export async function fetchAllRoutines(userId: string): Promise<Routine[]> {
   const { data, error } = await supabase
     .from('routines')
-    .select('*, slots(*)')
+    .select('*, slots(*), preset:routine_presets(name)')
     .eq('user_id', userId)
     .is('deleted_at', null);
   if (error) throw error;
   return ((data ?? []) as Routine[]).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+// 모음집(preset) 단위 일괄 액션 — 그 모음집에서 만들어진(=preset_id가 같은) 루틴 전체에 적용
+export async function pauseRoutinesByPreset(presetId: string, paused: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('routines')
+    .update({ is_paused: paused })
+    .eq('preset_id', presetId)
+    .is('deleted_at', null);
+  if (error) throw error;
+}
+
+// 모음집 자체를 삭제할 때 같이 호출 — 그 모음집으로 만들어진 루틴도 함께 삭제(완료 기록은 보존)
+export async function softDeleteRoutinesByPreset(presetId: string): Promise<void> {
+  const { error } = await supabase
+    .from('routines')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('preset_id', presetId)
+    .is('deleted_at', null);
+  if (error) throw error;
 }
 
 // 드래그 정렬 결과 저장 — sort_order를 새 순서(0,1,2...)로 일괄 반영
@@ -416,6 +441,67 @@ export async function softDeleteRoutine(routineId: string): Promise<void> {
     .from('routines')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', routineId);
+  if (error) throw error;
+}
+
+// "내 루틴"에서 여러 개 선택해서 한 번에 삭제할 때 사용
+export async function softDeleteRoutines(routineIds: string[]): Promise<void> {
+  const { error } = await supabase
+    .from('routines')
+    .update({ deleted_at: new Date().toISOString() })
+    .in('id', routineIds);
+  if (error) throw error;
+}
+
+// "루틴 복구" 화면용 — deleted_at이 있는(소프트 삭제된) 루틴만
+export async function fetchDeletedRoutines(userId: string): Promise<Routine[]> {
+  const { data, error } = await supabase
+    .from('routines')
+    .select('*, slots(*), preset:routine_presets(name)')
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function restoreRoutine(routineId: string): Promise<void> {
+  const { error } = await supabase.from('routines').update({ deleted_at: null }).eq('id', routineId);
+  if (error) throw error;
+}
+
+// "루틴 복구" 화면에서 사용자가 직접 골라 완전 삭제(2주를 안 기다리고 즉시)할 때 사용
+export async function hardDeleteRoutines(routineIds: string[]): Promise<void> {
+  const { error } = await supabase.from('routines').delete().in('id', routineIds);
+  if (error) throw error;
+}
+
+export async function hardDeleteRoutinesByPreset(presetId: string): Promise<void> {
+  const { error } = await supabase.from('routines').delete().eq('preset_id', presetId);
+  if (error) throw error;
+}
+
+// 모음집을 통째로 복구할 때, 그 모음집으로 만들어진(소프트 삭제된) 루틴도 같이 되살림
+export async function restoreRoutinesByPreset(presetId: string): Promise<void> {
+  const { error } = await supabase
+    .from('routines')
+    .update({ deleted_at: null })
+    .eq('preset_id', presetId)
+    .not('deleted_at', 'is', null);
+  if (error) throw error;
+}
+
+// 소프트 삭제(deleted_at)된 지 2주 지난 루틴을 완전히 지운다 — 완료기록/건너뛰기 기록은
+// on delete cascade로 같이 정리됨. 앱 열 때 하루 한 번 조용히 실행되는 용도(오늘 탭 참고)
+export async function purgeOldDeletedRoutines(userId: string): Promise<void> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 14);
+  const { error } = await supabase
+    .from('routines')
+    .delete()
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .lt('deleted_at', cutoff.toISOString());
   if (error) throw error;
 }
 
