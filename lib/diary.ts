@@ -52,3 +52,20 @@ export async function deleteDiary(diaryId: string): Promise<void> {
     .eq('id', diaryId);
   if (error) throw error;
 }
+
+// 캘린더에 일기 쓴 날짜 표시용 — 그 범위 안에서 일기가 있는 날짜만 반환
+export async function fetchDiaryDatesInRange(
+  userId: string,
+  startDate: string,
+  endDate: string
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('diaries')
+    .select('entry_date')
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .gte('entry_date', startDate)
+    .lte('entry_date', endDate);
+  if (error) throw error;
+  return (data ?? []).map((d) => d.entry_date);
+}

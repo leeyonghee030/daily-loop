@@ -13,6 +13,7 @@ export type Slot = {
   start_time: string;
   end_time: string;
   notify_enabled: boolean;
+  memo_notify_enabled: boolean;
 };
 
 export type Routine = {
@@ -122,19 +123,6 @@ export function effectiveTimeRange(routine: Routine): { start: string; end: stri
     return { start: routine.slots.start_time, end: routine.slots.end_time };
   }
   return null;
-}
-
-export function isHappeningNow(routine: Routine): boolean {
-  if (!routine.scheduled_time_start || !routine.scheduled_time_end) return false;
-  const nowTime = formatLocalTime(new Date());
-  return nowTime >= routine.scheduled_time_start && nowTime < routine.scheduled_time_end;
-}
-
-function formatLocalTime(date: Date): string {
-  const h = String(date.getHours()).padStart(2, '0');
-  const m = String(date.getMinutes()).padStart(2, '0');
-  const s = String(date.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
 }
 
 function sortRoutines(routines: Routine[]): Routine[] {
@@ -373,7 +361,7 @@ export type RoutineInput = {
 export async function fetchSlots(userId: string): Promise<Slot[]> {
   const { data, error } = await supabase
     .from('slots')
-    .select('id, slot_type, start_time, end_time, notify_enabled')
+    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled')
     .eq('user_id', userId);
   if (error) throw error;
   return data ?? [];
@@ -381,13 +369,13 @@ export async function fetchSlots(userId: string): Promise<Slot[]> {
 
 export async function updateSlot(
   slotId: string,
-  input: { start_time: string; end_time: string; notify_enabled: boolean }
+  input: { start_time: string; end_time: string; notify_enabled: boolean; memo_notify_enabled: boolean }
 ): Promise<Slot> {
   const { data, error } = await supabase
     .from('slots')
     .update(input)
     .eq('id', slotId)
-    .select('id, slot_type, start_time, end_time, notify_enabled')
+    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled')
     .single();
   if (error) throw error;
   return data;

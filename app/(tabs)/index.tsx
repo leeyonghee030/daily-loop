@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -12,6 +12,7 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
+  type DimensionValue,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
@@ -19,6 +20,7 @@ import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota, type LlmQuota } from '@/lib/llm';
 import { purgeOldDeletedPresets } from '@/lib/presets';
+import { purgeOldDeletedCategories } from '@/lib/videos';
 import {
   requestNotificationPermissions,
   setupNotificationChannel,
@@ -32,7 +34,6 @@ import {
   fetchStreaks,
   fetchTodayRoutines,
   formatLocalDate,
-  isHappeningNow,
   purgeOldDeletedRoutines,
   saveTrackingValue,
   skipRoutineToday,
@@ -52,27 +53,51 @@ function formatTime(time: string): string {
 
 function timeLabel(routine: Routine): string {
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
-    return `${formatTime(routine.scheduled_time_start)}-${formatTime(routine.scheduled_time_end)}`;
+    const start = routine.scheduled_time_start;
+    const end = routine.scheduled_time_end;
+    // 시계로는 24:00을 고를 수 없어 자정 종료는 00:00으로 저장되므로, 화면에는 24:00으로 보여줌
+    const endLabel = end <= start ? '24:00' : formatTime(end);
+    return `${formatTime(start)}-${endLabel}`;
   }
   if (routine.slots) return SLOT_LABELS[routine.slots.slot_type];
   return '';
 }
 
 const HOUR_HEIGHT = 56;
+const ROW_HEIGHT = 34;
 
 function toMinutes(time: string): number {
   const [h, m] = time.split(':').map(Number);
   return h * 60 + m;
 }
 
+// 시계로는 24:00을 고를 수 없어서 자정에 끝나는 루틴은 끝 시각이 00:00으로 저장됨 —
+// 그대로 두면 끝이 시작보다 이른 것처럼 계산돼서(예: 23:00~00:00) 타임라인에 안 보이거나
+// 강조가 안 되는 문제가 생기므로, 끝이 시작보다 작거나 같으면 자정(24:00)으로 취급한다
+function endMinutes(range: { start: string; end: string }): number {
+  const startMin = toMinutes(range.start);
+  const endMin = toMinutes(range.end);
+  return endMin <= startMin ? endMin + 24 * 60 : endMin;
+}
+
+function isNowWithinRange(range: { start: string; end: string }): boolean {
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return nowMinutes >= toMinutes(range.start) && nowMinutes < endMinutes(range);
+}
+
 type TimedBlock = { id: string; top: number; height: number };
 
-// 같은 시간대(또는 겹치는 시간대)에 여러 루틴이 있으면 겹쳐 그리지 않고 옆으로 나란히 배치한다
-function assignColumns(items: TimedBlock[]): Map<string, { col: number; totalCols: number }> {
+// 같은 시간대(또는 겹치는 시간대)에 여러 루틴이 있으면 겹쳐 그리지 않고 옆으로 나란히 배치한다.
+// clusterId는 "같이 겹치는 무리"를 묶어서 식별하는 용도(5개 넘을 때 더보기 화살표 판단에 사용)
+function assignColumns(
+  items: TimedBlock[]
+): Map<string, { col: number; totalCols: number; clusterId: number }> {
   const sorted = [...items].sort((a, b) => a.top - b.top);
-  const result = new Map<string, { col: number; totalCols: number }>();
+  const result = new Map<string, { col: number; totalCols: number; clusterId: number }>();
   let cluster: TimedBlock[] = [];
   let clusterMaxBottom = -Infinity;
+  let clusterId = 0;
 
   function flushCluster() {
     if (cluster.length === 0) return;
@@ -85,10 +110,14 @@ function assignColumns(items: TimedBlock[]): Map<string, { col: number; totalCol
       } else {
         colEnds[col] = item.top + item.height;
       }
-      result.set(item.id, { col, totalCols: -1 }); // totalCols는 클러스터 끝나고 일괄 채움
+      result.set(item.id, { col, totalCols: -1, clusterId }); // totalCols는 클러스터 끝나고 일괄 채움
     }
     const totalCols = colEnds.length;
-    for (const item of cluster) result.set(item.id, { col: result.get(item.id)!.col, totalCols });
+    for (const item of cluster) {
+      const prev = result.get(item.id)!;
+      result.set(item.id, { ...prev, totalCols });
+    }
+    clusterId++;
     cluster = [];
   }
 
@@ -121,6 +150,9 @@ function TimelineView({
 }) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const hasAutoScrolledRef = useRef(false);
+  const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
 
   const timed = routines
     .map((routine) => ({
@@ -177,27 +209,92 @@ function TimelineView({
   const minHour = Math.max(0, Math.min(6, ...startHours));
   const maxHour = Math.min(
     24,
-    Math.max(22, ...timed.map((r) => (r.isExact ? Math.ceil(toMinutes(r.range.end) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1)))
+    Math.max(22, ...timed.map((r) => (r.isExact ? Math.ceil(endMinutes(r.range) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1)))
   );
   const totalHeight = (maxHour - minHour) * HOUR_HEIGHT;
 
   const hours = Array.from({ length: maxHour - minHour + 1 }, (_, i) => minHour + i);
 
-  const blocks: TimelineBlock[] = Array.from(groups.entries()).map(([key, items]) => {
-    const { range, isExact } = items[0];
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const showNowLine = nowMinutes >= minHour * 60 && nowMinutes <= maxHour * 60;
+  const nowTop = (nowMinutes - minHour * 60) * (HOUR_HEIGHT / 60);
+
+  // 같은 시간대에 여러 개 몰려도 쌓지 않고 각자 블록으로 만들어서, 아래 컬럼 배치 로직이 옆으로 나란히 놓는다
+  const blocks: TimelineBlock[] = timed.map((entry) => {
+    const { routine, range, isExact } = entry;
+    const key = isExact ? `exact-${routine.id}` : `slot-${routine.id}`;
     const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
-    const rawHeight = isExact ? (toMinutes(range.end) - toMinutes(range.start)) * (HOUR_HEIGHT / 60) : 0;
-    const height = isExact ? Math.max(rawHeight, 34) : 34 * items.length;
-    return { key, top, height, start: range.start, isExact, items };
+    const rawHeight = isExact ? (endMinutes(range) - toMinutes(range.start)) * (HOUR_HEIGHT / 60) : 0;
+    const height = isExact ? Math.max(rawHeight, 34) : 34;
+    return { key, top, height, start: range.start, isExact, items: [entry] };
   });
   const columns = assignColumns(blocks.map((b) => ({ id: b.key, top: b.top, height: b.height })));
+  const clusterBlocks = new Map<number, TimelineBlock[]>();
+  for (const block of blocks) {
+    const clusterId = columns.get(block.key)?.clusterId ?? -1;
+    if (!clusterBlocks.has(clusterId)) clusterBlocks.set(clusterId, []);
+    clusterBlocks.get(clusterId)!.push(block);
+  }
+
+  // 지금 시간대에 해당하는 블록은 색/밑줄로 눈에 띄게 강조
+  function renderBlock(
+    block: TimelineBlock,
+    pos: { top: number; height: number; left: DimensionValue; width: DimensionValue; showTime: boolean }
+  ) {
+    const isNowBlock = isNowWithinRange(block.items[0].range);
+    return (
+      <View
+        key={block.key}
+        style={[
+          timelineStyles.block,
+          isNowBlock && timelineStyles.blockNow,
+          { top: pos.top, height: pos.height, left: pos.left, width: pos.width },
+        ]}>
+        {block.items.map(({ routine }, index) => {
+          const completion = completions[routine.id];
+          const isDone = Boolean(completion);
+          return (
+            <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
+              <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
+                {pos.showTime && index === 0 && (
+                  <Text style={timelineStyles.blockTime}>{formatTime(block.start)}</Text>
+                )}
+                <Text
+                  style={[
+                    timelineStyles.blockTitle,
+                    isDone && timelineStyles.blockTitleDone,
+                    isNowBlock && timelineStyles.blockTitleNow,
+                  ]}
+                  numberOfLines={1}>
+                  {routine.title}
+                </Text>
+              </Pressable>
+              {routine.block_type === 'check' ? (
+                <Pressable
+                  hitSlop={8}
+                  style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
+                  onPress={() => onToggleCheck(routine)}>
+                  {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
+                </Pressable>
+              ) : pos.showTime ? (
+                <Text style={timelineStyles.blockTrackingValue}>
+                  {completion?.tracking_value ?? '-'} {routine.tracking_unit}
+                </Text>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    );
+  }
 
   return (
     <View style={timelineStyles.wrapper}>
       {showSlotHint && (
         <View style={timelineStyles.hintBanner}>
           <Text style={timelineStyles.hintText}>
-            같은 시간대에 루틴이 여러 개 있으면, 쌓이는 순서는 &quot;내 루틴&quot; 탭에서 드래그로 바꿀 수 있어요.
+            같은 시간대에 루틴이 여러 개 있으면, 나열되는 순서는 &quot;내 루틴&quot; 탭에서 드래그로 바꿀 수 있어요.
           </Text>
           <View style={timelineStyles.hintFooter}>
             <Pressable
@@ -215,7 +312,22 @@ function TimelineView({
           </View>
         </View>
       )}
-      <ScrollView style={timelineStyles.container} contentContainerStyle={{ height: totalHeight + 20 }}>
+      <ScrollView
+        ref={scrollRef}
+        style={timelineStyles.container}
+        contentContainerStyle={{ height: totalHeight + 20 }}
+        onScrollBeginDrag={() => {
+          if (expandedClusters.size > 0) setExpandedClusters(new Set());
+        }}
+        onContentSizeChange={() => {
+          if (hasAutoScrolledRef.current) return;
+          hasAutoScrolledRef.current = true;
+          const earliestTop = Math.min(...blocks.map((b) => b.top));
+          // 지금 시각이 첫 일정보다 이르면, 자동 스크롤로 인해 지금 시각 표시선이 화면 위로 밀려나가지 않도록
+          // 지금 시각과 첫 일정 중 더 이른 쪽으로 스크롤한다
+          const target = showNowLine ? Math.min(earliestTop, nowTop) : earliestTop;
+          scrollRef.current?.scrollTo({ y: Math.max(0, target - 12), animated: false });
+        }}>
       {hours.map((hour) => (
         <View
           key={hour}
@@ -224,55 +336,56 @@ function TimelineView({
         </View>
       ))}
 
+      {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
+
       <View style={timelineStyles.blocksArea}>
-        {blocks.map((block) => {
-          const { col, totalCols } = columns.get(block.key) ?? { col: 0, totalCols: 1 };
-          const widthPercent = 100 / totalCols;
-          const gap = totalCols > 1 ? 2 : 0;
-          const showTime = totalCols === 1;
+        {Array.from(clusterBlocks.entries()).map(([clusterId, clusterItems]) => {
+          const totalCols = columns.get(clusterItems[0].key)?.totalCols ?? 1;
+          const sortedItems = [...clusterItems].sort(
+            (a, b) => (columns.get(a.key)?.col ?? 0) - (columns.get(b.key)?.col ?? 0)
+          );
+
+          // 안 겹치면 그대로 한 칸 전체를 써서, 실제 시간 길이대로 배치
+          if (totalCols <= 1) {
+            const block = sortedItems[0];
+            return renderBlock(block, { top: block.top, height: block.height, left: '0%', width: '100%', showTime: true });
+          }
+
+          const clusterTop = Math.min(...clusterItems.map((b) => b.top));
+          const isExpanded = expandedClusters.has(clusterId);
+
+          // 겹치면 기본은 1개 + "더보기" 버튼만 보여주고, 누르면 위아래로 1개씩 전부 펼쳐서 보여준다
+          if (!isExpanded) {
+            const first = sortedItems[0];
+            const hiddenCount = sortedItems.length - 1;
+            return (
+              <Fragment key={clusterId}>
+                {renderBlock(first, { top: clusterTop, height: ROW_HEIGHT, left: '0%', width: '80%', showTime: false })}
+                <Pressable
+                  style={[
+                    timelineStyles.block,
+                    timelineStyles.moreBlock,
+                    { top: clusterTop, height: ROW_HEIGHT, left: '84%', width: '16%' },
+                  ]}
+                  onPress={() => setExpandedClusters((prev) => new Set(prev).add(clusterId))}>
+                  <Text style={timelineStyles.moreBlockText}>+{hiddenCount}</Text>
+                </Pressable>
+              </Fragment>
+            );
+          }
+
           return (
-            <View
-              key={block.key}
-              style={[
-                timelineStyles.block,
-                {
-                  top: block.top,
-                  height: block.height,
-                  left: `${col * widthPercent}%`,
-                  width: `${Math.max(widthPercent - gap, 10)}%`,
-                },
-              ]}>
-              {block.items.map(({ routine }, index) => {
-                const completion = completions[routine.id];
-                const isDone = Boolean(completion);
-                return (
-                  <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
-                    <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
-                      {showTime && index === 0 && (
-                        <Text style={timelineStyles.blockTime}>{formatTime(block.start)}</Text>
-                      )}
-                      <Text
-                        style={[timelineStyles.blockTitle, isDone && timelineStyles.blockTitleDone]}
-                        numberOfLines={1}>
-                        {routine.title}
-                      </Text>
-                    </Pressable>
-                    {routine.block_type === 'check' ? (
-                      <Pressable
-                        hitSlop={8}
-                        style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
-                        onPress={() => onToggleCheck(routine)}>
-                        {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
-                      </Pressable>
-                    ) : showTime ? (
-                      <Text style={timelineStyles.blockTrackingValue}>
-                        {completion?.tracking_value ?? '-'} {routine.tracking_unit}
-                      </Text>
-                    ) : null}
-                  </View>
-                );
-              })}
-            </View>
+            <Fragment key={clusterId}>
+              {sortedItems.map((block, index) =>
+                renderBlock(block, {
+                  top: clusterTop + index * ROW_HEIGHT,
+                  height: ROW_HEIGHT,
+                  left: '0%',
+                  width: '100%',
+                  showTime: true,
+                })
+              )}
+            </Fragment>
           );
         })}
       </View>
@@ -374,6 +487,33 @@ const timelineStyles = StyleSheet.create({
     borderRadius: 6,
     overflow: 'hidden',
   },
+  moreBlock: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(124, 92, 252, 0.2)',
+  },
+  moreBlockText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7C5CFC',
+  },
+  nowLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 87, 34, 0.4)',
+    zIndex: 5,
+  },
+  blockNow: {
+    backgroundColor: 'rgba(255, 152, 0, 0.18)',
+    borderLeftColor: '#FF9800',
+  },
+  blockTitleNow: {
+    textDecorationLine: 'underline',
+    fontWeight: '700',
+  },
   blockRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -471,6 +611,7 @@ export default function TodayScreen() {
       try {
         await purgeOldDeletedRoutines(userId);
         await purgeOldDeletedPresets(userId);
+        await purgeOldDeletedCategories(userId);
       } catch {
         // 실패해도 조용히 무시 — 다음에 앱 열 때 다시 시도됨
       }
@@ -671,7 +812,8 @@ export default function TodayScreen() {
         renderItem={({ item }) => {
           const completion = completions[item.id];
           const isDone = Boolean(completion);
-          const isNow = isHappeningNow(item);
+          const itemRange = effectiveTimeRange(item);
+          const isNow = itemRange ? isNowWithinRange(itemRange) : false;
           const streakDays = streaks[item.id] ?? 0;
           const streakEmoji = emojiForStreak(streakDays, streakConfigs);
 
@@ -686,7 +828,9 @@ export default function TodayScreen() {
               <View style={[styles.row, isNow && styles.rowHighlighted]}>
                 <Text style={styles.time}>{timeLabel(item)}</Text>
                 <View style={styles.rowMain}>
-                  <View style={styles.titleLine}>
+                  <Pressable
+                    style={styles.titleLine}
+                    onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
                     <View style={item.is_required ? styles.requiredHighlight : undefined}>
                       <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>{item.title}</Text>
                     </View>
@@ -695,7 +839,7 @@ export default function TodayScreen() {
                         {streakEmoji} {streakDays}일
                       </Text>
                     )}
-                  </View>
+                  </Pressable>
 
                   {item.block_type === 'tracking' ? (
                     <View style={styles.trackingRow}>

@@ -1,12 +1,14 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
+import { fetchMemosInRange } from '@/lib/date-memos';
 import {
   fetchMonthData,
   fetchSlots,
   formatLocalDate,
   routinesForDate,
   SLOT_LABELS,
+  type Slot,
   type SlotType,
 } from '@/lib/routines';
 
@@ -41,12 +43,76 @@ function slotIdentifier(slotType: SlotType): string {
   return `slot-${slotType}`;
 }
 
-// 슬롯별 알림: 켜져 있는 슬롯마다 그 슬롯 시작 시각에 매일 반복 알림 예약
+// 아침 슬롯 알림 + 메모 알림: 두 개는 서로 독립된 채널(각자 토글로 켜고 끔)이지만,
+// 같은 시각(아침 슬롯 시작 시각)에 둘 다 보낼 조건이면 알림 하나로 합쳐서 보낸다.
+// - 아침 루틴 알림만 켜짐 → 기본 문구만
+// - 메모 알림만 켜짐 + 그날 메모 있음 → 메모 내용만
+// - 둘 다 켜짐 + 그날 메모 있음 → 합쳐서 발송
+// - 둘 다 켜짐 + 메모 없음 → 기본 문구만
+// - 둘 다 꺼짐, 또는 메모 알림만 켜졌는데 메모가 없음 → 아무것도 안 보냄
+// 메모 유무에 따라 매일 문구가 달라져야 해서, 자기전 리마인더(syncReminderAlarm)와 같은
+// "재동기화 때마다 다음 발송 시점 1회성으로 예약" 방식을 그대로 따른다.
+async function scheduleMorningAlarm(userId: string, slot: Slot, identifier: string): Promise<void> {
+  const routineOn = slot.notify_enabled;
+  const memoOn = slot.memo_notify_enabled;
+  if (!routineOn && !memoOn) return;
+
+  const [hour, minute] = slot.start_time.split(':').map(Number);
+  const now = new Date();
+  let targetDate = new Date();
+  targetDate.setHours(hour, minute, 0, 0);
+  if (targetDate <= now) {
+    targetDate = new Date(targetDate);
+    targetDate.setDate(targetDate.getDate() + 1);
+  }
+
+  let memoCount = 0;
+  let memoSummary = '';
+  if (memoOn) {
+    const dateStr = formatLocalDate(targetDate);
+    const memos = await fetchMemosInRange(userId, dateStr, dateStr);
+    memoCount = memos.length;
+    memoSummary = memos.map((m) => m.content).join(', ');
+  }
+  const hasMemo = memoCount > 0;
+
+  if (!routineOn && !hasMemo) return;
+
+  let title: string;
+  let body: string;
+  if (routineOn && hasMemo) {
+    title = `${SLOT_LABELS.morning} 시간이에요`;
+    body = `오늘의 루틴을 확인해보세요\n📌 메모 ${memoCount}개: ${memoSummary}`;
+  } else if (routineOn) {
+    title = `${SLOT_LABELS.morning} 시간이에요`;
+    body = '오늘의 루틴을 확인해보세요';
+  } else {
+    title = '오늘 메모가 있어요';
+    body = `📌 메모 ${memoCount}개: ${memoSummary}`;
+  }
+
+  await Notifications.scheduleNotificationAsync({
+    identifier,
+    content: { title, body },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DATE,
+      date: targetDate,
+    },
+  });
+}
+
+// 슬롯별 알림: 켜져 있는 슬롯마다 그 슬롯 시작 시각에 매일 반복 알림 예약.
+// 단, 아침 슬롯은 메모 통합을 위해 위 scheduleMorningAlarm으로 별도 처리(자체적으로 on/off 판단).
 export async function syncSlotAlarms(userId: string): Promise<void> {
   const slots = await fetchSlots(userId);
   for (const slot of slots) {
     const identifier = slotIdentifier(slot.slot_type);
     await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
+
+    if (slot.slot_type === 'morning') {
+      await scheduleMorningAlarm(userId, slot, identifier);
+      continue;
+    }
     if (!slot.notify_enabled) continue;
 
     const [hour, minute] = slot.start_time.split(':').map(Number);

@@ -1,13 +1,25 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { Calendar, type DateData } from 'react-native-calendars';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { CalendarList, type DateData } from 'react-native-calendars';
 
 import { Text, View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth-context';
+import {
+  createMemo,
+  deleteMemo,
+  fetchMemosInRange,
+  updateMemo,
+  MEMO_COLORS,
+  MEMO_COLOR_ORDER,
+  type DateMemo,
+  type MemoColor,
+} from '@/lib/date-memos';
+import { fetchDiaryDatesInRange } from '@/lib/diary';
+import { syncSlotAlarms } from '@/lib/notifications';
 import {
   computeDayStatus,
   formatLocalDate,
@@ -42,6 +54,15 @@ function sundayOf(date: Date): Date {
   return d;
 }
 
+function groupMemosByDate(list: DateMemo[]): Record<string, DateMemo[]> {
+  const map: Record<string, DateMemo[]> = {};
+  for (const memo of list) {
+    if (!map[memo.memo_date]) map[memo.memo_date] = [];
+    map[memo.memo_date].push(memo);
+  }
+  return map;
+}
+
 
 export default function CalendarScreen() {
   const { session } = useAuth();
@@ -59,10 +80,21 @@ export default function CalendarScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [memosByDate, setMemosByDate] = useState<Record<string, DateMemo[]>>({});
+  const [diaryDates, setDiaryDates] = useState<Set<string>>(new Set());
+  const [memoText, setMemoText] = useState('');
+  const [memoColor, setMemoColor] = useState<MemoColor>('yellow');
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
 
   const activeData = viewMode === 'week' ? weekData : monthData;
   const hasLoadedMonthRef = useRef(false);
   const hasLoadedWeekRef = useRef(false);
+
+  useEffect(() => {
+    setMemoText('');
+    setMemoColor('yellow');
+    setEditingMemoId(null);
+  }, [selectedDate]);
 
   // 월/주 이동할 때마다 전체 화면 스피너가 깜빡이지 않도록, 처음 한 번만 로딩 표시를 켠다
   const load = useCallback(
@@ -70,8 +102,16 @@ export default function CalendarScreen() {
       if (!userId) return;
       if (!hasLoadedMonthRef.current) setIsLoading(true);
       try {
-        const data = await fetchMonthData(userId, y, m);
+        const monthStart = `${y}-${String(m).padStart(2, '0')}-01`;
+        const monthEnd = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+        const [data, memos, diaryList] = await Promise.all([
+          fetchMonthData(userId, y, m),
+          fetchMemosInRange(userId, monthStart, monthEnd),
+          fetchDiaryDatesInRange(userId, monthStart, monthEnd),
+        ]);
         setMonthData(data);
+        setMemosByDate((prev) => ({ ...prev, ...groupMemosByDate(memos) }));
+        setDiaryDates((prev) => new Set([...prev, ...diaryList]));
         hasLoadedMonthRef.current = true;
       } finally {
         setIsLoading(false);
@@ -85,8 +125,17 @@ export default function CalendarScreen() {
       if (!userId) return;
       if (!hasLoadedWeekRef.current) setIsLoading(true);
       try {
-        const data = await fetchWeekData(userId, start);
+        const endDate = new Date(`${start}T00:00:00`);
+        endDate.setDate(endDate.getDate() + 6);
+        const endDateStr = formatLocalDate(endDate);
+        const [data, memos, diaryList] = await Promise.all([
+          fetchWeekData(userId, start),
+          fetchMemosInRange(userId, start, endDateStr),
+          fetchDiaryDatesInRange(userId, start, endDateStr),
+        ]);
         setWeekData(data);
+        setMemosByDate((prev) => ({ ...prev, ...groupMemosByDate(memos) }));
+        setDiaryDates((prev) => new Set([...prev, ...diaryList]));
         hasLoadedWeekRef.current = true;
       } finally {
         setIsLoading(false);
@@ -113,6 +162,19 @@ export default function CalendarScreen() {
     setWeekStart(formatLocalDate(d));
   }
 
+  // 월간뷰 좌우 스와이프: PanResponder → react-native-gesture-handler로 두 번 시도했지만
+  // 둘 다 안드로이드 제스처 내비게이션 영역과 부딪혀서 앱이 통째로 튕겨 나가는 문제가 있었음.
+  // 커스텀 제스처 코드로 계속 씨름하는 대신, 캘린더 라이브러리가 원래 지원하는 가로 스와이프 페이징
+  // (CalendarList의 horizontal+pagingEnabled)으로 바꿔서 이 문제를 근본적으로 피해감.
+  const screenWidth = Dimensions.get('window').width;
+
+  // 주간뷰 좌우 스와이프도 같은 이유로 원복 — 화살표(‹ ›) 버튼으로만 주 이동
+  const weekScrollRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    weekScrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [weekStart]);
+
   async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
     const applyUpdate = (prev: MonthData | null, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
       if (!prev) return prev;
@@ -136,39 +198,107 @@ export default function CalendarScreen() {
     }
   }
 
-  const todayStr = formatLocalDate(today);
-  const markedDates: Record<string, any> = {};
-  if (monthData) {
-    const daysInMonth = new Date(year, month, 0).getDate();
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      if (dateStr > todayStr) continue;
-      const status = computeDayStatus(dateStr, monthData);
-      if (!status) continue;
-      markedDates[dateStr] = {
-        customStyles: {
-          container: { backgroundColor: STATUS_COLORS[status], borderRadius: 16 },
-          text: { color: '#fff' },
-        },
-      };
+  function startEditMemo(memo: DateMemo) {
+    setEditingMemoId(memo.id);
+    setMemoText(memo.content);
+    setMemoColor(memo.color);
+  }
+
+  async function handleSubmitMemo() {
+    if (!selectedDate || !userId) return;
+    const text = memoText.trim();
+    if (!text) return;
+    try {
+      if (editingMemoId) {
+        const updated = await updateMemo(editingMemoId, text, memoColor);
+        setMemosByDate((prev) => ({
+          ...prev,
+          [selectedDate]: (prev[selectedDate] ?? []).map((m) => (m.id === updated.id ? updated : m)),
+        }));
+      } else {
+        const created = await createMemo(userId, selectedDate, text, memoColor);
+        setMemosByDate((prev) => ({
+          ...prev,
+          [selectedDate]: [...(prev[selectedDate] ?? []), created],
+        }));
+      }
+      setMemoText('');
+      setMemoColor('yellow');
+      setEditingMemoId(null);
+      syncSlotAlarms(userId).catch(() => {});
+    } catch {
+      setErrorMessage('메모 저장에 실패했어요.');
     }
   }
-  if (selectedDate) {
-    markedDates[selectedDate] = {
-      ...(markedDates[selectedDate] ?? {}),
-      customStyles: {
-        container: {
-          ...(markedDates[selectedDate]?.customStyles?.container ?? {}),
-          borderWidth: 2,
-          borderColor: Colors[theme].tint,
-          borderRadius: 16,
-        },
-        text: markedDates[selectedDate]?.customStyles?.text ?? {},
-      },
-    };
+
+  async function handleDeleteMemo(memoId: string) {
+    if (!selectedDate) return;
+    try {
+      await deleteMemo(memoId);
+      setMemosByDate((prev) => ({
+        ...prev,
+        [selectedDate]: (prev[selectedDate] ?? []).filter((m) => m.id !== memoId),
+      }));
+      if (editingMemoId === memoId) {
+        setEditingMemoId(null);
+        setMemoText('');
+      }
+      if (userId) syncSlotAlarms(userId).catch(() => {});
+    } catch {
+      setErrorMessage('메모 삭제에 실패했어요.');
+    }
+  }
+
+  const todayStr = formatLocalDate(today);
+
+  function renderDay({ date, state }: { date?: DateData; state?: string }) {
+    if (!date) return <View />;
+    const dateStr = date.dateString;
+    const status = monthData && dateStr <= todayStr ? computeDayStatus(dateStr, monthData) : null;
+    const memos = (memosByDate[dateStr] ?? []).slice(0, 5);
+    const isSelected = selectedDate === dateStr;
+    const isDisabled = state === 'disabled';
+
+    return (
+      <Pressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
+        <View style={styles.diaryIconSlot}>
+          {diaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
+        </View>
+        <View
+          style={[
+            styles.dayNumberWrap,
+            status ? { backgroundColor: STATUS_COLORS[status] } : null,
+            isSelected && { borderWidth: 2, borderColor: Colors[theme].tint },
+          ]}>
+          <Text
+            style={[
+              styles.dayNumberText,
+              { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : Colors[theme].text },
+              status ? styles.dayNumberTextOnStatus : null,
+              dateStr === todayStr ? { color: Colors[theme].tint, fontWeight: '700' } : null,
+            ]}>
+            {date.day}
+          </Text>
+        </View>
+        {memos.length > 0 && (
+          <View style={styles.memoStack}>
+            {memos.map((memo) => (
+              <View
+                key={memo.id}
+                style={[
+                  styles.memoBar,
+                  { backgroundColor: MEMO_COLORS[memo.color].bg, borderColor: MEMO_COLORS[memo.color].border },
+                ]}
+              />
+            ))}
+          </View>
+        )}
+      </Pressable>
+    );
   }
 
   const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
+  const selectedMemos = selectedDate ? memosByDate[selectedDate] ?? [] : [];
 
   const weekDates: string[] = [];
   if (viewMode === 'week') {
@@ -198,12 +328,13 @@ export default function CalendarScreen() {
       </View>
 
       {viewMode === 'month' ? (
-        <Calendar
+        <CalendarList
+          horizontal
+          pagingEnabled
+          calendarWidth={screenWidth}
           current={`${year}-${String(month).padStart(2, '0')}-01`}
           onMonthChange={handleMonthChange}
-          onDayPress={(date) => setSelectedDate(date.dateString)}
-          markingType="custom"
-          markedDates={markedDates}
+          dayComponent={renderDay}
           theme={{
             calendarBackground: Colors[theme].background,
             dayTextColor: Colors[theme].text,
@@ -227,7 +358,7 @@ export default function CalendarScreen() {
             </Pressable>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator persistentScrollbar>
+          <ScrollView ref={weekScrollRef} horizontal showsHorizontalScrollIndicator persistentScrollbar>
             {weekData &&
               weekDates.map((dateStr, index) => {
                 const isFuture = dateStr > todayStr;
@@ -240,9 +371,22 @@ export default function CalendarScreen() {
                     style={[styles.weekColumn, dateStr === todayStr && styles.weekColumnToday]}
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
+                      <View style={styles.diaryIconSlot}>
+                        {diaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
+                      </View>
                       <Text style={styles.weekRowWeekday}>{WEEKDAY_LABELS[index]}</Text>
                       <Text style={styles.weekRowDay}>{dayNum}</Text>
                       {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
+                      {(memosByDate[dateStr] ?? []).length > 0 && (
+                        <View style={styles.weekMemoRow}>
+                          {(memosByDate[dateStr] ?? []).slice(0, 5).map((memo) => (
+                            <View
+                              key={memo.id}
+                              style={[styles.weekMemoDot, { backgroundColor: MEMO_COLORS[memo.color].border }]}
+                            />
+                          ))}
+                        </View>
+                      )}
                     </View>
                     <ScrollView style={styles.weekColumnBody} nestedScrollEnabled>
                       {scheduled.length === 0 ? (
@@ -312,11 +456,73 @@ export default function CalendarScreen() {
             </View>
             {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-            {detail.length === 0 ? (
-              <Text style={styles.emptyText}>이 날은 예정된 루틴이 없어요</Text>
-            ) : (
-              <ScrollView style={styles.detailList}>
-                {detail.map(({ routine, completion }) => {
+            <ScrollView style={styles.detailList} keyboardShouldPersistTaps="handled">
+              <Text style={styles.sectionLabel}>📌 메모</Text>
+              {selectedMemos.length === 0 ? (
+                <Text style={styles.memoEmptyText}>메모 없음</Text>
+              ) : (
+                selectedMemos.map((memo) => (
+                  <View
+                    key={memo.id}
+                    style={[
+                      styles.memoCard,
+                      { backgroundColor: MEMO_COLORS[memo.color].bg, borderColor: MEMO_COLORS[memo.color].border },
+                    ]}>
+                    <Text style={styles.memoCardText}>{memo.content}</Text>
+                    <View style={styles.memoCardActions}>
+                      <Pressable onPress={() => startEditMemo(memo)} hitSlop={6}>
+                        <Text style={styles.memoActionText}>수정</Text>
+                      </Pressable>
+                      <Pressable onPress={() => handleDeleteMemo(memo.id)} hitSlop={6}>
+                        <Text style={styles.memoActionText}>삭제</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              )}
+
+              <View style={styles.memoColorPicker}>
+                {MEMO_COLOR_ORDER.map((c) => (
+                  <Pressable
+                    key={c}
+                    onPress={() => setMemoColor(c)}
+                    style={[
+                      styles.memoColorSwatch,
+                      { backgroundColor: MEMO_COLORS[c].border },
+                      memoColor === c && styles.memoColorSwatchActive,
+                    ]}
+                  />
+                ))}
+              </View>
+              <View style={styles.memoAddRow}>
+                <TextInput
+                  style={[styles.memoInput, { color: Colors[theme].text }]}
+                  placeholder="메모 입력 (예: 내일 시험치기)"
+                  placeholderTextColor="#999"
+                  value={memoText}
+                  onChangeText={setMemoText}
+                  onSubmitEditing={handleSubmitMemo}
+                />
+                <Pressable style={styles.memoAddButton} onPress={handleSubmitMemo}>
+                  <Text style={styles.memoAddButtonText}>{editingMemoId ? '수정완료' : '추가'}</Text>
+                </Pressable>
+              </View>
+              {editingMemoId && (
+                <Pressable
+                  onPress={() => {
+                    setEditingMemoId(null);
+                    setMemoText('');
+                    setMemoColor('yellow');
+                  }}>
+                  <Text style={styles.memoCancelEdit}>수정 취소</Text>
+                </Pressable>
+              )}
+
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>오늘의 루틴</Text>
+              {detail.length === 0 ? (
+                <Text style={styles.emptyText}>이 날은 예정된 루틴이 없어요</Text>
+              ) : (
+                detail.map(({ routine, completion }) => {
                   const isToday = selectedDate === todayStr;
                   const row = (
                     <View style={styles.detailRow}>
@@ -347,9 +553,9 @@ export default function CalendarScreen() {
                   ) : (
                     <View key={routine.id}>{row}</View>
                   );
-                })}
-              </ScrollView>
-            )}
+                })
+              )}
+            </ScrollView>
             <Pressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
               <Text style={styles.closeButtonText}>닫기</Text>
             </Pressable>
@@ -463,6 +669,52 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
   },
+  weekMemoRow: {
+    flexDirection: 'row',
+    gap: 2,
+    marginTop: 2,
+  },
+  weekMemoDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+  },
+  dayCell: {
+    width: 44,
+    minHeight: 46,
+    alignItems: 'center',
+    paddingTop: 2,
+  },
+  diaryIconSlot: {
+    height: 12,
+    justifyContent: 'center',
+  },
+  diaryIcon: {
+    fontSize: 10,
+  },
+  dayNumberWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayNumberText: {
+    fontSize: 14,
+  },
+  dayNumberTextOnStatus: {
+    color: '#fff',
+  },
+  memoStack: {
+    marginTop: 3,
+    gap: 2,
+    width: 30,
+  },
+  memoBar: {
+    height: 3,
+    borderRadius: 2,
+    borderWidth: 0.5,
+  },
   legend: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -536,6 +788,85 @@ const styles = StyleSheet.create({
   },
   detailList: {
     flex: 1,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    opacity: 0.7,
+    marginBottom: 8,
+  },
+  memoEmptyText: {
+    fontSize: 12,
+    opacity: 0.4,
+    marginBottom: 8,
+  },
+  memoCard: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  memoCardText: {
+    flex: 1,
+    fontSize: 13,
+  },
+  memoCardActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  memoActionText: {
+    fontSize: 12,
+    opacity: 0.7,
+    fontWeight: '600',
+  },
+  memoColorPicker: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  memoColorSwatch: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+  },
+  memoColorSwatchActive: {
+    borderWidth: 2,
+    borderColor: '#333',
+  },
+  memoAddRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  memoInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+  },
+  memoAddButton: {
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  memoAddButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  memoCancelEdit: {
+    fontSize: 12,
+    opacity: 0.5,
+    marginTop: 6,
+    textDecorationLine: 'underline',
   },
   detailRow: {
     flexDirection: 'row',

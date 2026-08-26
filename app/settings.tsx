@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
@@ -13,6 +14,7 @@ import { fetchSlots, updateSlot, SLOT_LABELS, type Slot, type SlotType } from '@
 import { supabase } from '@/lib/supabase';
 
 const SLOT_ORDER: SlotType[] = ['morning', 'lunch', 'evening', 'before_sleep'];
+const NOTICE_SEEN_KEY = 'settings_notice_seen';
 
 function timeToDate(time: string): Date {
   const date = new Date();
@@ -35,6 +37,7 @@ export default function SettingsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pickerFor, setPickerFor] = useState<{ slotId: string; field: 'start' | 'end' } | null>(null);
+  const [showNotice, setShowNotice] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -43,6 +46,15 @@ export default function SettingsScreen() {
       .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'))
       .finally(() => setIsLoading(false));
   }, [userId]);
+
+  // 이 안내는 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 아이콘만 보이다가 누르면 펼쳐짐
+  useEffect(() => {
+    AsyncStorage.getItem(NOTICE_SEEN_KEY).then((seen) => {
+      if (seen === 'true') return;
+      setShowNotice(true);
+      AsyncStorage.setItem(NOTICE_SEEN_KEY, 'true');
+    });
+  }, []);
 
   async function resync() {
     if (!userId) return;
@@ -57,6 +69,7 @@ export default function SettingsScreen() {
         start_time: updated.start_time,
         end_time: updated.end_time,
         notify_enabled: updated.notify_enabled,
+        memo_notify_enabled: updated.memo_notify_enabled,
       });
       await resync();
     } catch (err) {
@@ -73,6 +86,10 @@ export default function SettingsScreen() {
       }
     }
     saveSlot({ ...slot, notify_enabled: value });
+  }
+
+  function handleToggleMemoNotify(slot: Slot, value: boolean) {
+    saveSlot({ ...slot, memo_notify_enabled: value });
   }
 
   function handleTimeChange(slot: Slot, field: 'start' | 'end') {
@@ -95,10 +112,23 @@ export default function SettingsScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.sectionTitle}>슬롯 시간 / 알림</Text>
-      <Text style={styles.sectionDesc}>
-        슬롯 알림을 켜면 그 시간대 시작 시각에 매일 알림이 와요. "자기전" 슬롯 알림을 켜두면, 그 시각까지 필수
-        루틴을 다 못했을 때만 리마인더 알림도 같이 와요.
-      </Text>
+      {showNotice ? (
+        <Pressable onPress={() => setShowNotice(false)}>
+          <Text style={styles.sectionDesc}>
+            슬롯 알림을 켜면 그 시간대 시작 시각에 매일 알림이 와요. "자기전" 슬롯 알림을 켜두면, 그 시각까지 필수
+            루틴을 다 못했을 때만 리마인더 알림도 같이 와요. "메모 알림"은 아침 루틴 알림과 별개로 켜고 끌 수 있고,
+            둘 다 켜져 있는 날은 아침 시각에 알림 하나로 합쳐서 와요.
+          </Text>
+          <Text style={styles.sectionNote}>
+            ⓘ 아침·메모 알림은 앱을 열 때마다 다음 발송 시각을 다시 계산해요. 며칠 연속 앱을 안 열면 그 사이엔 안 올 수
+            있으니, 알림이 안 온다면 앱을 한 번 열어주세요.
+          </Text>
+        </Pressable>
+      ) : (
+        <Pressable style={styles.noticeCollapsed} onPress={() => setShowNotice(true)} hitSlop={8}>
+          <Text style={styles.noticeIcon}>ⓘ</Text>
+        </Pressable>
+      )}
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
@@ -127,6 +157,15 @@ export default function SettingsScreen() {
               mode="time"
               onChange={handleTimeChange(slot, pickerFor.field)}
             />
+          )}
+          {slot.slot_type === 'morning' && (
+            <View style={styles.memoNotifyRow}>
+              <Text style={styles.memoNotifyLabel}>📌 메모 알림 (이 시간에, 아침 루틴 알림과 별개로 켜고 끔)</Text>
+              <Switch
+                value={slot.memo_notify_enabled}
+                onValueChange={(v) => handleToggleMemoNotify(slot, v)}
+              />
+            </View>
           )}
         </View>
       ))}
@@ -164,6 +203,21 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 18,
   },
+  sectionNote: {
+    fontSize: 12,
+    opacity: 0.5,
+    marginTop: -8,
+    marginBottom: 16,
+    lineHeight: 16,
+  },
+  noticeCollapsed: {
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+  },
+  noticeIcon: {
+    fontSize: 16,
+    color: '#999',
+  },
   error: {
     color: '#FF6B6B',
     marginBottom: 12,
@@ -196,6 +250,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  memoNotifyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+  },
+  memoNotifyLabel: {
+    fontSize: 12,
+    opacity: 0.7,
+    flex: 1,
+    marginRight: 8,
   },
   accountEmail: {
     fontSize: 13,

@@ -3,7 +3,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
@@ -55,6 +55,29 @@ function dateToTimeString(date: Date): string {
   return `${h}:${m}:00`;
 }
 
+// 시작~끝 옆에 "1시간" 처럼 간단히 보여줄 소요 시간 텍스트
+function formatDuration(startTime: Date, endTime: Date): string {
+  let diffMin = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
+  // 시계로는 24:00을 고를 수 없어 자정 종료는 00:00으로 저장되므로, 그 경우 24:00에 끝나는 걸로 취급
+  if (diffMin <= 0) diffMin += 24 * 60;
+  if (diffMin <= 0) return '';
+  const h = Math.floor(diffMin / 60);
+  const m = diffMin % 60;
+  if (h === 0) return `${m}분`;
+  if (m === 0) return `${h}시간`;
+  return `${h}시간 ${m}분`;
+}
+
+// 신규 루틴 기본 시각은 분 단위를 없애고 다음 정각으로 올림 (예: 5시47분 → 6시, 6시1분 → 7시, 6시 정각이면 그대로)
+function roundUpToHour(date: Date): Date {
+  const d = new Date(date);
+  if (d.getMinutes() > 0 || d.getSeconds() > 0) {
+    d.setHours(d.getHours() + 1);
+  }
+  d.setMinutes(0, 0, 0);
+  return d;
+}
+
 function formatLocalDate(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -94,8 +117,16 @@ export default function RoutineFormScreen() {
   const [repeatType, setRepeatType] = useState<RepeatType>('daily');
   const [repeatDays, setRepeatDays] = useState<number[]>([]);
   const [timeMode, setTimeMode] = useState<'exact' | 'slot'>('slot');
-  const [startTime, setStartTime] = useState<Date>(timeToDate('09:00'));
-  const [endTime, setEndTime] = useState<Date>(timeToDate('10:00'));
+  // 신규 루틴 기본값은 지금 시각을 다음 정각으로 올린 값(+1시간)으로 시작 — 기존에 저장된
+  // 루틴/즐겨찾기/LLM 미리보기 값이 있으면 아래 useEffect들이 이 기본값을 덮어씀
+  const [startTime, setStartTime] = useState<Date>(() => roundUpToHour(new Date()));
+  const [endTime, setEndTime] = useState<Date>(() => {
+    const d = roundUpToHour(new Date());
+    d.setHours(d.getHours() + 1);
+    return d;
+  });
+  // "+30분/+1시간/+2시간" 버튼으로 끝 시각에 얼마나 더했는지 누적 — "초기화" 버튼이 이만큼만 되돌림
+  const [quickAddedMinutes, setQuickAddedMinutes] = useState(0);
   const [slotId, setSlotId] = useState<string | null>(null);
   const [scheduledDate, setScheduledDate] = useState<Date>(new Date());
   const [isRequired, setIsRequired] = useState(false);
@@ -189,14 +220,16 @@ export default function RoutineFormScreen() {
 
   // 말로 루틴 추가에서 넘어온 미리보기 화면은, 저장 없이 뒤로 나갈 땐 항상 그 입력 화면(/llm-input)으로
   // 돌아가게 고정한다 — routine-form이 모달로 열려서 그냥 두면 뒤로가기가 오늘 탭까지 건너뛰는 문제가 있었음.
-  // router.replace 자체가 이 화면의 제거를 유발해 beforeRemove를 다시 발생시키므로,
-  // redirectingRef로 재진입을 막지 않으면 무한 재귀(콜스택 초과)로 이어진다.
+  // router.replace는 새 llm-input 화면을 하나 더 쌓아서(기존에 스택에 남아있던 llm-input과 별개 인스턴스)
+  // 나중에 또 뒤로가기를 한 번 더 눌러야 하고 예전 글도 안 보이는 문제가 있었음 — router.dismissTo로
+  // 스택에 이미 있던 그 llm-input 화면으로 그대로 돌아가게 바꿔서(새로 만들지 않음) 둘 다 해결.
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
       if (savedRef.current || isEditing || !prefilled.current || redirectingRef.current) return;
       e.preventDefault();
       redirectingRef.current = true;
-      router.replace('/llm-input');
+      Keyboard.dismiss();
+      router.dismissTo('/llm-input');
     });
     return unsubscribe;
   }, [navigation, isEditing, router]);
@@ -369,10 +402,47 @@ export default function RoutineFormScreen() {
     );
   }
 
+  // 시작 시각이 바뀌면 끝 시각을 항상 시작 시각 +1시간으로 맞춰준다 —
+  // 예전엔 끝 시각이 그대로 남아있어서 시작을 늦은 시각으로 옮기면 끝이 그보다 이른 시각으로 보이는 문제가 있었음
+  function applyStartTime(newStart: Date) {
+    setStartTime(newStart);
+    setEndTime(new Date(newStart.getTime() + 60 * 60 * 1000));
+    setQuickAddedMinutes(0);
+  }
+
+  function addMinutesToEnd(minutes: number) {
+    const next = new Date(endTime);
+    next.setMinutes(next.getMinutes() + minutes);
+    if (next.getTime() <= startTime.getTime()) return; // 끝이 시작보다 앞으로 가지 않게
+    setEndTime(next);
+    setQuickAddedMinutes((prev) => prev + minutes);
+  }
+
+  // "+30분/+1시간/+2시간" 버튼으로 더한 만큼만 되돌린다(시작 시각 +1시간 기본값은 그대로 유지)
+  function resetQuickAdded() {
+    if (quickAddedMinutes === 0) return;
+    setEndTime(new Date(endTime.getTime() - quickAddedMinutes * 60 * 1000));
+    setQuickAddedMinutes(0);
+  }
+
+  // 끝 시각을 시계로 직접 바꾸면 그게 새 기준이 되므로, 버튼 누적치는 초기화한다
+  function applyEndTime(newEnd: Date) {
+    setEndTime(newEnd);
+    setQuickAddedMinutes(0);
+  }
+
   function handleTimeChange(setter: (date: Date) => void, hide: () => void) {
     return (event: DateTimePickerEvent, date?: Date) => {
       hide();
       if (event.type === 'set' && date) setter(date);
+    };
+  }
+
+  // 시간 스피너는 다이얼로그 없이 스크롤할 때마다 계속 값이 바뀌므로, 자동으로 닫지 않고
+  // "완료" 버튼을 따로 눌러야 닫히게 한다(닫는 즉시 다음 값 반영이 끊기지 않도록)
+  function handleSpinnerTimeChange(setter: (date: Date) => void) {
+    return (_event: DateTimePickerEvent, date?: Date) => {
+      if (date) setter(date);
     };
   }
 
@@ -509,15 +579,27 @@ export default function RoutineFormScreen() {
       </View>
 
       {timeMode === 'exact' ? (
-        <View style={styles.chipRow}>
-          <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
-            <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
-          </Pressable>
-          <Text>~</Text>
-          <Pressable style={styles.timeButton} onPress={() => setShowEndPicker(true)}>
-            <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
-          </Pressable>
-        </View>
+        <>
+          <View style={styles.chipRow}>
+            <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
+              <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
+            </Pressable>
+            <Text>~</Text>
+            <Pressable style={styles.timeButton} onPress={() => setShowEndPicker(true)}>
+              <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
+            </Pressable>
+            {formatDuration(startTime, endTime) !== '' && (
+              <Text style={styles.durationText}>{formatDuration(startTime, endTime)}</Text>
+            )}
+          </View>
+          <View style={styles.chipRow}>
+            <Chip label="-30분" selected={false} onPress={() => addMinutesToEnd(-30)} />
+            <Chip label="+30분" selected={false} onPress={() => addMinutesToEnd(30)} />
+            <Chip label="+1시간" selected={false} onPress={() => addMinutesToEnd(60)} />
+            <Chip label="+2시간" selected={false} onPress={() => addMinutesToEnd(120)} />
+            <Chip label="초기화" selected={false} onPress={resetQuickAdded} />
+          </View>
+        </>
       ) : (
         <View style={styles.chipRow}>
           {slots.map((slot) => (
@@ -531,20 +613,41 @@ export default function RoutineFormScreen() {
         </View>
       )}
 
-      {showStartPicker && (
-        <DateTimePicker
-          value={startTime}
-          mode="time"
-          onChange={handleTimeChange(setStartTime, () => setShowStartPicker(false))}
-        />
-      )}
-      {showEndPicker && (
-        <DateTimePicker
-          value={endTime}
-          mode="time"
-          onChange={handleTimeChange(setEndTime, () => setShowEndPicker(false))}
-        />
-      )}
+      {/* 안드로이드는 시계가 OS 다이얼로그로 뜨고 확인/취소를 누르면 다이얼로그 스스로 닫히므로,
+          그때마다 우리도 showXPicker를 꺼줘야 함(안 꺼주면 다시 렌더링될 때마다 다이얼로그가 또 뜸).
+          iOS는 다이얼로그 없이 계속 스크롤 가능한 스피너라서, "완료" 버튼을 직접 눌러야 닫히게 함 */}
+      {showStartPicker &&
+        (Platform.OS === 'android' ? (
+          <DateTimePicker
+            value={startTime}
+            mode="time"
+            display="spinner"
+            onChange={handleTimeChange(applyStartTime, () => setShowStartPicker(false))}
+          />
+        ) : (
+          <View style={styles.spinnerBox}>
+            <DateTimePicker value={startTime} mode="time" display="spinner" onChange={handleSpinnerTimeChange(applyStartTime)} />
+            <Pressable style={styles.spinnerDoneButton} onPress={() => setShowStartPicker(false)}>
+              <Text style={styles.spinnerDoneText}>완료</Text>
+            </Pressable>
+          </View>
+        ))}
+      {showEndPicker &&
+        (Platform.OS === 'android' ? (
+          <DateTimePicker
+            value={endTime}
+            mode="time"
+            display="spinner"
+            onChange={handleTimeChange(applyEndTime, () => setShowEndPicker(false))}
+          />
+        ) : (
+          <View style={styles.spinnerBox}>
+            <DateTimePicker value={endTime} mode="time" display="spinner" onChange={handleSpinnerTimeChange(applyEndTime)} />
+            <Pressable style={styles.spinnerDoneButton} onPress={() => setShowEndPicker(false)}>
+              <Text style={styles.spinnerDoneText}>완료</Text>
+            </Pressable>
+          </View>
+        ))}
 
       <View style={styles.switchRow}>
         <Text style={styles.label}>필수</Text>
@@ -756,6 +859,26 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  durationText: {
+    fontSize: 12,
+    color: '#999',
+  },
+  spinnerBox: {
+    alignItems: 'center',
+  },
+  spinnerDoneButton: {
+    alignSelf: 'center',
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  spinnerDoneText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   switchRow: {
     flexDirection: 'row',

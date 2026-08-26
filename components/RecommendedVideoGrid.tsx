@@ -5,7 +5,7 @@ import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import {
   addRecommendedVideoToMyGrid,
-  fetchCategories,
+  fetchDefaultCategories,
   fetchRecommendedVideosByCategory,
   type Category,
   type Video,
@@ -22,7 +22,7 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
   const [addingId, setAddingId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchCategories().then((cats) => {
+    fetchDefaultCategories().then((cats) => {
       setCategories(cats);
       setSelectedId(cats[0]?.id ?? null);
     });

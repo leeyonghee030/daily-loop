@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
@@ -32,6 +33,7 @@ function draftToParams(draft: ParsedRoutineDraft): Record<string, string> {
 
 export default function LlmInputScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const [text, setText] = useState(persistedText);
   const [loadingMode, setLoadingMode] = useState<'none' | 'auto' | 'ai'>('none');
   const isLoading = loadingMode !== 'none';
@@ -45,6 +47,15 @@ export default function LlmInputScreen() {
   useEffect(() => {
     persistedText = text;
   }, [text]);
+
+  // 이 화면이 진짜로 스택에서 제거될 때만(뒤로가기로 완전히 나갈 때) 초안을 지운다.
+  // routine-form을 미리보기로 push할 땐 이 화면이 제거되는 게 아니라 그대로 남아있어서 여기엔 안 걸림.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', () => {
+      clearPersistedLlmText();
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   async function handleSubmit(forceLlm = false) {
     const trimmed = text.trim();

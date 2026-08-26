@@ -1,7 +1,7 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 import ReorderableList, {
   reorderItems,
   useReorderableDrag,
@@ -10,7 +10,7 @@ import ReorderableList, {
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
-import { fetchPresets, type RoutinePreset } from '@/lib/presets';
+import { deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import {
   fetchAllRoutines,
   softDeleteRoutine,
@@ -22,6 +22,32 @@ import {
 } from '@/lib/routines';
 
 type FilterValue = RepeatType | 'all';
+
+const PRESET_CHIP_GAP = 8;
+const PRESET_CHIPS_PER_ROW = 4;
+const PRESET_NAME_MAX_CHARS = 8;
+
+// 이름은 8글자까지만 보여주고 그 뒤는 자른다 (가로 스크롤로 어차피 옆 칩을 볼 수 있어서
+// 말줄임 계산 없이 그냥 글자 수로 끊는다)
+function truncatePresetName(name: string): string {
+  return name.length > PRESET_NAME_MAX_CHARS ? name.slice(0, PRESET_NAME_MAX_CHARS) : name;
+}
+
+// 처음 12개(4개씩 3줄)까지는 순서대로 채우고, 그 이후로 늘어나는 칩은 1번째→2번째→3번째 줄에
+// 한 개씩 돌아가며 추가한다 — 항상 정확히 3줄을 유지하면서 줄 사이 개수 균형을 맞춘다.
+// 3줄 전체가 하나의 가로 스크롤로 묶여서 넘치면 오른쪽으로 당겨서 본다.
+function layoutPresetRows(items: RoutinePreset[]): RoutinePreset[][] {
+  const rows: RoutinePreset[][] = [[], [], []];
+  const initialFillCount = PRESET_CHIPS_PER_ROW * rows.length;
+  items.forEach((item, index) => {
+    const rowIndex =
+      index < initialFillCount
+        ? Math.floor(index / PRESET_CHIPS_PER_ROW)
+        : (index - initialFillCount) % rows.length;
+    rows[rowIndex].push(item);
+  });
+  return rows;
+}
 
 const FILTERS: { value: FilterValue; label: string }[] = [
   { value: 'all', label: '전체' },
@@ -167,6 +193,22 @@ export default function MyRoutinesScreen() {
     applyNewOrder(reorderItems(filtered, from, to));
   }
 
+  // 모음집(preset)에서 만들어진 루틴이 삭제로 인해 하나도 안 남으면, 그 모음집도 같이
+  // 소프트 삭제한다("내 루틴" 탭은 보기/삭제 용도라 관리는 "모음집" 탭에서 하지만, 텅 빈
+  // 모음집이 필터에 그대로 남아있는 건 혼란스러워서). "루틴 복구"에서 2주 안에는 되돌릴 수 있음.
+  async function cleanupEmptyPresets(deletedRoutines: Routine[], remainingRoutines: Routine[]) {
+    const affectedPresetIds = Array.from(
+      new Set(deletedRoutines.map((r) => r.preset_id).filter((id): id is string => id != null))
+    );
+    const nowEmptyPresetIds = affectedPresetIds.filter(
+      (presetId) => !remainingRoutines.some((r) => r.preset_id === presetId)
+    );
+    if (nowEmptyPresetIds.length === 0) return;
+    await Promise.all(nowEmptyPresetIds.map((id) => deletePreset(id)));
+    setPresets((prev) => prev.filter((p) => !nowEmptyPresetIds.includes(p.id)));
+    setPresetFilter((prev) => (prev && nowEmptyPresetIds.includes(prev) ? null : prev));
+  }
+
   function handleDelete(routine: Routine) {
     Alert.alert('루틴을 삭제할까요?', `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`, [
       { text: '취소', style: 'cancel' },
@@ -176,7 +218,9 @@ export default function MyRoutinesScreen() {
         onPress: async () => {
           try {
             await softDeleteRoutine(routine.id);
-            setRoutines((prev) => prev.filter((r) => r.id !== routine.id));
+            const remaining = routines.filter((r) => r.id !== routine.id);
+            setRoutines(remaining);
+            await cleanupEmptyPresets([routine], remaining);
           } catch {
             setErrorMessage('삭제에 실패했어요.');
           }
@@ -215,9 +259,12 @@ export default function MyRoutinesScreen() {
           const ids = Array.from(selectedIds);
           try {
             await softDeleteRoutines(ids);
-            setRoutines((prev) => prev.filter((r) => !selectedIds.has(r.id)));
+            const deleted = routines.filter((r) => selectedIds.has(r.id));
+            const remaining = routines.filter((r) => !selectedIds.has(r.id));
+            setRoutines(remaining);
             setSelectedIds(new Set());
             setSelectMode(false);
+            await cleanupEmptyPresets(deleted, remaining);
           } catch {
             setErrorMessage('삭제에 실패했어요.');
           }
@@ -259,6 +306,7 @@ export default function MyRoutinesScreen() {
 
       {groupMode === 'repeat' ? (
         <FlatList
+          key="repeat-filter"
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.filterRow}
@@ -278,23 +326,29 @@ export default function MyRoutinesScreen() {
       ) : presets.length === 0 ? (
         <Text style={styles.noPresetsText}>아직 만든 모음집이 없어요.</Text>
       ) : (
-        <FlatList
+        // 항상 정확히 3줄 — 처음 12개는 4개씩 순서대로, 그 이후는 줄마다 한 개씩 돌아가며 추가.
+        // 3줄 전체가 하나의 가로 스크롤로 묶여서, 넘치면 오른쪽으로 당겨서 본다.
+        <ScrollView
           horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterRow}
-          contentContainerStyle={styles.filterRowContent}
-          data={presets}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <Pressable
-              style={[styles.filterChip, presetFilter === item.id && styles.filterChipActive]}
-              onPress={() => setPresetFilter((prev) => (prev === item.id ? null : item.id))}>
-              <Text style={[styles.filterChipText, presetFilter === item.id && styles.filterChipTextActive]}>
-                {item.name}
-              </Text>
-            </Pressable>
-          )}
-        />
+          showsHorizontalScrollIndicator
+          style={styles.presetFilterScroll}>
+          <View>
+            {layoutPresetRows(presets).map((row, rowIndex) => (
+              <View key={rowIndex} style={styles.presetFilterRow}>
+                {row.map((item) => (
+                  <Pressable
+                    key={item.id}
+                    style={[styles.filterChip, presetFilter === item.id && styles.filterChipActive]}
+                    onPress={() => setPresetFilter((prev) => (prev === item.id ? null : item.id))}>
+                    <Text style={[styles.filterChipText, presetFilter === item.id && styles.filterChipTextActive]}>
+                      {truncatePresetName(item.name)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       )}
 
       <View style={styles.toolbarRow}>
@@ -448,6 +502,16 @@ const styles = StyleSheet.create({
   filterRowContent: {
     paddingHorizontal: 20,
     gap: 8,
+  },
+  presetFilterScroll: {
+    flexGrow: 0,
+    marginBottom: 12,
+  },
+  presetFilterRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    gap: PRESET_CHIP_GAP,
+    marginBottom: PRESET_CHIP_GAP,
   },
   filterChip: {
     borderWidth: 1,
