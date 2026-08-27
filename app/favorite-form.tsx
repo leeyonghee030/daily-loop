@@ -49,7 +49,7 @@ export default function FavoriteFormScreen() {
   const [title, setTitle] = useState('');
   const [blockType, setBlockType] = useState<BlockType>('check');
   const [trackingUnit, setTrackingUnit] = useState('');
-  const [timeMode, setTimeMode] = useState<'exact' | 'slot'>('slot');
+  const [timeMode, setTimeMode] = useState<'exact' | 'slot' | 'instant'>('slot');
   const [startTime, setStartTime] = useState<Date>(timeToDate('09:00'));
   const [endTime, setEndTime] = useState<Date>(timeToDate('10:00'));
   const [slotId, setSlotId] = useState<string | null>(null);
@@ -75,7 +75,10 @@ export default function FavoriteFormScreen() {
         setBlockType(favorite.block_type);
         setTrackingUnit(favorite.tracking_unit ?? '');
         setIsRequired(favorite.is_required);
-        if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
+        if (favorite.is_instant && favorite.scheduled_time_start) {
+          setTimeMode('instant');
+          setStartTime(timeToDate(favorite.scheduled_time_start));
+        } else if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
           setTimeMode('exact');
           setStartTime(timeToDate(favorite.scheduled_time_start));
           setEndTime(timeToDate(favorite.scheduled_time_end));
@@ -93,6 +96,14 @@ export default function FavoriteFormScreen() {
       hide();
       if (event.type === 'set' && date) setter(date);
     };
+  }
+
+  // 끝이 시작보다 같거나 이르면 무시한다 — 안 그러면 자정을 넘겨 이어지는 걸로 잘못 계산돼서
+  // 버그처럼 보임. 시계로는 24:00을 고를 수 없어 자정에 끝내려면 00:00을 골라야 하니, 그 경우만 예외로 허용
+  function applyEndTime(newEnd: Date) {
+    const isMidnight = newEnd.getHours() === 0 && newEnd.getMinutes() === 0;
+    if (!isMidnight && newEnd.getTime() <= startTime.getTime()) return;
+    setEndTime(newEnd);
   }
 
   async function handleSave() {
@@ -113,8 +124,10 @@ export default function FavoriteFormScreen() {
     const input: FavoriteInput = {
       title: title.trim(),
       block_type: blockType,
-      scheduled_time_start: timeMode === 'exact' ? dateToTimeString(startTime) : null,
-      scheduled_time_end: timeMode === 'exact' ? dateToTimeString(endTime) : null,
+      scheduled_time_start: timeMode !== 'slot' ? dateToTimeString(startTime) : null,
+      scheduled_time_end:
+        timeMode === 'exact' ? dateToTimeString(endTime) : timeMode === 'instant' ? dateToTimeString(startTime) : null,
+      is_instant: timeMode === 'instant',
       slot_id: timeMode === 'slot' ? slotId : null,
       is_required: isRequired,
       tracking_unit: blockType === 'tracking' ? trackingUnit.trim() : null,
@@ -195,7 +208,8 @@ export default function FavoriteFormScreen() {
 
       <Text style={styles.label}>시간</Text>
       <View style={styles.chipRow}>
-        <Chip label="정확한 시각" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
         <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
       </View>
 
@@ -207,6 +221,12 @@ export default function FavoriteFormScreen() {
           <Text>~</Text>
           <Pressable style={styles.timeButton} onPress={() => setShowEndPicker(true)}>
             <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
+          </Pressable>
+        </View>
+      ) : timeMode === 'instant' ? (
+        <View style={styles.chipRow}>
+          <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
+            <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
           </Pressable>
         </View>
       ) : (
@@ -226,6 +246,7 @@ export default function FavoriteFormScreen() {
         <DateTimePicker
           value={startTime}
           mode="time"
+          minuteInterval={15}
           onChange={handleTimeChange(setStartTime, () => setShowStartPicker(false))}
         />
       )}
@@ -233,7 +254,8 @@ export default function FavoriteFormScreen() {
         <DateTimePicker
           value={endTime}
           mode="time"
-          onChange={handleTimeChange(setEndTime, () => setShowEndPicker(false))}
+          minuteInterval={15}
+          onChange={handleTimeChange(applyEndTime, () => setShowEndPicker(false))}
         />
       )}
 

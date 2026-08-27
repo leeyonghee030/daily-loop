@@ -1,5 +1,6 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
@@ -24,6 +25,8 @@ function rateValue(completed: number, scheduled: number): number {
   return Math.min(1, completed / scheduled);
 }
 
+const SUMMARY_NOTE_SEEN_KEY = 'stats_summary_note_seen';
+
 export default function StatsScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -33,6 +36,18 @@ export default function StatsScreen() {
   const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
+  const [showSummaryNote, setShowSummaryNote] = useState(false);
+
+  // "삭제된 루틴 기록도 포함됩니다" 안내는 계속 떠 있으면 거슬리니 최초 1회만 보여주고,
+  // 그다음부터는 (해당될 때만) 아래 빈 목록 안내 문구에 녹여서 보여준다
+  useEffect(() => {
+    (async () => {
+      const seen = await AsyncStorage.getItem(SUMMARY_NOTE_SEEN_KEY);
+      if (seen) return;
+      setShowSummaryNote(true);
+      await AsyncStorage.setItem(SUMMARY_NOTE_SEEN_KEY, 'true');
+    })();
+  }, []);
 
   const load = useCallback(async () => {
     if (!userId) return;
@@ -96,7 +111,14 @@ export default function StatsScreen() {
     );
   }
 
-  if (summary.routines.length === 0 && summary.hiddenRoutines.length === 0) {
+  // 지금 살아있는 루틴 카드가 하나도 없어도(전부 삭제됐어도), 삭제 전 기록이 남아있으면
+  // 이번주/이번달 요약은 계속 보여줘야 함 — 카드 목록만 없다고 통계 전체를 빈 화면 처리하면 안 됨
+  const hasAnyData =
+    summary.routines.length > 0 ||
+    summary.hiddenRoutines.length > 0 ||
+    summary.weekly.scheduled > 0 ||
+    summary.monthly.scheduled > 0;
+  if (!hasAnyData) {
     return (
       <View style={styles.centered}>
         <Text style={styles.emptyText}>아직 기록이 없어요, 루틴을 먼저 체크해보세요</Text>
@@ -175,6 +197,9 @@ export default function StatsScreen() {
           {summary[period].completed}/{summary[period].scheduled} 완료
         </Text>
       </View>
+      {showSummaryNote && (
+        <Text style={styles.summaryNote}>삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요</Text>
+      )}
 
       <FlatList
         style={styles.list}
@@ -185,7 +210,11 @@ export default function StatsScreen() {
         ListEmptyComponent={
           summary.hiddenRoutines.length > 0 ? (
             <Text style={styles.emptyText}>표시할 통계가 없어요 (전부 숨김 상태)</Text>
-          ) : null
+          ) : (
+            <Text style={styles.emptyText}>
+              진행 중인 루틴이 없어요{'\n'}삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요
+            </Text>
+          )
         }
       />
 
@@ -288,6 +317,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.85,
     marginTop: 2,
+  },
+  summaryNote: {
+    fontSize: 11,
+    opacity: 0.4,
+    textAlign: 'center',
+    marginHorizontal: 20,
+    marginBottom: 16,
   },
   list: {
     flex: 1,

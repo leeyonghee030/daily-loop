@@ -24,6 +24,7 @@ export type Routine = {
   repeat_days: number[] | null;
   scheduled_time_start: string | null;
   scheduled_time_end: string | null;
+  is_instant: boolean;
   scheduled_date: string | null;
   slot_id: string | null;
   is_required: boolean;
@@ -41,6 +42,8 @@ export type Routine = {
   preset: { name: string } | null;
   created_at: string;
   deleted_at: string | null;
+  // "루틴 복구" 목록에서만 치웠는지 — deleted_at과 별개, 이게 있어도 캘린더/통계 기록은 그대로 유지됨
+  archived_at: string | null;
 };
 
 export type Holiday = {
@@ -76,6 +79,13 @@ export function formatLocalDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+// created_at/deleted_at은 UTC로 저장돼 있어서 그냥 앞 10글자만 자르면(.slice(0, 10)) 한국 새벽
+// 시간대(자정~오전 9시)에 생성/삭제한 경우 실제 로컬 날짜보다 하루 이른 날짜로 잘못 읽힌다
+// (예: 로컬 8/28 새벽 3시 = UTC 8/27 18시). new Date로 파싱해서 로컬 기준으로 다시 계산해야 함
+function localDateOf(isoTimestamp: string): string {
+  return formatLocalDate(new Date(isoTimestamp));
+}
+
 function matchesToday(
   routine: Routine,
   todayDate: string,
@@ -84,6 +94,12 @@ function matchesToday(
 ): boolean {
   if (routine.is_paused) return false;
   if (routine.skip_holidays && isHoliday) return false;
+  // 이 루틴이 생기기 전 날짜는 예정될 수 없다 — 안 그러면 오늘 막 만든 루틴이 생성일보다
+  // 훨씬 전(심하면 몇 달~몇 년 전) 과거 날짜에도 전부 예정됐던 것처럼 계산됨
+  if (todayDate < localDateOf(routine.created_at)) return false;
+  // 삭제된 루틴은 삭제된 날짜부터(그날 포함) 예정에서 빠진다 — 삭제 전 과거 날짜의 캘린더/통계
+  // 기록은 그대로 유지되어야 하므로, 삭제됐다고 전체 기간에서 통째로 빠지면 안 됨
+  if (routine.deleted_at && todayDate >= localDateOf(routine.deleted_at)) return false;
 
   switch (routine.repeat_type) {
     case 'daily':
@@ -347,6 +363,7 @@ export type RoutineInput = {
   repeat_days: number[] | null;
   scheduled_time_start: string | null;
   scheduled_time_end: string | null;
+  is_instant: boolean;
   scheduled_date: string | null;
   slot_id: string | null;
   is_required: boolean;
@@ -448,48 +465,73 @@ export async function fetchDeletedRoutines(userId: string): Promise<Routine[]> {
     .select('*, slots(*), preset:routine_presets(name)')
     .eq('user_id', userId)
     .not('deleted_at', 'is', null)
+    .is('archived_at', null)
     .order('deleted_at', { ascending: false });
   if (error) throw error;
   return data ?? [];
 }
 
+// "루틴 복구" 목록에서만 치운다 — deleted_at/완료기록은 안 건드려서 캘린더·통계 기록은 그대로 유지됨.
+// 완전삭제와 달리 데이터를 없애는 게 아니라 그냥 목록을 정리하는 용도라 되돌릴 수 없다는 경고가 필요 없음
+export async function archiveRoutines(routineIds: string[]): Promise<void> {
+  const { error } = await supabase
+    .from('routines')
+    .update({ archived_at: new Date().toISOString() })
+    .in('id', routineIds);
+  if (error) throw error;
+}
+
+// 삭제돼 있던 기간(삭제일~복구 전날)을 "건너뛴 날짜"로 채워 넣는다 — 안 그러면 복구 직후
+// matchesToday()가 그 기간도 "계속 살아있었는데 체크를 안 한 것"으로 계산해서 스트릭이 끊기고
+// 전체 수행률이 떨어짐(기존에 있던 "특정 날짜 건너뛰기" 기능을 재사용)
+async function backfillSkipDatesForGap(routineId: string, deletedAtISO: string): Promise<void> {
+  const cursor = new Date(`${localDateOf(deletedAtISO)}T00:00:00`);
+  const todayDate = new Date(`${formatLocalDate(new Date())}T00:00:00`);
+  const rows: { routine_id: string; skip_date: string }[] = [];
+  while (cursor < todayDate) {
+    rows.push({ routine_id: routineId, skip_date: formatLocalDate(cursor) });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  if (rows.length === 0) return;
+  const { error } = await supabase
+    .from('routine_skip_dates')
+    .upsert(rows, { onConflict: 'routine_id,skip_date', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
 export async function restoreRoutine(routineId: string): Promise<void> {
+  const { data: routine, error: fetchError } = await supabase
+    .from('routines')
+    .select('deleted_at')
+    .eq('id', routineId)
+    .single();
+  if (fetchError) throw fetchError;
+  if (routine.deleted_at) {
+    await backfillSkipDatesForGap(routineId, routine.deleted_at);
+  }
+
   const { error } = await supabase.from('routines').update({ deleted_at: null }).eq('id', routineId);
-  if (error) throw error;
-}
-
-// "루틴 복구" 화면에서 사용자가 직접 골라 완전 삭제(2주를 안 기다리고 즉시)할 때 사용
-export async function hardDeleteRoutines(routineIds: string[]): Promise<void> {
-  const { error } = await supabase.from('routines').delete().in('id', routineIds);
-  if (error) throw error;
-}
-
-export async function hardDeleteRoutinesByPreset(presetId: string): Promise<void> {
-  const { error } = await supabase.from('routines').delete().eq('preset_id', presetId);
   if (error) throw error;
 }
 
 // 모음집을 통째로 복구할 때, 그 모음집으로 만들어진(소프트 삭제된) 루틴도 같이 되살림
 export async function restoreRoutinesByPreset(presetId: string): Promise<void> {
+  const { data: routines, error: fetchError } = await supabase
+    .from('routines')
+    .select('id, deleted_at')
+    .eq('preset_id', presetId)
+    .not('deleted_at', 'is', null);
+  if (fetchError) throw fetchError;
+
+  await Promise.all(
+    (routines ?? []).map((r) => (r.deleted_at ? backfillSkipDatesForGap(r.id, r.deleted_at) : Promise.resolve()))
+  );
+
   const { error } = await supabase
     .from('routines')
     .update({ deleted_at: null })
     .eq('preset_id', presetId)
     .not('deleted_at', 'is', null);
-  if (error) throw error;
-}
-
-// 소프트 삭제(deleted_at)된 지 2주 지난 루틴을 완전히 지운다 — 완료기록/건너뛰기 기록은
-// on delete cascade로 같이 정리됨. 앱 열 때 하루 한 번 조용히 실행되는 용도(오늘 탭 참고)
-export async function purgeOldDeletedRoutines(userId: string): Promise<void> {
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 14);
-  const { error } = await supabase
-    .from('routines')
-    .delete()
-    .eq('user_id', userId)
-    .not('deleted_at', 'is', null)
-    .lt('deleted_at', cutoff.toISOString());
   if (error) throw error;
 }
 
@@ -508,11 +550,12 @@ export type MonthData = {
 };
 
 async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string): Promise<MonthData> {
+  // 삭제된 루틴도 같이 가져온다 — 삭제 전 과거 날짜는 여전히 그 루틴이 예정돼 있었던 게 맞으므로.
+  // matchesToday()가 deleted_at을 보고 날짜별로 알아서 걸러준다
   const { data: routines, error: routinesError } = await supabase
     .from('routines')
     .select('*, slots(*)')
-    .eq('user_id', userId)
-    .is('deleted_at', null);
+    .eq('user_id', userId);
   if (routinesError) throw routinesError;
 
   const ids = (routines ?? []).map((r) => r.id);
@@ -643,6 +686,9 @@ export type StatsSummary = {
   monthly: PeriodSummary;
   routines: RoutineStats[];
   hiddenRoutines: RoutineStats[];
+  // 지금까지 있었던 모든 루틴(삭제된 것 포함) 통틀어 가장 길었던 스트릭 하나 — 루틴을 지워도
+  // 이 기록 자체는 안 사라지게, 최고기록처럼 남겨둔다(나중에 캘린더 등에서 노출 예정)
+  bestStreakEver: number;
 };
 
 function computeLifetimeStats(
@@ -682,15 +728,17 @@ function computeLifetimeStats(
 export async function fetchStats(userId: string): Promise<StatsSummary> {
   const todayDate = formatLocalDate(new Date());
 
+  // 삭제된 루틴도 같이 가져온다 — 삭제 전 과거 날짜의 수행률/스트릭은 여전히 유효한 기록이므로.
+  // matchesToday()가 deleted_at을 보고 날짜별로 알아서 걸러준다
   const { data: routines, error: routinesError } = await supabase
     .from('routines')
     .select('*, slots(*)')
-    .eq('user_id', userId)
-    .is('deleted_at', null);
+    .eq('user_id', userId);
   if (routinesError) throw routinesError;
 
-  const active = (routines ?? []) as Routine[];
-  const ids = active.map((r) => r.id);
+  const all = (routines ?? []) as Routine[];
+  const active = all.filter((r) => r.deleted_at === null);
+  const ids = all.map((r) => r.id);
 
   const [
     { data: completionRows, error: completionsError },
@@ -724,7 +772,7 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
   function buildRoutineStats(routine: Routine): RoutineStats {
     const completedDates = completedByRoutine.get(routine.id) ?? new Set();
     const skipDates = skipByRoutine.get(routine.id) ?? new Set();
-    const createdDate = routine.created_at.slice(0, 10);
+    const createdDate = localDateOf(routine.created_at);
     const { bestStreak, scheduledCount, completedCount } = computeLifetimeStats(
       routine,
       createdDate,
@@ -737,10 +785,19 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
     return { routine, currentStreak, bestStreak, scheduledCount, completedCount };
   }
 
+  // 루틴별 카드는 지금 살아있는 루틴만(삭제된 건 더 이상 손댈 수 없으니 카드로 안 보여줌).
+  // 대신 아래 전체 요약(이번주/이번달)엔 최근 삭제된 루틴도 삭제 전 날짜까지는 포함시킨다
   const visible = active.filter((r) => !r.hide_from_stats);
   const hidden = active.filter((r) => r.hide_from_stats);
+  const visibleIncludingDeleted = all.filter((r) => !r.hide_from_stats);
   const routineStats = visible.map(buildRoutineStats);
   const hiddenRoutineStats = hidden.map(buildRoutineStats);
+  // 삭제된 루틴은 카드로는 안 보여주지만, 그 루틴이 세운 최고 스트릭은 전체 역대 기록 계산에 포함한다
+  const deletedStats = all.filter((r) => r.deleted_at !== null).map(buildRoutineStats);
+  const bestStreakEver = [...routineStats, ...hiddenRoutineStats, ...deletedStats].reduce(
+    (max, s) => Math.max(max, s.bestStreak),
+    0
+  );
 
   function computePeriodSummary(days: number): PeriodSummary {
     let scheduled = 0;
@@ -751,7 +808,7 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
       const dateStr = formatLocalDate(cursor);
       const dow = cursor.getDay();
       const isHoliday = holidayDates.has(dateStr);
-      for (const routine of visible) {
+      for (const routine of visibleIncludingDeleted) {
         const skipDates = skipByRoutine.get(routine.id) ?? new Set();
         if (skipDates.has(dateStr)) continue;
         if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
@@ -767,6 +824,7 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
     monthly: computePeriodSummary(30),
     routines: routineStats,
     hiddenRoutines: hiddenRoutineStats,
+    bestStreakEver,
   };
 }
 

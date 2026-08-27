@@ -6,6 +6,7 @@ export type PresetItemInput = {
   block_type: BlockType;
   scheduled_time_start: string | null;
   scheduled_time_end: string | null;
+  is_instant: boolean;
   slot_id: string | null;
   is_required: boolean;
   tracking_unit: string | null;
@@ -143,11 +144,8 @@ export async function deletePreset(presetId: string): Promise<void> {
   if (error) throw error;
 }
 
-export async function applyPreset(userId: string, presetId: string): Promise<number> {
-  const { preset, items } = await fetchPresetWithItems(presetId);
-  if (items.length === 0) return 0;
-
-  const routines = items.map((item) => ({
+function presetItemsToRoutines(userId: string, presetId: string, preset: RoutinePreset, items: PresetItemInput[]) {
+  return items.map((item) => ({
     user_id: userId,
     title: item.title,
     block_type: item.block_type,
@@ -155,6 +153,7 @@ export async function applyPreset(userId: string, presetId: string): Promise<num
     repeat_days: preset.repeat_type === 'custom' ? preset.repeat_days : null,
     scheduled_time_start: item.scheduled_time_start,
     scheduled_time_end: item.scheduled_time_end,
+    is_instant: item.is_instant,
     scheduled_date: null,
     slot_id: item.slot_id,
     is_required: item.is_required,
@@ -162,7 +161,94 @@ export async function applyPreset(userId: string, presetId: string): Promise<num
     skip_holidays: preset.skip_holidays,
     preset_id: presetId,
   }));
+}
 
+export async function applyPreset(userId: string, presetId: string): Promise<number> {
+  const { preset, items } = await fetchPresetWithItems(presetId);
+  if (items.length === 0) return 0;
+
+  const routines = presetItemsToRoutines(userId, presetId, preset, items);
+  const { error } = await supabase.from('routines').insert(routines);
+  if (error) throw error;
+  return routines.length;
+}
+
+function presetItemSignature(item: {
+  title: string;
+  block_type: BlockType;
+  scheduled_time_start: string | null;
+  scheduled_time_end: string | null;
+  is_instant: boolean;
+  slot_id: string | null;
+  is_required: boolean;
+  tracking_unit: string | null;
+}): string {
+  return JSON.stringify([
+    item.title,
+    item.block_type,
+    item.scheduled_time_start,
+    item.scheduled_time_end,
+    item.is_instant,
+    item.slot_id,
+    item.is_required,
+    item.tracking_unit,
+  ]);
+}
+
+// 모음집 수정 화면에서 "이미 적용돼 있던" 항목을 지우면, 그걸로 만들어진 실제 루틴도 같이
+// 소프트삭제한다(사용자가 명시적으로 지운 항목에 한해서만 적용 — 필드만 살짝 바꾼 항목은
+// 손대지 않음. 안 그러면 그 루틴에 쌓인 완료기록/스트릭이 의도치 않게 끊길 수 있어서).
+// 같은 내용(제목/시간 등)의 항목이 여러 개면 그중 하나씩만 매칭해 지운다.
+export async function removePresetItemRoutines(
+  presetId: string,
+  removedItems: PresetItemInput[]
+): Promise<number> {
+  if (removedItems.length === 0) return 0;
+  const { data: existingRoutines, error } = await supabase
+    .from('routines')
+    .select('id, title, block_type, scheduled_time_start, scheduled_time_end, is_instant, slot_id, is_required, tracking_unit')
+    .eq('preset_id', presetId)
+    .is('deleted_at', null);
+  if (error) throw error;
+
+  const remaining = [...(existingRoutines ?? [])];
+  const idsToDelete: string[] = [];
+  for (const removedItem of removedItems) {
+    const signature = presetItemSignature(removedItem);
+    const matchIndex = remaining.findIndex((routine) => presetItemSignature(routine) === signature);
+    if (matchIndex !== -1) {
+      idsToDelete.push(remaining[matchIndex].id);
+      remaining.splice(matchIndex, 1);
+    }
+  }
+  if (idsToDelete.length === 0) return 0;
+
+  const { error: deleteError } = await supabase
+    .from('routines')
+    .update({ deleted_at: new Date().toISOString() })
+    .in('id', idsToDelete);
+  if (deleteError) throw deleteError;
+  return idsToDelete.length;
+}
+
+// 기존 모음집을 수정하면서 새로 추가한 항목만 오늘 목록에 실제 루틴으로 반영한다.
+// (모음집 수정 자체는 템플릿만 바꾸고 이미 적용된 루틴은 건드리지 않는데, 그러면 새로 추가한
+// 항목이 실제 루틴으로 안 생겨서 "내 루틴"에서 안 보이거나, 같은 이름 항목을 중복으로 추가해도
+// 실물은 1개뿐이라 헷갈리는 문제가 있었음 — 방금 추가한 항목만 콕 집어 바로 적용해서 해결)
+export async function applyNewPresetItems(
+  userId: string,
+  presetId: string,
+  newItems: PresetItemInput[]
+): Promise<number> {
+  if (newItems.length === 0) return 0;
+  const { data: preset, error: presetError } = await supabase
+    .from('routine_presets')
+    .select('*')
+    .eq('id', presetId)
+    .single();
+  if (presetError) throw presetError;
+
+  const routines = presetItemsToRoutines(userId, presetId, preset, newItems);
   const { error } = await supabase.from('routines').insert(routines);
   if (error) throw error;
   return routines.length;

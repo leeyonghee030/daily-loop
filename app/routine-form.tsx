@@ -116,7 +116,7 @@ export default function RoutineFormScreen() {
   const [blockType, setBlockType] = useState<BlockType>('check');
   const [repeatType, setRepeatType] = useState<RepeatType>('daily');
   const [repeatDays, setRepeatDays] = useState<number[]>([]);
-  const [timeMode, setTimeMode] = useState<'exact' | 'slot'>('slot');
+  const [timeMode, setTimeMode] = useState<'exact' | 'slot' | 'instant'>('slot');
   // 신규 루틴 기본값은 지금 시각을 다음 정각으로 올린 값(+1시간)으로 시작 — 기존에 저장된
   // 루틴/즐겨찾기/LLM 미리보기 값이 있으면 아래 useEffect들이 이 기본값을 덮어씀
   const [startTime, setStartTime] = useState<Date>(() => roundUpToHour(new Date()));
@@ -135,6 +135,13 @@ export default function RoutineFormScreen() {
   const [trackingUnit, setTrackingUnit] = useState('');
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
+  // iOS 스피너가 열려있는 동안 고르고 있는 값 — ref라 값이 바뀌어도 리렌더를 안 일으킨다.
+  // state로 관리해서 스피너의 value prop에 매 스크롤마다 다시 흘려보내면(제어 컴포넌트 재렌더)
+  // 라이브러리가 내부적으로 휠 위치를 다시 계산하면서 분만 움직였는데도 시 휠까지 밀리는 문제가
+  // 있어서, 스피너를 여는 순간의 값으로 value를 고정해두고(pickerOpenValue) 그동안 고른 값은
+  // 화면엔 반영하지 않다가 "완료"를 눌러야만 실제 시작/끝 시각에 반영한다
+  const pickerDraftRef = useRef<Date | null>(null);
+  const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
@@ -179,7 +186,10 @@ export default function RoutineFormScreen() {
         if (routine.video_id) {
           fetchVideoById(routine.video_id).then(setSelectedVideo).catch(() => {});
         }
-        if (routine.scheduled_time_start && routine.scheduled_time_end) {
+        if (routine.is_instant && routine.scheduled_time_start) {
+          setTimeMode('instant');
+          setStartTime(timeToDate(routine.scheduled_time_start));
+        } else if (routine.scheduled_time_start && routine.scheduled_time_end) {
           setTimeMode('exact');
           setStartTime(timeToDate(routine.scheduled_time_start));
           setEndTime(timeToDate(routine.scheduled_time_end));
@@ -243,7 +253,10 @@ export default function RoutineFormScreen() {
     setBlockType(favorite.block_type);
     setTrackingUnit(favorite.tracking_unit ?? '');
     setIsRequired(favorite.is_required);
-    if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
+    if (favorite.is_instant && favorite.scheduled_time_start) {
+      setTimeMode('instant');
+      setStartTime(timeToDate(favorite.scheduled_time_start));
+    } else if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
       setTimeMode('exact');
       setStartTime(timeToDate(favorite.scheduled_time_start));
       setEndTime(timeToDate(favorite.scheduled_time_end));
@@ -266,6 +279,7 @@ export default function RoutineFormScreen() {
         repeat_days: null,
         scheduled_time_start: favorite.scheduled_time_start,
         scheduled_time_end: favorite.scheduled_time_end,
+        is_instant: favorite.is_instant,
         scheduled_date: null,
         slot_id: favorite.slot_id,
         is_required: favorite.is_required,
@@ -325,8 +339,10 @@ export default function RoutineFormScreen() {
       block_type: blockType,
       repeat_type: repeatType,
       repeat_days: repeatType === 'custom' ? repeatDays : null,
-      scheduled_time_start: timeMode === 'exact' ? dateToTimeString(startTime) : null,
-      scheduled_time_end: timeMode === 'exact' ? dateToTimeString(endTime) : null,
+      scheduled_time_start: timeMode !== 'slot' ? dateToTimeString(startTime) : null,
+      scheduled_time_end:
+        timeMode === 'exact' ? dateToTimeString(endTime) : timeMode === 'instant' ? dateToTimeString(startTime) : null,
+      is_instant: timeMode === 'instant',
       scheduled_date: repeatType === 'once' ? formatLocalDate(scheduledDate) : null,
       slot_id: timeMode === 'slot' ? slotId : null,
       is_required: isRequired,
@@ -351,6 +367,7 @@ export default function RoutineFormScreen() {
             block_type: input.block_type,
             scheduled_time_start: input.scheduled_time_start,
             scheduled_time_end: input.scheduled_time_end,
+            is_instant: input.is_instant,
             slot_id: input.slot_id,
             is_required: input.is_required,
             tracking_unit: input.tracking_unit,
@@ -425,8 +442,13 @@ export default function RoutineFormScreen() {
     setQuickAddedMinutes(0);
   }
 
-  // 끝 시각을 시계로 직접 바꾸면 그게 새 기준이 되므로, 버튼 누적치는 초기화한다
+  // 끝 시각을 시계로 직접 바꾸면 그게 새 기준이 되므로, 버튼 누적치는 초기화한다.
+  // 끝이 시작보다 같거나 이르면 무시한다 — 안 그러면 "23시간짜리 일정"처럼 자정을 넘겨
+  // 이어지는 걸로 잘못 계산돼서(끝-시작 랩어라운드) 버그처럼 보임. 24:00에 끝내고 싶으면
+  // 시계로는 24:00을 고를 수 없어 어차피 00:00으로 저장해야 하니, 이 규칙에서 예외로 허용한다
   function applyEndTime(newEnd: Date) {
+    const isMidnight = newEnd.getHours() === 0 && newEnd.getMinutes() === 0;
+    if (!isMidnight && newEnd.getTime() <= startTime.getTime()) return;
     setEndTime(newEnd);
     setQuickAddedMinutes(0);
   }
@@ -438,12 +460,17 @@ export default function RoutineFormScreen() {
     };
   }
 
+  function openTimePicker(current: Date, show: () => void) {
+    pickerDraftRef.current = current;
+    setPickerOpenValue(current);
+    show();
+  }
+
   // 시간 스피너는 다이얼로그 없이 스크롤할 때마다 계속 값이 바뀌므로, 자동으로 닫지 않고
-  // "완료" 버튼을 따로 눌러야 닫히게 한다(닫는 즉시 다음 값 반영이 끊기지 않도록)
-  function handleSpinnerTimeChange(setter: (date: Date) => void) {
-    return (_event: DateTimePickerEvent, date?: Date) => {
-      if (date) setter(date);
-    };
+  // "완료" 버튼을 따로 눌러야 닫히게 한다(닫는 즉시 다음 값 반영이 끊기지 않도록).
+  // ref에만 적어두고 리렌더를 안 일으켜야 스피너의 value가 스크롤 도중 안 바뀜(위 설명 참고)
+  function handleSpinnerTimeChange(event: DateTimePickerEvent, date?: Date) {
+    if (date) pickerDraftRef.current = date;
   }
 
   async function pickPhoto() {
@@ -574,18 +601,26 @@ export default function RoutineFormScreen() {
 
       <Text style={styles.label}>시간</Text>
       <View style={styles.chipRow}>
-        <Chip label="정확한 시각" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
         <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
       </View>
+      {timeMode === 'instant' && (
+        <Text style={styles.favoriteHint}>"8시 기상"처럼 시간을 차지하지 않고 그 시간에 체크만 해요.</Text>
+      )}
 
       {timeMode === 'exact' ? (
         <>
           <View style={styles.chipRow}>
-            <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
+            <Pressable
+              style={styles.timeButton}
+              onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
               <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
             </Pressable>
             <Text>~</Text>
-            <Pressable style={styles.timeButton} onPress={() => setShowEndPicker(true)}>
+            <Pressable
+              style={styles.timeButton}
+              onPress={() => openTimePicker(endTime, () => setShowEndPicker(true))}>
               <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
             </Pressable>
             {formatDuration(startTime, endTime) !== '' && (
@@ -600,6 +635,14 @@ export default function RoutineFormScreen() {
             <Chip label="초기화" selected={false} onPress={resetQuickAdded} />
           </View>
         </>
+      ) : timeMode === 'instant' ? (
+        <View style={styles.chipRow}>
+          <Pressable
+            style={styles.timeButton}
+            onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
+            <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
+          </Pressable>
+        </View>
       ) : (
         <View style={styles.chipRow}>
           {slots.map((slot) => (
@@ -622,12 +665,27 @@ export default function RoutineFormScreen() {
             value={startTime}
             mode="time"
             display="spinner"
-            onChange={handleTimeChange(applyStartTime, () => setShowStartPicker(false))}
+            minuteInterval={15}
+            onChange={handleTimeChange(timeMode === 'instant' ? setStartTime : applyStartTime, () => setShowStartPicker(false))}
           />
         ) : (
           <View style={styles.spinnerBox}>
-            <DateTimePicker value={startTime} mode="time" display="spinner" onChange={handleSpinnerTimeChange(applyStartTime)} />
-            <Pressable style={styles.spinnerDoneButton} onPress={() => setShowStartPicker(false)}>
+            <DateTimePicker
+              value={pickerOpenValue ?? startTime}
+              mode="time"
+              display="spinner"
+              minuteInterval={15}
+              onChange={handleSpinnerTimeChange}
+            />
+            <Pressable
+              style={styles.spinnerDoneButton}
+              onPress={() => {
+                const picked = pickerDraftRef.current;
+                if (picked) (timeMode === 'instant' ? setStartTime : applyStartTime)(picked);
+                pickerDraftRef.current = null;
+                setPickerOpenValue(null);
+                setShowStartPicker(false);
+              }}>
               <Text style={styles.spinnerDoneText}>완료</Text>
             </Pressable>
           </View>
@@ -638,12 +696,27 @@ export default function RoutineFormScreen() {
             value={endTime}
             mode="time"
             display="spinner"
+            minuteInterval={15}
             onChange={handleTimeChange(applyEndTime, () => setShowEndPicker(false))}
           />
         ) : (
           <View style={styles.spinnerBox}>
-            <DateTimePicker value={endTime} mode="time" display="spinner" onChange={handleSpinnerTimeChange(applyEndTime)} />
-            <Pressable style={styles.spinnerDoneButton} onPress={() => setShowEndPicker(false)}>
+            <DateTimePicker
+              value={pickerOpenValue ?? endTime}
+              mode="time"
+              display="spinner"
+              minuteInterval={15}
+              onChange={handleSpinnerTimeChange}
+            />
+            <Pressable
+              style={styles.spinnerDoneButton}
+              onPress={() => {
+                const picked = pickerDraftRef.current;
+                if (picked) applyEndTime(picked);
+                pickerDraftRef.current = null;
+                setPickerOpenValue(null);
+                setShowEndPicker(false);
+              }}>
               <Text style={styles.spinnerDoneText}>완료</Text>
             </Pressable>
           </View>

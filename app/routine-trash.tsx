@@ -11,9 +11,8 @@ import {
   type RoutinePreset,
 } from '@/lib/presets';
 import {
+  archiveRoutines,
   fetchDeletedRoutines,
-  hardDeleteRoutines,
-  hardDeleteRoutinesByPreset,
   restoreRoutine,
   restoreRoutinesByPreset,
   SLOT_LABELS,
@@ -21,6 +20,9 @@ import {
 } from '@/lib/routines';
 
 function timeLabel(routine: Routine): string {
+  if (routine.is_instant && routine.scheduled_time_start) {
+    return routine.scheduled_time_start.slice(0, 5);
+  }
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
   }
@@ -148,39 +150,38 @@ export default function RoutineTrashScreen() {
     }
   }
 
+  // 모음집(템플릿)은 완전삭제(완료기록이 안 달려있어서 안전) — 루틴은 완료기록 보존을 위해
+  // 절대 완전삭제하지 않고, "루틴 복구" 목록에서만 치운다(archived_at). 그래서 확인 문구도
+  // "되돌릴 수 없어요" 같은 무서운 경고 없이, 기록은 안전하다는 걸 분명히 알려준다
   function handleDeleteSelected() {
     if (totalSelectedCount === 0) return;
-    Alert.alert(
-      '완전히 삭제할까요?',
-      `선택한 ${totalSelectedCount}개는 2주를 기다리지 않고 지금 바로 완전히 삭제돼요. 이 작업은 되돌릴 수 없어요.`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '완전 삭제',
-          style: 'destructive',
-          onPress: async () => {
-            setErrorMessage(null);
-            const presetIds = Array.from(selectedPresetIds);
-            const routineIds = Array.from(selectedRoutineIds);
-            try {
-              await Promise.all([
-                ...presetIds.map((id) => hardDeleteRoutinesByPreset(id).then(() => hardDeletePreset(id))),
-                routineIds.length > 0 ? hardDeleteRoutines(routineIds) : Promise.resolve(),
-              ]);
-              setDeletedPresets((prev) => prev.filter((p) => !selectedPresetIds.has(p.id)));
-              setDeletedRoutines((prev) =>
-                prev.filter((r) => !selectedRoutineIds.has(r.id) && !(r.preset_id && selectedPresetIds.has(r.preset_id)))
-              );
-              setSelectedPresetIds(new Set());
-              setSelectedRoutineIds(new Set());
-              setSelectMode(false);
-            } catch {
-              setErrorMessage('삭제에 실패했어요.');
-            }
-          },
+    const presetIds = Array.from(selectedPresetIds);
+    const routineIds = Array.from(selectedRoutineIds);
+    const parts: string[] = [];
+    if (presetIds.length > 0) parts.push(`모음집 ${presetIds.length}개는 완전히 삭제돼요(연결된 루틴·기록은 안 지워져요)`);
+    if (routineIds.length > 0) parts.push(`루틴 ${routineIds.length}개는 이 목록에서만 정리돼요(완료기록은 계속 안전하게 보관돼요)`);
+
+    Alert.alert('정리할까요?', parts.join('. ') + '.', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '정리하기',
+        onPress: async () => {
+          setErrorMessage(null);
+          try {
+            await Promise.all([
+              ...presetIds.map((id) => hardDeletePreset(id)),
+              routineIds.length > 0 ? archiveRoutines(routineIds) : Promise.resolve(),
+            ]);
+            setSelectedPresetIds(new Set());
+            setSelectedRoutineIds(new Set());
+            setSelectMode(false);
+            await load();
+          } catch {
+            setErrorMessage('정리에 실패했어요.');
+          }
         },
-      ]
-    );
+      },
+    ]);
   }
 
   if (isLoading) {
@@ -208,7 +209,7 @@ export default function RoutineTrashScreen() {
               style={styles.toolbarButton}
               disabled={totalSelectedCount === 0}
               onPress={handleDeleteSelected}>
-              <Text style={styles.toolbarButtonDangerText}>삭제</Text>
+              <Text style={styles.toolbarButtonText}>정리</Text>
             </Pressable>
             <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
               <Text style={styles.toolbarButtonText}>취소</Text>
@@ -217,7 +218,7 @@ export default function RoutineTrashScreen() {
         ) : (
           !isEmpty && (
             <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
-              <Text style={styles.toolbarButtonText}>선택 삭제</Text>
+              <Text style={styles.toolbarButtonText}>선택 정리</Text>
             </Pressable>
           )
         )}
@@ -225,8 +226,9 @@ export default function RoutineTrashScreen() {
 
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <Text style={styles.desc}>
-          삭제한 루틴·모음집은 바로 없어지지 않고 2주 동안 여기서 복구할 수 있어요. 2주가 지나면 완전히
-          삭제돼요.
+          삭제된 루틴은 여기서 언제든 복구할 수 있어요. 완료 기록도 계속 안전하게 보관되니 걱정 마세요.{'\n\n'}
+          모음집(루틴 묶음)은 2주 안에 복구하지 않으면 자동으로 삭제돼요. 2주를 기다리지 않고 바로 삭제하고
+          싶다면 "선택 정리"를 눌러주세요(연결된 루틴은 지워지지 않아요).
         </Text>
 
         {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
@@ -290,9 +292,7 @@ export default function RoutineTrashScreen() {
                   {routine.title}
                   {routine.preset?.name ? ` · ${routine.preset.name}` : ''}
                 </Text>
-                <Text style={styles.rowMeta}>
-                  {timeLabel(routine)} · {daysUntilPurge(routine.deleted_at!)}일 후 완전 삭제
-                </Text>
+                <Text style={styles.rowMeta}>{timeLabel(routine)}</Text>
               </View>
               {!selectMode && (
                 <Pressable
@@ -346,11 +346,6 @@ const styles = StyleSheet.create({
   toolbarButtonText: {
     fontSize: 13,
     color: '#7C5CFC',
-    fontWeight: '600',
-  },
-  toolbarButtonDangerText: {
-    fontSize: 13,
-    color: '#FF6B6B',
     fontWeight: '600',
   },
   desc: {

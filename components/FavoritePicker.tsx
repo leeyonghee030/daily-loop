@@ -7,6 +7,9 @@ import type { Favorite } from '@/lib/favorites';
 import { SLOT_LABELS, type Slot } from '@/lib/routines';
 
 function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
+  if (favorite.is_instant && favorite.scheduled_time_start) {
+    return favorite.scheduled_time_start.slice(0, 5);
+  }
   if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
     return `${favorite.scheduled_time_start.slice(0, 5)}-${favorite.scheduled_time_end.slice(0, 5)}`;
   }

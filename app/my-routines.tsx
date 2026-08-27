@@ -67,6 +67,9 @@ const REPEAT_LABELS: Record<RepeatType, string> = {
 };
 
 function timeLabel(routine: Routine): string {
+  if (routine.is_instant && routine.scheduled_time_start) {
+    return routine.scheduled_time_start.slice(0, 5);
+  }
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
   }
@@ -193,39 +196,58 @@ export default function MyRoutinesScreen() {
     applyNewOrder(reorderItems(filtered, from, to));
   }
 
-  // 모음집(preset)에서 만들어진 루틴이 삭제로 인해 하나도 안 남으면, 그 모음집도 같이
-  // 소프트 삭제한다("내 루틴" 탭은 보기/삭제 용도라 관리는 "모음집" 탭에서 하지만, 텅 빈
-  // 모음집이 필터에 그대로 남아있는 건 혼란스러워서). "루틴 복구"에서 2주 안에는 되돌릴 수 있음.
-  async function cleanupEmptyPresets(deletedRoutines: Routine[], remainingRoutines: Routine[]) {
+  // 이 삭제로 인해 하나도 안 남게 되는 모음집(preset)들을 찾는다 — 모음집 자체를 지울지는
+  // 자동으로 정하지 않고, 사용자가 확인창에서 "모음집도 삭제" 버튼을 직접 눌러야만 지운다
+  // (모음집 템플릿과 실제 루틴은 별개 개념이라, 루틴을 다 지웠다고 모음집까지 자동으로
+  // 사라지면 의도치 않게 템플릿까지 잃을 수 있어서)
+  function emptiedPresets(deletedRoutines: Routine[], remainingRoutines: Routine[]): RoutinePreset[] {
     const affectedPresetIds = Array.from(
       new Set(deletedRoutines.map((r) => r.preset_id).filter((id): id is string => id != null))
     );
     const nowEmptyPresetIds = affectedPresetIds.filter(
       (presetId) => !remainingRoutines.some((r) => r.preset_id === presetId)
     );
-    if (nowEmptyPresetIds.length === 0) return;
-    await Promise.all(nowEmptyPresetIds.map((id) => deletePreset(id)));
-    setPresets((prev) => prev.filter((p) => !nowEmptyPresetIds.includes(p.id)));
-    setPresetFilter((prev) => (prev && nowEmptyPresetIds.includes(prev) ? null : prev));
+    return presets.filter((p) => nowEmptyPresetIds.includes(p.id));
+  }
+
+  async function deletePresetsById(presetIds: string[]) {
+    if (presetIds.length === 0) return;
+    await Promise.all(presetIds.map((id) => deletePreset(id)));
+    setPresets((prev) => prev.filter((p) => !presetIds.includes(p.id)));
+    setPresetFilter((prev) => (prev && presetIds.includes(prev) ? null : prev));
+  }
+
+  async function performDelete(routine: Routine, remaining: Routine[], presetIdsToDelete: string[] = []) {
+    try {
+      await softDeleteRoutine(routine.id);
+      setRoutines(remaining);
+      await deletePresetsById(presetIdsToDelete);
+    } catch {
+      setErrorMessage('삭제에 실패했어요.');
+    }
   }
 
   function handleDelete(routine: Routine) {
+    const remaining = routines.filter((r) => r.id !== routine.id);
+    const emptied = emptiedPresets([routine], remaining);
+
+    if (emptied.length > 0) {
+      const preset = emptied[0];
+      Alert.alert(
+        '루틴을 삭제할까요?',
+        `"${routine.title}"을(를) 지우면 "${preset.name}" 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '루틴만 삭제', onPress: () => performDelete(routine, remaining) },
+          { text: '모음집도 삭제', style: 'destructive', onPress: () => performDelete(routine, remaining, [preset.id]) },
+        ]
+      );
+      return;
+    }
+
     Alert.alert('루틴을 삭제할까요?', `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`, [
       { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await softDeleteRoutine(routine.id);
-            const remaining = routines.filter((r) => r.id !== routine.id);
-            setRoutines(remaining);
-            await cleanupEmptyPresets([routine], remaining);
-          } catch {
-            setErrorMessage('삭제에 실패했어요.');
-          }
-        },
-      },
+      { text: '삭제', style: 'destructive', onPress: () => performDelete(routine, remaining) },
     ]);
   }
 
@@ -247,29 +269,47 @@ export default function MyRoutinesScreen() {
     setSelectedIds((prev) => (prev.size === filtered.length ? new Set() : new Set(filtered.map((r) => r.id))));
   }
 
+  async function performBulkDelete(ids: string[], remaining: Routine[], presetIdsToDelete: string[] = []) {
+    try {
+      await softDeleteRoutines(ids);
+      setRoutines(remaining);
+      setSelectedIds(new Set());
+      setSelectMode(false);
+      await deletePresetsById(presetIdsToDelete);
+    } catch {
+      setErrorMessage('삭제에 실패했어요.');
+    }
+  }
+
   function handleBulkDeleteSelected() {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
+    const ids = Array.from(selectedIds);
+    const deleted = routines.filter((r) => selectedIds.has(r.id));
+    const remaining = routines.filter((r) => !selectedIds.has(r.id));
+    const emptied = emptiedPresets(deleted, remaining);
+
+    if (emptied.length > 0) {
+      const names = emptied.map((p) => `"${p.name}"`).join(', ');
+      Alert.alert(
+        '선택한 루틴을 삭제할까요?',
+        `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. ${names} 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
+        [
+          { text: '취소', style: 'cancel' },
+          { text: '루틴만 삭제', onPress: () => performBulkDelete(ids, remaining) },
+          {
+            text: '모음집도 삭제',
+            style: 'destructive',
+            onPress: () => performBulkDelete(ids, remaining, emptied.map((p) => p.id)),
+          },
+        ]
+      );
+      return;
+    }
+
     Alert.alert('선택한 루틴을 삭제할까요?', `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`, [
       { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: async () => {
-          const ids = Array.from(selectedIds);
-          try {
-            await softDeleteRoutines(ids);
-            const deleted = routines.filter((r) => selectedIds.has(r.id));
-            const remaining = routines.filter((r) => !selectedIds.has(r.id));
-            setRoutines(remaining);
-            setSelectedIds(new Set());
-            setSelectMode(false);
-            await cleanupEmptyPresets(deleted, remaining);
-          } catch {
-            setErrorMessage('삭제에 실패했어요.');
-          }
-        },
-      },
+      { text: '삭제', style: 'destructive', onPress: () => performBulkDelete(ids, remaining) },
     ]);
   }
 

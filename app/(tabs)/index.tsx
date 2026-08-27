@@ -34,7 +34,6 @@ import {
   fetchStreaks,
   fetchTodayRoutines,
   formatLocalDate,
-  purgeOldDeletedRoutines,
   saveTrackingValue,
   skipRoutineToday,
   toggleCheckCompletion,
@@ -54,6 +53,9 @@ function formatTime(time: string): string {
 function timeLabel(routine: Routine): string {
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     const start = routine.scheduled_time_start;
+    // 시간 안 걸리고 그 순간에 체크만 하는 타입("8시 기상" 등)은 시작=끝을 그대로 보여주면
+    // 범위처럼 보이니 시각 하나만 표시
+    if (routine.is_instant) return formatTime(start);
     const end = routine.scheduled_time_end;
     // 시계로는 24:00을 고를 수 없어 자정 종료는 00:00으로 저장되므로, 화면에는 24:00으로 보여줌
     const endLabel = end <= start ? '24:00' : formatTime(end);
@@ -73,17 +75,20 @@ function toMinutes(time: string): number {
 
 // 시계로는 24:00을 고를 수 없어서 자정에 끝나는 루틴은 끝 시각이 00:00으로 저장됨 —
 // 그대로 두면 끝이 시작보다 이른 것처럼 계산돼서(예: 23:00~00:00) 타임라인에 안 보이거나
-// 강조가 안 되는 문제가 생기므로, 끝이 시작보다 작거나 같으면 자정(24:00)으로 취급한다
-function endMinutes(range: { start: string; end: string }): number {
+// 강조가 안 되는 문제가 생기므로, 끝이 시작보다 작거나 같으면 자정(24:00)으로 취급한다.
+// 단, 순간 체크 타입(is_instant)은 시작=끝을 "0분짜리"로 일부러 저장한 것이라 이 규칙에서 제외
+// (안 그러면 "8시-8시"가 다음날 자정까지 이어지는 24시간짜리 일정으로 잘못 계산됨)
+function endMinutes(range: { start: string; end: string }, isInstant = false): number {
   const startMin = toMinutes(range.start);
+  if (isInstant) return startMin;
   const endMin = toMinutes(range.end);
   return endMin <= startMin ? endMin + 24 * 60 : endMin;
 }
 
-function isNowWithinRange(range: { start: string; end: string }): boolean {
+function isNowWithinRange(range: { start: string; end: string }, isInstant = false): boolean {
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  return nowMinutes >= toMinutes(range.start) && nowMinutes < endMinutes(range);
+  return nowMinutes >= toMinutes(range.start) && nowMinutes < endMinutes(range, isInstant);
 }
 
 type TimedBlock = { id: string; top: number; height: number };
@@ -209,7 +214,12 @@ function TimelineView({
   const minHour = Math.max(0, Math.min(6, ...startHours));
   const maxHour = Math.min(
     24,
-    Math.max(22, ...timed.map((r) => (r.isExact ? Math.ceil(endMinutes(r.range) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1)))
+    Math.max(
+      22,
+      ...timed.map((r) =>
+        r.isExact ? Math.ceil(endMinutes(r.range, r.routine.is_instant) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1
+      )
+    )
   );
   const totalHeight = (maxHour - minHour) * HOUR_HEIGHT;
 
@@ -225,7 +235,9 @@ function TimelineView({
     const { routine, range, isExact } = entry;
     const key = isExact ? `exact-${routine.id}` : `slot-${routine.id}`;
     const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
-    const rawHeight = isExact ? (endMinutes(range) - toMinutes(range.start)) * (HOUR_HEIGHT / 60) : 0;
+    const rawHeight = isExact
+      ? (endMinutes(range, routine.is_instant) - toMinutes(range.start)) * (HOUR_HEIGHT / 60)
+      : 0;
     const height = isExact ? Math.max(rawHeight, 34) : 34;
     return { key, top, height, start: range.start, isExact, items: [entry] };
   });
@@ -242,7 +254,7 @@ function TimelineView({
     block: TimelineBlock,
     pos: { top: number; height: number; left: DimensionValue; width: DimensionValue; showTime: boolean }
   ) {
-    const isNowBlock = isNowWithinRange(block.items[0].range);
+    const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].routine.is_instant);
     return (
       <View
         key={block.key}
@@ -583,6 +595,7 @@ export default function TodayScreen() {
   const [llmQuota, setLlmQuota] = useState<LlmQuota | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   const [, setTick] = useState(0);
+  const lastDateRef = useRef(formatLocalDate(new Date()));
 
   // LLM 남은 횟수: 화면에 들어올 때마다 갱신 (배너 표시용)
   useFocusEffect(
@@ -592,16 +605,12 @@ export default function TodayScreen() {
   );
 
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 60 * 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
     setupNotificationChannel();
     requestNotificationPermissions();
   }, []);
 
-  // 소프트 삭제된 지 2주 지난 루틴/모음집을 완전히 정리 — 앱 켤 때마다 하루 한 번만 조용히 실행
+  // 소프트 삭제된 지 2주 지난 모음집/카테고리를 완전히 정리 — 앱 켤 때마다 하루 한 번만 조용히 실행.
+  // 루틴은 완료기록이 영구 보존돼야 해서 대상에서 제외(절대 완전삭제 안 함, 소프트 삭제 상태로 계속 남음)
   useEffect(() => {
     if (!userId) return;
     (async () => {
@@ -609,7 +618,6 @@ export default function TodayScreen() {
       const lastRun = await AsyncStorage.getItem(PURGE_LAST_RUN_KEY);
       if (lastRun === today) return;
       try {
-        await purgeOldDeletedRoutines(userId);
         await purgeOldDeletedPresets(userId);
         await purgeOldDeletedCategories(userId);
       } catch {
@@ -647,6 +655,21 @@ export default function TodayScreen() {
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
   }, [userId]);
+
+  // 1분마다 다시 렌더링해서 "지금" 강조선을 갱신하고, 날짜가 자정을 넘어간 게 감지되면
+  // 목록도 오늘 날짜 기준으로 다시 불러온다(화면을 계속 켜둔 채로 자정을 넘기면 focus 이벤트가
+  // 안 생겨서 예전 날짜 목록이 그대로 남아있던 문제)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick((t) => t + 1);
+      const currentDate = formatLocalDate(new Date());
+      if (currentDate !== lastDateRef.current) {
+        lastDateRef.current = currentDate;
+        load();
+      }
+    }, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [load]);
 
   useEffect(() => {
     fetchStreakConfigs().then(setStreakConfigs).catch(() => {});
@@ -813,7 +836,7 @@ export default function TodayScreen() {
           const completion = completions[item.id];
           const isDone = Boolean(completion);
           const itemRange = effectiveTimeRange(item);
-          const isNow = itemRange ? isNowWithinRange(itemRange) : false;
+          const isNow = itemRange ? isNowWithinRange(itemRange, item.is_instant) : false;
           const streakDays = streaks[item.id] ?? 0;
           const streakEmoji = emojiForStreak(streakDays, streakConfigs);
 

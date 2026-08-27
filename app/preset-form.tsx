@@ -1,14 +1,22 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { fetchFavorites, type Favorite } from '@/lib/favorites';
-import { applyPreset, deletePreset, fetchPresetWithItems, savePreset, type PresetItemInput } from '@/lib/presets';
+import {
+  applyNewPresetItems,
+  applyPreset,
+  deletePreset,
+  fetchPresetWithItems,
+  removePresetItemRoutines,
+  savePreset,
+  type PresetItemInput,
+} from '@/lib/presets';
 import { fetchSlots, SLOT_LABELS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
 
 const REPEAT_OPTIONS: { value: Exclude<RepeatType, 'once'>; label: string }[] = [
@@ -21,12 +29,16 @@ const REPEAT_OPTIONS: { value: Exclude<RepeatType, 'once'>; label: string }[] = 
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 const TRACKING_UNIT_PRESETS = ['잔', '개', '분', '페이지', 'km'];
 
-type ItemDraft = PresetItemInput & { key: string; collapsed: boolean };
+// isNew: 이번에 편집하는 동안 새로 추가된 항목인지 — 기존 모음집을 수정할 때, 이미 적용된
+// 항목은 그대로 두고 새로 추가된 항목만 실제 루틴으로 반영하기 위해 구분해둔다
+type ItemDraft = PresetItemInput & { key: string; collapsed: boolean; isNew: boolean };
 
 function itemSummary(item: ItemDraft, slots: Slot[]): string {
-  const timePart = item.scheduled_time_start
-    ? `${item.scheduled_time_start.slice(0, 5)}-${(item.scheduled_time_end ?? '').slice(0, 5)}`
-    : SLOT_LABELS[slots.find((s) => s.id === item.slot_id)?.slot_type ?? 'morning'];
+  const timePart = item.is_instant
+    ? item.scheduled_time_start?.slice(0, 5)
+    : item.scheduled_time_start
+      ? `${item.scheduled_time_start.slice(0, 5)}-${(item.scheduled_time_end ?? '').slice(0, 5)}`
+      : SLOT_LABELS[slots.find((s) => s.id === item.slot_id)?.slot_type ?? 'morning'];
   const unitPart = item.block_type === 'tracking' ? ` · ${item.tracking_unit}` : '';
   const requiredPart = item.is_required ? ' · 필수' : '';
   return `${timePart}${unitPart}${requiredPart}`;
@@ -70,10 +82,22 @@ export default function PresetFormScreen() {
   const [repeatDays, setRepeatDays] = useState<number[]>([]);
   const [skipHolidays, setSkipHolidays] = useState(false);
   const [items, setItems] = useState<ItemDraft[]>([]);
+  // 이번 편집 중 지운, 원래 있던(isNew가 아닌) 항목들 — 저장 시 그만큼 실제 루틴도 같이 지운다
+  const [removedOriginalItems, setRemovedOriginalItems] = useState<PresetItemInput[]>([]);
+  // key별 "DB에서 막 불러왔을 때"의 원본 내용 — 항목을 지우기 전에 필드를 먼저 고쳤을 수도 있어서,
+  // 실제 루틴과 매칭할 땐 화면에 보이는 지금 값이 아니라 이 원본 값을 써야 한다
+  const originalItemsByKey = useRef<Record<string, PresetItemInput>>({});
   const [activeTimePicker, setActiveTimePicker] = useState<{
     index: number;
     field: 'start' | 'end';
   } | null>(null);
+  // iOS 스피너가 열려있는 동안 고르고 있는 값 — ref라 값이 바뀌어도 리렌더를 안 일으킨다.
+  // state로 관리해서 스피너의 value prop에 매 스크롤마다 다시 흘려보내면(제어 컴포넌트 재렌더)
+  // 라이브러리가 내부적으로 휠 위치를 다시 계산하면서 분만 움직였는데도 시 휠까지 밀리는 문제가
+  // 있어서, 스피너를 여는 순간의 값으로 value를 고정해두고(pickerOpenValue) 그동안 고른 값은
+  // 화면엔 반영하지 않다가 "완료"를 눌러야만 실제 항목에 반영한다
+  const pickerDraftRef = useRef<Date | null>(null);
+  const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
 
@@ -95,18 +119,22 @@ export default function PresetFormScreen() {
         setRepeatType(preset.repeat_type as Exclude<RepeatType, 'once'>);
         setRepeatDays(preset.repeat_days ?? []);
         setSkipHolidays(preset.skip_holidays);
-        setItems(
-          fetchedItems.map((item) => ({
-            key: makeKey(),
-            title: item.title,
-            block_type: item.block_type,
-            scheduled_time_start: item.scheduled_time_start,
-            scheduled_time_end: item.scheduled_time_end,
-            slot_id: item.slot_id,
-            is_required: item.is_required,
-            tracking_unit: item.tracking_unit,
-            collapsed: true,
-          }))
+        const loadedItems = fetchedItems.map((item) => ({
+          key: makeKey(),
+          title: item.title,
+          block_type: item.block_type,
+          scheduled_time_start: item.scheduled_time_start,
+          scheduled_time_end: item.scheduled_time_end,
+          is_instant: item.is_instant,
+          slot_id: item.slot_id,
+          is_required: item.is_required,
+          tracking_unit: item.tracking_unit,
+          collapsed: true,
+          isNew: false,
+        }));
+        setItems(loadedItems);
+        originalItemsByKey.current = Object.fromEntries(
+          loadedItems.map(({ key, collapsed, isNew, ...rest }) => [key, rest])
         );
       })
       .catch(() => setErrorMessage('모음집 정보를 불러오지 못했어요.'))
@@ -126,10 +154,12 @@ export default function PresetFormScreen() {
         block_type: 'check',
         scheduled_time_start: null,
         scheduled_time_end: null,
+        is_instant: false,
         slot_id: slots.find((s) => s.slot_type === 'morning')?.id ?? slots[0]?.id ?? null,
         is_required: false,
         tracking_unit: null,
         collapsed: false,
+        isNew: true,
       },
     ]);
   }
@@ -143,16 +173,27 @@ export default function PresetFormScreen() {
         block_type: favorite.block_type,
         scheduled_time_start: favorite.scheduled_time_start,
         scheduled_time_end: favorite.scheduled_time_end,
+        is_instant: favorite.is_instant,
         slot_id: favorite.slot_id,
         is_required: favorite.is_required,
         tracking_unit: favorite.tracking_unit,
         collapsed: true,
+        isNew: true,
       },
     ]);
     setShowFavoritePicker(false);
   }
 
   function removeItem(index: number) {
+    const removed = items[index];
+    if (!removed.isNew) {
+      // 지우기 전에 필드를 먼저 고쳤을 수 있으니, 화면에 보이는 지금 값이 아니라
+      // DB에서 막 불러왔을 때의 원본 값으로 실제 루틴과 매칭한다
+      const original = originalItemsByKey.current[removed.key];
+      if (original) {
+        setRemovedOriginalItems((prev) => [...prev, original]);
+      }
+    }
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -165,28 +206,71 @@ export default function PresetFormScreen() {
     updateItem(index, { collapsed: true });
   }
 
-  function setItemTimeMode(index: number, mode: 'exact' | 'slot') {
+  function setItemTimeMode(index: number, mode: 'exact' | 'slot' | 'instant') {
     if (mode === 'exact') {
       updateItem(index, {
         slot_id: null,
+        is_instant: false,
         scheduled_time_start: dateToTimeString(timeToDate('09:00')),
         scheduled_time_end: dateToTimeString(timeToDate('10:00')),
+      });
+    } else if (mode === 'instant') {
+      const time = dateToTimeString(timeToDate('09:00'));
+      updateItem(index, {
+        slot_id: null,
+        is_instant: true,
+        scheduled_time_start: time,
+        scheduled_time_end: time,
       });
     } else {
       updateItem(index, {
         scheduled_time_start: null,
         scheduled_time_end: null,
+        is_instant: false,
         slot_id: slots.find((s) => s.slot_type === 'morning')?.id ?? slots[0]?.id ?? null,
       });
     }
   }
 
+  // 끝이 시작보다 같거나 이르면 무시한다 — 안 그러면 자정을 넘겨 이어지는 걸로 잘못 계산돼서
+  // 버그처럼 보임. 시계로는 24:00을 고를 수 없어 자정에 끝내려면 00:00을 골라야 하니, 그 경우만 예외로 허용
+  function applyPickedTime(picker: { index: number; field: 'start' | 'end' }, date: Date) {
+    const time = dateToTimeString(date);
+    const item = items[picker.index];
+    if (item.is_instant) {
+      updateItem(picker.index, { scheduled_time_start: time, scheduled_time_end: time });
+      return;
+    }
+    if (picker.field === 'end') {
+      const isMidnight = date.getHours() === 0 && date.getMinutes() === 0;
+      if (!isMidnight && item.scheduled_time_start && time <= item.scheduled_time_start) return;
+      updateItem(picker.index, { scheduled_time_end: time });
+      return;
+    }
+    updateItem(picker.index, { scheduled_time_start: time });
+  }
+
+  // 안드로이드는 시계가 OS 다이얼로그로 뜨고 확인/취소를 누르면 다이얼로그 스스로 닫히므로,
+  // 그때마다 우리도 activeTimePicker를 꺼줘야 함. iOS는 다이얼로그 없이 계속 스크롤 가능한
+  // 스피너라서, "완료" 버튼을 직접 눌러야 닫히게 함(routine-form.tsx와 동일한 방식)
   function handleTimeChange(event: DateTimePickerEvent, date?: Date) {
     const picker = activeTimePicker;
     setActiveTimePicker(null);
     if (!picker || event.type !== 'set' || !date) return;
-    const field = picker.field === 'start' ? 'scheduled_time_start' : 'scheduled_time_end';
-    updateItem(picker.index, { [field]: dateToTimeString(date) } as Partial<ItemDraft>);
+    applyPickedTime(picker, date);
+  }
+
+  // iOS 스피너는 스크롤할 때마다 계속 값이 바뀌므로, 항목에 바로 반영하지 않고 ref에만 적어둔다
+  // (state로 하면 스피너의 value prop에 다시 흘러들어가 재렌더되면서 분만 움직였는데도 시 휠까지
+  // 밀리는 문제가 있었음) — "완료"를 눌러야 실제로 반영됨(routine-form.tsx와 동일한 방식)
+  function handleSpinnerTimeChange(event: DateTimePickerEvent, date?: Date) {
+    if (date) pickerDraftRef.current = date;
+  }
+
+  function openItemTimePicker(current: Date, picker: { index: number; field: 'start' | 'end' }) {
+    pickerDraftRef.current = current;
+    setPickerOpenValue(current);
+    setActiveTimePicker(picker);
   }
 
   async function handleSave() {
@@ -217,6 +301,10 @@ export default function PresetFormScreen() {
     setIsSaving(true);
     setErrorMessage(null);
     try {
+      const itemInputs = items.map(({ key, collapsed, isNew, ...rest }) => ({
+        ...rest,
+        title: rest.title.trim(),
+      }));
       const presetId = await savePreset(
         userId,
         id ?? null,
@@ -226,11 +314,13 @@ export default function PresetFormScreen() {
           repeat_days: repeatType === 'custom' ? repeatDays : null,
           skip_holidays: skipHolidays,
         },
-        items.map(({ key, collapsed, ...rest }) => ({ ...rest, title: rest.title.trim() }))
+        itemInputs
       );
       // 새로 만든 모음집은 저장과 동시에 오늘 목록에도 바로 적용한다 —
       // "만들었는데 내 루틴에 안 보인다"는 혼란을 줄이기 위함. 원치 않는 루틴은 "일시정지"로 끄면 됨.
-      // 기존 모음집 수정은 이미 적용된 루틴에 영향 없이 템플릿만 바뀜(기존 동작 유지)
+      // 기존 모음집 수정은 이미 적용된 항목은 건드리지 않되, 이번에 새로 추가한 항목만 골라서
+      // 바로 적용한다 — 안 그러면 새 항목이 템플릿에만 남고 실제 루틴으로는 안 생겨서
+      // "내 루틴"에서 안 보이거나(특히 이름이 같은 항목을 중복으로 추가한 경우) 헷갈렸음
       if (!isEditing) {
         const count = await applyPreset(userId, presetId);
         Alert.alert(
@@ -239,7 +329,31 @@ export default function PresetFormScreen() {
           [{ text: '확인', onPress: () => router.back() }]
         );
       } else {
-        router.back();
+        const newItemInputs = items
+          .map((item, index) => (item.isNew ? itemInputs[index] : null))
+          .filter((input): input is PresetItemInput => input !== null);
+        // 삭제를 먼저 하고 추가를 나중에 해야 함 — 동시에 하면, 방금 새로 만든 루틴이 지운
+        // 항목과 우연히 같은 내용(제목/시간 등)일 때 삭제 쪽이 기존 것 대신 방금 만든 걸
+        // 잘못 매칭해서 지울 수 있음
+        const removedCount =
+          removedOriginalItems.length > 0
+            ? await removePresetItemRoutines(presetId, removedOriginalItems)
+            : 0;
+        const addedCount =
+          newItemInputs.length > 0 ? await applyNewPresetItems(userId, presetId, newItemInputs) : 0;
+        setRemovedOriginalItems([]);
+        if (addedCount > 0 || removedCount > 0) {
+          const parts: string[] = [];
+          if (addedCount > 0) parts.push(`추가 ${addedCount}개`);
+          if (removedCount > 0) parts.push(`삭제 ${removedCount}개`);
+          Alert.alert(
+            '오늘 목록에 반영했어요',
+            `루틴 ${parts.join(' · ')}. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`,
+            [{ text: '확인', onPress: () => router.back() }]
+          );
+        } else {
+          router.back();
+        }
       }
     } catch (err) {
       setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
@@ -306,7 +420,7 @@ export default function PresetFormScreen() {
       <Text style={styles.sectionLabel}>항목</Text>
 
       {items.map((item, index) => {
-        const timeMode = item.scheduled_time_start ? 'exact' : 'slot';
+        const timeMode = item.is_instant ? 'instant' : item.scheduled_time_start ? 'exact' : 'slot';
 
         if (item.collapsed) {
           return (
@@ -374,7 +488,8 @@ export default function PresetFormScreen() {
             )}
 
             <View style={styles.chipRow}>
-              <Chip label="정확한 시각" selected={timeMode === 'exact'} onPress={() => setItemTimeMode(index, 'exact')} />
+              <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setItemTimeMode(index, 'exact')} />
+              <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setItemTimeMode(index, 'instant')} />
               <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setItemTimeMode(index, 'slot')} />
             </View>
 
@@ -382,14 +497,28 @@ export default function PresetFormScreen() {
               <View style={styles.chipRow}>
                 <Pressable
                   style={styles.timeButton}
-                  onPress={() => setActiveTimePicker({ index, field: 'start' })}>
+                  onPress={() =>
+                    openItemTimePicker(timeToDate(item.scheduled_time_start), { index, field: 'start' })
+                  }>
                   <Text>{(item.scheduled_time_start ?? '09:00:00').slice(0, 5)}</Text>
                 </Pressable>
                 <Text>~</Text>
                 <Pressable
                   style={styles.timeButton}
-                  onPress={() => setActiveTimePicker({ index, field: 'end' })}>
+                  onPress={() =>
+                    openItemTimePicker(timeToDate(item.scheduled_time_end), { index, field: 'end' })
+                  }>
                   <Text>{(item.scheduled_time_end ?? '10:00:00').slice(0, 5)}</Text>
+                </Pressable>
+              </View>
+            ) : timeMode === 'instant' ? (
+              <View style={styles.chipRow}>
+                <Pressable
+                  style={styles.timeButton}
+                  onPress={() => {
+                    openItemTimePicker(timeToDate(item.scheduled_time_start), { index, field: 'start' });
+                  }}>
+                  <Text>{(item.scheduled_time_start ?? '09:00:00').slice(0, 5)}</Text>
                 </Pressable>
               </View>
             ) : (
@@ -420,17 +549,48 @@ export default function PresetFormScreen() {
         );
       })}
 
-      {activeTimePicker && (
-        <DateTimePicker
-          value={timeToDate(
-            activeTimePicker.field === 'start'
-              ? items[activeTimePicker.index].scheduled_time_start
-              : items[activeTimePicker.index].scheduled_time_end
-          )}
-          mode="time"
-          onChange={handleTimeChange}
-        />
-      )}
+      {activeTimePicker &&
+        (Platform.OS === 'android' ? (
+          <DateTimePicker
+            value={timeToDate(
+              activeTimePicker.field === 'start'
+                ? items[activeTimePicker.index].scheduled_time_start
+                : items[activeTimePicker.index].scheduled_time_end
+            )}
+            mode="time"
+            display="spinner"
+            minuteInterval={15}
+            onChange={handleTimeChange}
+          />
+        ) : (
+          <View style={styles.spinnerBox}>
+            <DateTimePicker
+              value={
+                pickerOpenValue ??
+                timeToDate(
+                  activeTimePicker.field === 'start'
+                    ? items[activeTimePicker.index].scheduled_time_start
+                    : items[activeTimePicker.index].scheduled_time_end
+                )
+              }
+              mode="time"
+              display="spinner"
+              minuteInterval={15}
+              onChange={handleSpinnerTimeChange}
+            />
+            <Pressable
+              style={styles.spinnerDoneButton}
+              onPress={() => {
+                const picked = pickerDraftRef.current;
+                if (picked) applyPickedTime(activeTimePicker, picked);
+                pickerDraftRef.current = null;
+                setPickerOpenValue(null);
+                setActiveTimePicker(null);
+              }}>
+              <Text style={styles.spinnerDoneText}>완료</Text>
+            </Pressable>
+          </View>
+        ))}
 
       <View style={styles.addItemRow}>
         <Pressable style={[styles.addItemButton, styles.addItemButtonFlex]} onPress={addItem}>
@@ -520,6 +680,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  spinnerBox: {
+    alignItems: 'center',
+  },
+  spinnerDoneButton: {
+    alignSelf: 'center',
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  spinnerDoneText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   switchRow: {
     flexDirection: 'row',

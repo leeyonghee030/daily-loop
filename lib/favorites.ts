@@ -6,6 +6,7 @@ export type FavoriteInput = {
   block_type: BlockType;
   scheduled_time_start: string | null;
   scheduled_time_end: string | null;
+  is_instant: boolean;
   slot_id: string | null;
   is_required: boolean;
   tracking_unit: string | null;
