@@ -1,12 +1,13 @@
-import { useFocusEffect } from '@react-navigation/native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
 import { deleteFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchSlots, SLOT_LABELS, type Slot } from '@/lib/routines';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
   if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
@@ -20,47 +21,53 @@ export default function FavoritesScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const router = useRouter();
+  const queryClient = useQueryClient();
+  // 즐겨찾기/모음집 폼 등 여러 화면이 fetchSlots(userId)를 똑같이 부르므로, 쿼리 키를
+  // 'slots'로 통일해서 어느 화면에서 먼저 받아오든 서로 캐시를 공유하게 한다
+  const favoritesQueryKey = ['favorites', userId] as const;
+  const slotsQueryKey = ['slots', userId] as const;
 
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!userId) return;
-    try {
-      const [fetchedFavorites, fetchedSlots] = await Promise.all([
-        fetchFavorites(userId),
-        fetchSlots(userId),
-      ]);
-      setFavorites(fetchedFavorites);
-      setSlots(fetchedSlots);
-    } catch (err) {
-      setErrorMessage('즐겨찾기를 불러오지 못했어요.');
-    }
-  }, [userId]);
+  const favoritesQuery = useQuery({
+    queryKey: favoritesQueryKey,
+    queryFn: () => fetchFavorites(userId!),
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(favoritesQuery.refetch);
 
-  useFocusEffect(
-    useCallback(() => {
-      setIsLoading(true);
-      load().finally(() => setIsLoading(false));
-    }, [load])
-  );
+  const slotsQuery = useQuery({
+    queryKey: slotsQueryKey,
+    queryFn: () => fetchSlots(userId!),
+    enabled: !!userId,
+  });
+
+  const favorites = favoritesQuery.data ?? [];
+  const slots = slotsQuery.data ?? [];
+
+  const deleteFavoriteMutation = useMutation({
+    mutationFn: (favorite: Favorite) => deleteFavorite(favorite.id),
+    onSuccess: (_result, favorite) => {
+      queryClient.setQueryData(favoritesQueryKey, (old?: Favorite[]) =>
+        old ? old.filter((f) => f.id !== favorite.id) : old
+      );
+    },
+    onError: () => setErrorMessage('삭제에 실패했어요.'),
+  });
 
   async function handleDelete(favorite: Favorite) {
     setBusyId(favorite.id);
     try {
-      await deleteFavorite(favorite.id);
-      setFavorites((prev) => prev.filter((f) => f.id !== favorite.id));
-    } catch (err) {
-      setErrorMessage('삭제에 실패했어요.');
+      await deleteFavoriteMutation.mutateAsync(favorite);
+    } catch {
+      // onError에서 이미 에러 메시지를 채움
     } finally {
       setBusyId(null);
     }
   }
 
-  if (isLoading) {
+  if (favoritesQuery.isLoading || slotsQuery.isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />

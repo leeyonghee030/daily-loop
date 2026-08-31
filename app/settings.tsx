@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
@@ -15,6 +16,8 @@ import { supabase } from '@/lib/supabase';
 
 const SLOT_ORDER: SlotType[] = ['morning', 'lunch', 'evening', 'before_sleep'];
 const NOTICE_SEEN_KEY = 'settings_notice_seen';
+const SLOT_HINT_SEEN_KEY = 'settings_slot_hint_seen';
+const MEMO_HINT_SEEN_KEY = 'settings_memo_hint_seen';
 
 function timeToDate(time: string): Date {
   const date = new Date();
@@ -32,20 +35,35 @@ function dateToTimeString(date: Date): string {
 export default function SettingsScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
+  const queryClient = useQueryClient();
+  // 즐겨찾기/모음집 폼 등과 같은 쿼리 키('slots')를 써서 캐시를 공유한다
+  const slotsQueryKey = ['slots', userId] as const;
 
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pickerFor, setPickerFor] = useState<{ slotId: string; field: 'start' | 'end' } | null>(null);
   const [showNotice, setShowNotice] = useState(false);
+  // 체크형/정확한 시간 설명은 슬롯별로 접었다 펼 수 있음 — 여기 들어있는 슬롯 id만 펼쳐진 상태
+  const [expandedHintSlotIds, setExpandedHintSlotIds] = useState<Set<string>>(new Set());
+  const hasInitializedHintsRef = useRef(false);
+  const [showMemoHint, setShowMemoHint] = useState(false);
+  // iOS 스피너가 열려있는 동안 고르고 있는 값 — routine-form.tsx와 동일한 패턴
+  const pickerDraftRef = useRef<Date | null>(null);
+  const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
+
+  const slotsQuery = useQuery({
+    queryKey: slotsQueryKey,
+    queryFn: async () => {
+      const fetched = await fetchSlots(userId!);
+      return fetched.slice().sort((a, b) => SLOT_ORDER.indexOf(a.slot_type) - SLOT_ORDER.indexOf(b.slot_type));
+    },
+    enabled: !!userId,
+  });
+  const slots = slotsQuery.data ?? [];
+  const isLoading = slotsQuery.isLoading;
 
   useEffect(() => {
-    if (!userId) return;
-    fetchSlots(userId)
-      .then((fetched) => setSlots(fetched.slice().sort((a, b) => SLOT_ORDER.indexOf(a.slot_type) - SLOT_ORDER.indexOf(b.slot_type))))
-      .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'))
-      .finally(() => setIsLoading(false));
-  }, [userId]);
+    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+  }, [slotsQuery.isError]);
 
   // 이 안내는 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 아이콘만 보이다가 누르면 펼쳐짐
   useEffect(() => {
@@ -56,6 +74,36 @@ export default function SettingsScreen() {
     });
   }, []);
 
+  // 체크형/정확한 시간 설명도 같은 방식 — 슬롯 목록이 처음 도착했을 때 딱 한 번만 전부 펼쳐서
+  // 보여주고, 그다음부터는 슬롯마다 ⓘ 아이콘만 남아있다가 눌러야 펼쳐짐
+  useEffect(() => {
+    if (hasInitializedHintsRef.current || !slotsQuery.data) return;
+    hasInitializedHintsRef.current = true;
+    AsyncStorage.getItem(SLOT_HINT_SEEN_KEY).then((seen) => {
+      if (seen === 'true') return;
+      setExpandedHintSlotIds(new Set(slotsQuery.data!.map((s) => s.id)));
+      AsyncStorage.setItem(SLOT_HINT_SEEN_KEY, 'true');
+    });
+  }, [slotsQuery.data]);
+
+  // 메모 알림 설명도 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 ⓘ 아이콘으로 접힘
+  useEffect(() => {
+    AsyncStorage.getItem(MEMO_HINT_SEEN_KEY).then((seen) => {
+      if (seen === 'true') return;
+      setShowMemoHint(true);
+      AsyncStorage.setItem(MEMO_HINT_SEEN_KEY, 'true');
+    });
+  }, []);
+
+  function toggleHint(slotId: string) {
+    setExpandedHintSlotIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(slotId)) next.delete(slotId);
+      else next.add(slotId);
+      return next;
+    });
+  }
+
   async function resync() {
     if (!userId) return;
     await syncSlotAlarms(userId);
@@ -63,13 +111,16 @@ export default function SettingsScreen() {
   }
 
   async function saveSlot(updated: Slot) {
-    setSlots((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    queryClient.setQueryData(slotsQueryKey, (prev?: Slot[]) =>
+      prev ? prev.map((s) => (s.id === updated.id ? updated : s)) : prev
+    );
     try {
       await updateSlot(updated.id, {
         start_time: updated.start_time,
         end_time: updated.end_time,
         notify_enabled: updated.notify_enabled,
         memo_notify_enabled: updated.memo_notify_enabled,
+        is_instant: updated.is_instant,
       });
       await resync();
     } catch (err) {
@@ -99,6 +150,37 @@ export default function SettingsScreen() {
       const timeStr = dateToTimeString(date);
       saveSlot(field === 'start' ? { ...slot, start_time: timeStr } : { ...slot, end_time: timeStr });
     };
+  }
+
+  function openTimePicker(slot: Slot, field: 'start' | 'end') {
+    const current = timeToDate(field === 'start' ? slot.start_time : slot.end_time);
+    pickerDraftRef.current = current;
+    setPickerOpenValue(current);
+    setPickerFor({ slotId: slot.id, field });
+  }
+
+  function handleSpinnerTimeChange(event: DateTimePickerEvent, date?: Date) {
+    if (date) pickerDraftRef.current = date;
+  }
+
+  function confirmSpinnerTime(slot: Slot, field: 'start' | 'end') {
+    const picked = pickerDraftRef.current;
+    if (picked) {
+      const timeStr = dateToTimeString(picked);
+      saveSlot(field === 'start' ? { ...slot, start_time: timeStr } : { ...slot, end_time: timeStr });
+    }
+    pickerDraftRef.current = null;
+    setPickerOpenValue(null);
+    setPickerFor(null);
+  }
+
+  // 체크형(정확히 한 시각) ↔ 정확한 시간(몇시~몇시 범위) 전환. start_time/end_time은 안 건드리고
+  // is_instant만 바꾼다 — 신규 가입자는 트리거가 이미 07:00~08:00 같은 기본값을 넣어주므로 처음
+  // 전환할 때도 자연스러운 값이 보이고, 한 번이라도 직접 커스텀한 값은 모드를 왔다갔다 해도
+  // 항상 그대로 유지된다(예전엔 전환할 때마다 기본값으로 되돌아가서 커스텀 값을 잃는 문제가 있었음)
+  function handleSetTimeMode(slot: Slot, instant: boolean) {
+    if (slot.is_instant === instant) return;
+    saveSlot({ ...slot, is_instant: instant });
   }
 
   if (isLoading) {
@@ -139,32 +221,83 @@ export default function SettingsScreen() {
             <Switch value={slot.notify_enabled} onValueChange={(v) => handleToggleNotify(slot, v)} />
           </View>
           <View style={styles.timeRow}>
+            {slot.is_instant ? (
+              <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
+                <Text>{slot.start_time.slice(0, 5)}</Text>
+              </Pressable>
+            ) : (
+              <>
+                <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
+                  <Text>{slot.start_time.slice(0, 5)}</Text>
+                </Pressable>
+                <Text>~</Text>
+                <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'end')}>
+                  <Text>{slot.end_time.slice(0, 5)}</Text>
+                </Pressable>
+              </>
+            )}
             <Pressable
-              style={styles.timeButton}
-              onPress={() => setPickerFor({ slotId: slot.id, field: 'start' })}>
-              <Text>{slot.start_time.slice(0, 5)}</Text>
+              style={styles.modeToggleButton}
+              onPress={() => handleSetTimeMode(slot, !slot.is_instant)}>
+              <Text style={styles.modeToggleButtonText}>{slot.is_instant ? '체크형' : '정확한 시간'}</Text>
             </Pressable>
-            <Text>~</Text>
-            <Pressable
-              style={styles.timeButton}
-              onPress={() => setPickerFor({ slotId: slot.id, field: 'end' })}>
-              <Text>{slot.end_time.slice(0, 5)}</Text>
+            <Pressable style={styles.hintToggle} onPress={() => toggleHint(slot.id)} hitSlop={8}>
+              <Text style={styles.hintToggleIcon}>ⓘ</Text>
             </Pressable>
           </View>
-          {pickerFor?.slotId === slot.id && (
-            <DateTimePicker
-              value={timeToDate(pickerFor.field === 'start' ? slot.start_time : slot.end_time)}
-              mode="time"
-              onChange={handleTimeChange(slot, pickerFor.field)}
-            />
+          {expandedHintSlotIds.has(slot.id) && (
+            <Text style={styles.timeModeHint}>
+              {slot.is_instant
+                ? '🔔 정확히 이 시각에 체크해요 (예: 아침 7시)'
+                : '🕐 이 시간대 전체를 슬롯으로 써요 (예: 아침 7시~8시)'}
+            </Text>
           )}
+
+          {/* 안드로이드는 시계가 OS 다이얼로그로 뜨고 확인/취소를 누르면 스스로 닫히므로 그때마다
+              pickerFor를 꺼줘야 함. iOS는 계속 스크롤 가능한 스피너라 "완료" 버튼으로 닫음 —
+              routine-form.tsx와 동일한 패턴 */}
+          {pickerFor?.slotId === slot.id &&
+            (Platform.OS === 'android' ? (
+              <DateTimePicker
+                value={timeToDate(pickerFor.field === 'start' ? slot.start_time : slot.end_time)}
+                mode="time"
+                display="spinner"
+                minuteInterval={15}
+                onChange={handleTimeChange(slot, pickerFor.field)}
+              />
+            ) : (
+              <View style={styles.spinnerBox}>
+                <DateTimePicker
+                  value={pickerOpenValue ?? timeToDate(slot.start_time)}
+                  mode="time"
+                  display="spinner"
+                  minuteInterval={15}
+                  onChange={handleSpinnerTimeChange}
+                />
+                <Pressable
+                  style={styles.spinnerDoneButton}
+                  onPress={() => confirmSpinnerTime(slot, pickerFor.field)}>
+                  <Text style={styles.spinnerDoneText}>완료</Text>
+                </Pressable>
+              </View>
+            ))}
           {slot.slot_type === 'morning' && (
             <View style={styles.memoNotifyRow}>
-              <Text style={styles.memoNotifyLabel}>📌 메모 알림 (이 시간에, 아침 루틴 알림과 별개로 켜고 끔)</Text>
-              <Switch
-                value={slot.memo_notify_enabled}
-                onValueChange={(v) => handleToggleMemoNotify(slot, v)}
-              />
+              <View style={styles.memoNotifyHeaderRow}>
+                <View style={styles.memoNotifyLabelRow}>
+                  <Text style={styles.memoNotifyLabel}>📌 메모 알림</Text>
+                  <Pressable onPress={() => setShowMemoHint((v) => !v)} hitSlop={8}>
+                    <Text style={styles.hintToggleIcon}>ⓘ</Text>
+                  </Pressable>
+                </View>
+                <Switch
+                  value={slot.memo_notify_enabled}
+                  onValueChange={(v) => handleToggleMemoNotify(slot, v)}
+                />
+              </View>
+              {showMemoHint && (
+                <Text style={styles.timeModeHint}>이 시간에, 아침 루틴 알림과 별개로 켜고 꺼요.</Text>
+              )}
             </View>
           )}
         </View>
@@ -226,8 +359,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#eee',
     borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    padding: 12,
+    marginBottom: 10,
   },
   slotHeaderRow: {
     flexDirection: 'row',
@@ -240,31 +373,80 @@ const styles = StyleSheet.create({
   },
   timeRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
-    marginTop: 10,
+    marginTop: 8,
   },
   timeButton: {
     borderWidth: 1,
     borderColor: '#ccc',
     borderRadius: 8,
     paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  modeToggleButton: {
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginLeft: 4,
+  },
+  modeToggleButtonText: {
+    fontSize: 12,
+    color: '#7C5CFC',
+    fontWeight: '600',
+  },
+  hintToggle: {
+    marginLeft: 2,
+  },
+  hintToggleIcon: {
+    fontSize: 14,
+    color: '#999',
+  },
+  timeModeHint: {
+    fontSize: 11,
+    opacity: 0.5,
+    marginTop: 6,
+  },
+  spinnerBox: {
+    alignItems: 'center',
+  },
+  spinnerDoneButton: {
+    alignSelf: 'center',
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 24,
     paddingVertical: 10,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  spinnerDoneText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   memoNotifyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#eee',
   },
+  memoNotifyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  memoNotifyLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1,
+    marginRight: 8,
+  },
   memoNotifyLabel: {
     fontSize: 12,
     opacity: 0.7,
-    flex: 1,
-    marginRight: 8,
   },
   accountEmail: {
     fontSize: 13,

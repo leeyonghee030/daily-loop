@@ -1,21 +1,24 @@
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { Text, View } from '@/components/Themed';
-import { extractYoutubeId, fetchVideoById, type Video } from '@/lib/videos';
+import { extractYoutubeId, fetchVideoById } from '@/lib/videos';
 
 export default function VideoPlayerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [video, setVideo] = useState<Video | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const { width } = useWindowDimensions();
 
-  useEffect(() => {
-    if (!id) return;
-    fetchVideoById(id).then(setVideo);
-  }, [id]);
+  // routine-form의 video 조회와 같은 쿼리 키를 써서 캐시를 공유한다
+  const videoQuery = useQuery({
+    queryKey: ['video', id],
+    queryFn: () => fetchVideoById(id!),
+    enabled: !!id,
+  });
+  const video = videoQuery.data ?? null;
 
   const onStateChange = useCallback((state: string) => {
     if (state === 'error') setLoadFailed(true);

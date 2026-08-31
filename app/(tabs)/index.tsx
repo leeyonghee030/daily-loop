@@ -1,10 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -18,8 +18,9 @@ import { Swipeable } from 'react-native-gesture-handler';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
-import { fetchLlmQuota, type LlmQuota } from '@/lib/llm';
+import { fetchLlmQuota } from '@/lib/llm';
 import { purgeOldDeletedPresets } from '@/lib/presets';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { purgeOldDeletedCategories } from '@/lib/videos';
 import {
   requestNotificationPermissions,
@@ -30,21 +31,36 @@ import {
 import {
   effectiveTimeRange,
   emojiForStreak,
+  fetchStats,
   fetchStreakConfigs,
   fetchStreaks,
   fetchTodayRoutines,
   formatLocalDate,
   saveTrackingValue,
   skipRoutineToday,
+  slotTimeLabel,
   toggleCheckCompletion,
   SLOT_LABELS,
-  type Holiday,
   type Routine,
   type RoutineCompletion,
-  type StreakConfig,
 } from '@/lib/routines';
 
 const PURGE_LAST_RUN_KEY = 'deleted_routines_purge_last_run_date';
+
+// 소프트 삭제된 지 2주 지난 모음집/카테고리를 완전히 정리 — 앱 켤 때마다 하루 한 번만 조용히 실행.
+// 루틴은 완료기록이 영구 보존돼야 해서 대상에서 제외(절대 완전삭제 안 함, 소프트 삭제 상태로 계속 남음)
+async function runDailyPurgeIfNeeded(userId: string): Promise<void> {
+  const today = formatLocalDate(new Date());
+  const lastRun = await AsyncStorage.getItem(PURGE_LAST_RUN_KEY);
+  if (lastRun === today) return;
+  try {
+    await purgeOldDeletedPresets(userId);
+    await purgeOldDeletedCategories(userId);
+  } catch {
+    // 실패해도 조용히 무시 — 다음에 앱 열 때 다시 시도됨
+  }
+  await AsyncStorage.setItem(PURGE_LAST_RUN_KEY, today);
+}
 
 function formatTime(time: string): string {
   return time.slice(0, 5);
@@ -135,7 +151,7 @@ function assignColumns(
   return result;
 }
 
-type TimedEntry = { routine: Routine; range: { start: string; end: string }; isExact: boolean };
+type TimedEntry = { routine: Routine; range: { start: string; end: string }; isExact: boolean; isInstant: boolean };
 type TimelineBlock = { key: string; top: number; height: number; start: string; isExact: boolean; items: TimedEntry[] };
 
 const SLOT_HINT_DISMISSED_KEY = 'timeline_slot_hint_dismissed';
@@ -147,24 +163,33 @@ function TimelineView({
   completions,
   onToggleCheck,
   onEdit,
+  repositionToken,
 }: {
   routines: Routine[];
   completions: Record<string, RoutineCompletion>;
   onToggleCheck: (routine: Routine) => void;
   onEdit: (routine: Routine) => void;
+  repositionToken: number;
 }) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  const hasAutoScrolledRef = useRef(false);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
 
   const timed = routines
-    .map((routine) => ({
-      routine,
-      range: effectiveTimeRange(routine),
-      isExact: Boolean(routine.scheduled_time_start && routine.scheduled_time_end),
-    }))
+    .map((routine) => {
+      const isExact = Boolean(routine.scheduled_time_start && routine.scheduled_time_end);
+      // 이 항목이 "그 순간 하나만" 체크하는 타입인지 — 루틴 자체가 시각 체크(is_instant)이거나,
+      // 슬롯 기반이면서 그 슬롯이 체크형으로 설정돼 있을 때. 아니면(정확한 시간 슬롯) 실제
+      // 슬롯 시간대(예: 12:00~13:00) 전체 길이만큼 블록을 그린다
+      const isInstant = isExact ? routine.is_instant : Boolean(routine.slots?.is_instant);
+      return {
+        routine,
+        range: effectiveTimeRange(routine),
+        isExact,
+        isInstant,
+      };
+    })
     .filter((r): r is TimedEntry => r.range !== null);
 
   // 같은 슬롯(예: 아침)에 루틴이 여러 개 몰리면 옆으로 계속 쪼개져 좁아지는 대신
@@ -202,14 +227,6 @@ function TimelineView({
     }
   }
 
-  if (timed.length === 0) {
-    return (
-      <View style={timelineStyles.emptyContainer}>
-        <Text style={timelineStyles.emptyText}>시간 정보가 있는 루틴이 없어요</Text>
-      </View>
-    );
-  }
-
   const startHours = timed.map((r) => Math.floor(toMinutes(r.range.start) / 60));
   const minHour = Math.max(0, Math.min(6, ...startHours));
   const maxHour = Math.min(
@@ -217,7 +234,7 @@ function TimelineView({
     Math.max(
       22,
       ...timed.map((r) =>
-        r.isExact ? Math.ceil(endMinutes(r.range, r.routine.is_instant) / 60) : Math.floor(toMinutes(r.range.start) / 60) + 1
+        r.isInstant ? Math.floor(toMinutes(r.range.start) / 60) + 1 : Math.ceil(endMinutes(r.range, false) / 60)
       )
     )
   );
@@ -232,13 +249,11 @@ function TimelineView({
 
   // 같은 시간대에 여러 개 몰려도 쌓지 않고 각자 블록으로 만들어서, 아래 컬럼 배치 로직이 옆으로 나란히 놓는다
   const blocks: TimelineBlock[] = timed.map((entry) => {
-    const { routine, range, isExact } = entry;
+    const { routine, range, isExact, isInstant } = entry;
     const key = isExact ? `exact-${routine.id}` : `slot-${routine.id}`;
     const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
-    const rawHeight = isExact
-      ? (endMinutes(range, routine.is_instant) - toMinutes(range.start)) * (HOUR_HEIGHT / 60)
-      : 0;
-    const height = isExact ? Math.max(rawHeight, 34) : 34;
+    const rawHeight = isInstant ? 0 : (endMinutes(range, false) - toMinutes(range.start)) * (HOUR_HEIGHT / 60);
+    const height = isInstant ? 34 : Math.max(rawHeight, 34);
     return { key, top, height, start: range.start, isExact, items: [entry] };
   });
   const columns = assignColumns(blocks.map((b) => ({ id: b.key, top: b.top, height: b.height })));
@@ -249,12 +264,35 @@ function TimelineView({
     clusterBlocks.get(clusterId)!.push(block);
   }
 
+  // 화면을 처음 열 때(마운트), 그리고 다른 탭 갔다가 돌아왔을 때(repositionToken 증가) 매번
+  // 지금 시각 위치로 다시 스크롤한다. 예전엔 ScrollView의 onContentSizeChange(콘텐츠 크기가
+  // 바뀔 때만 호출됨)에 기대서 "최초 1회만" 스크롤했는데, 탭을 갔다 왔을 때 내용이 안 바뀌었으면
+  // onContentSizeChange 자체가 다시 안 불려서 재정렬이 안 되는 문제가 있었음 — repositionToken은
+  // 데이터 내용과 무관하게 "돌아왔다"는 사실 자체로 바뀌는 값이라 이 문제가 없다
+  useEffect(() => {
+    if (timed.length === 0) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const earliestTop = Math.min(...blocks.map((b) => b.top));
+      const target = showNowLine ? Math.max(0, nowTop - HOUR_HEIGHT) : earliestTop;
+      scrollRef.current?.scrollTo({ y: Math.max(0, target - 12), animated: false });
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repositionToken]);
+
+  if (timed.length === 0) {
+    return (
+      <View style={timelineStyles.emptyContainer}>
+        <Text style={timelineStyles.emptyText}>시간 정보가 있는 루틴이 없어요</Text>
+      </View>
+    );
+  }
+
   // 지금 시간대에 해당하는 블록은 색/밑줄로 눈에 띄게 강조
   function renderBlock(
     block: TimelineBlock,
     pos: { top: number; height: number; left: DimensionValue; width: DimensionValue; showTime: boolean }
   ) {
-    const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].routine.is_instant);
+    const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].isInstant);
     return (
       <View
         key={block.key}
@@ -330,15 +368,6 @@ function TimelineView({
         contentContainerStyle={{ height: totalHeight + 20 }}
         onScrollBeginDrag={() => {
           if (expandedClusters.size > 0) setExpandedClusters(new Set());
-        }}
-        onContentSizeChange={() => {
-          if (hasAutoScrolledRef.current) return;
-          hasAutoScrolledRef.current = true;
-          const earliestTop = Math.min(...blocks.map((b) => b.top));
-          // 지금 시각이 첫 일정보다 이르면, 자동 스크롤로 인해 지금 시각 표시선이 화면 위로 밀려나가지 않도록
-          // 지금 시각과 첫 일정 중 더 이른 쪽으로 스크롤한다
-          const target = showNowLine ? Math.min(earliestTop, nowTop) : earliestTop;
-          scrollRef.current?.scrollTo({ y: Math.max(0, target - 12), animated: false });
         }}>
       {hours.map((hour) => (
         <View
@@ -582,168 +611,475 @@ export default function TodayScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const router = useRouter();
+  const queryClient = useQueryClient();
 
-  const [routines, setRoutines] = useState<Routine[]>([]);
-  const [completions, setCompletions] = useState<Record<string, RoutineCompletion>>({});
-  const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
-  const [holiday, setHoliday] = useState<Holiday | null>(null);
-  const [streaks, setStreaks] = useState<Record<string, number>>({});
-  const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
-  const [llmQuota, setLlmQuota] = useState<LlmQuota | null>(null);
+  // 이미 오늘 기록이 있는 트래킹 루틴은 기본으로 "기록됨" 표시만 보여주고, 이 Set에 들어있는
+  // 동안만 입력창을 다시 펼친다 — "수정"을 눌러야 입력창이 나타나고 "저장"하면 다시 접혀서
+  // 표시가 바뀌는 게 눈에 보여야, 저장이 실제로 됐는지 확인할 수 있다는 피드백을 반영
+  const [editingTrackingIds, setEditingTrackingIds] = useState<Set<string>>(new Set());
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   const [, setTick] = useState(0);
-  const lastDateRef = useRef(formatLocalDate(new Date()));
+  // 자정을 넘기면 이 값이 바뀌면서 아래 쿼리의 key도 같이 바뀌어 자동으로 새 날짜 기준으로
+  // 다시 불러온다 — 예전엔 "날짜 바뀐 걸 감지하면 수동으로 load() 호출"을 직접 구현했었음
+  const [todayDateStr, setTodayDateStr] = useState(() => formatLocalDate(new Date()));
+  const listScrollRef = useRef<ScrollView>(null);
+  // 각 행이 실제로 레이아웃된 뒤 그 y좌표를 기록해둔다(행 높이가 서로 달라 미리 계산 불가) —
+  // 타임라인처럼 ScrollView + scrollTo를 써서, FlatList의 scrollToIndex/키 재생성 방식에서
+  // 나던 깜빡임(리스트를 통째로 다시 만드는 과정에서 생기던 재렌더링) 없이 매끄럽게 옮긴다
+  const rowLayoutsRef = useRef<Record<string, number>>({});
+  // 트래킹 입력창에 포커스된 루틴 id — 키보드가 완전히 올라온 뒤(keyboardDidShow) 그 시점에
+  // 맞춰 다시 한번 스크롤하기 위해 기억해둔다(아래 scrollRowIntoView 설명 참고)
+  const focusedTrackingIdRef = useRef<string | null>(null);
+  // 캘린더/통계 탭 갔다가 돌아왔을 때 리스트/타임라인을 다시 "지금 시각" 위치로 맞추는 신호.
+  // routines 값 자체가 바뀌는 걸 신호로 썼더니, react-query가 내용이 똑같으면 참조를 그대로
+  // 재사용하는(structural sharing) 최적화 때문에 "돌아왔는데 내용이 안 바뀐 경우"엔 재조회를
+  // 해도 routines 참조가 안 바뀌어서 재정렬이 아예 실행이 안 되는 버그가 있었음 — 데이터 내용과
+  // 무관하게 "탭에 돌아왔다"는 사실 자체를 별도 신호(숫자를 하나씩 올림)로 만들어서 해결
+  const [repositionToken, setRepositionToken] = useState(0);
+  const bumpRepositionToken = useCallback(() => setRepositionToken((t) => t + 1), []);
+  useRefetchOnFocus(bumpRepositionToken);
 
-  // LLM 남은 횟수: 화면에 들어올 때마다 갱신 (배너 표시용)
-  useFocusEffect(
-    useCallback(() => {
-      fetchLlmQuota().then(setLlmQuota).catch(() => {});
-    }, [])
-  );
+  // 오늘 예정 루틴 + 완료기록 + 공휴일. staleTime이 0(query-client.ts 기본값)이라 포커스마다
+  // 자동으로 오래된 데이터 취급되고, useRefetchOnFocus가 실제 재요청을 트리거한다.
+  // isLoading은 "캐시된 데이터가 전혀 없을 때만" true라서, 예전에 손으로 만들던
+  // "최초 1회만 스피너" 로직이 필요 없어졌다.
+  const todayQuery = useQuery({
+    queryKey: ['today-routines', userId, todayDateStr],
+    queryFn: () => fetchTodayRoutines(userId!),
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(todayQuery.refetch);
 
+  // 원래 load()가 새로 불러오기 시작할 때 에러 메시지를 지우고, 실패하면 채워 넣던 것과 동일 —
+  // react-query로 옮기면서 이 부분이 빠져서 조회 실패 시 안내가 하나도 안 뜨는 회귀가 있었음.
+  // isFetching과 isError를 각자 다른 effect에서 따로 보면, 두 번째 시도도 또 실패했을 때
+  // isError 값 자체는 true→true로 "안 바뀐" 것처럼 보여서 effect가 다시 안 실행되고, 메시지가
+  // 지워진 채로 안 돌아오는 버그가 있었음 — 하나의 effect에서 같이 보면 isFetching이
+  // true→false로 바뀌는 시점마다 무조건 다시 검사해서 이 문제가 없어진다
   useEffect(() => {
-    setupNotificationChannel();
-    requestNotificationPermissions();
-  }, []);
-
-  // 소프트 삭제된 지 2주 지난 모음집/카테고리를 완전히 정리 — 앱 켤 때마다 하루 한 번만 조용히 실행.
-  // 루틴은 완료기록이 영구 보존돼야 해서 대상에서 제외(절대 완전삭제 안 함, 소프트 삭제 상태로 계속 남음)
-  useEffect(() => {
-    if (!userId) return;
-    (async () => {
-      const today = formatLocalDate(new Date());
-      const lastRun = await AsyncStorage.getItem(PURGE_LAST_RUN_KEY);
-      if (lastRun === today) return;
-      try {
-        await purgeOldDeletedPresets(userId);
-        await purgeOldDeletedCategories(userId);
-      } catch {
-        // 실패해도 조용히 무시 — 다음에 앱 열 때 다시 시도됨
-      }
-      await AsyncStorage.setItem(PURGE_LAST_RUN_KEY, today);
-    })();
-  }, [userId]);
-
-  const load = useCallback(async () => {
-    if (!userId) return;
-    setErrorMessage(null);
-    try {
-      const { routines: fetchedRoutines, completions: fetchedCompletions, holiday: fetchedHoliday } =
-        await fetchTodayRoutines(userId);
-      setRoutines(fetchedRoutines);
-      setHoliday(fetchedHoliday);
-      const completionMap: Record<string, RoutineCompletion> = {};
-      const inputMap: Record<string, string> = {};
-      for (const completion of fetchedCompletions) {
-        completionMap[completion.routine_id] = completion;
-        if (completion.tracking_value !== null) {
-          inputMap[completion.routine_id] = String(completion.tracking_value);
-        }
-      }
-      setCompletions(completionMap);
-      setTrackingInputs(inputMap);
-
-      const streakResult = await fetchStreaks(fetchedRoutines, formatLocalDate(new Date()));
-      setStreaks(streakResult);
-
-      syncSlotAlarms(userId).catch(() => {});
-      syncReminderAlarm(userId).catch(() => {});
-    } catch (err) {
+    if (todayQuery.isFetching) {
+      setErrorMessage(null);
+    } else if (todayQuery.isError) {
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
-  }, [userId]);
+  }, [todayQuery.isFetching, todayQuery.isError]);
+
+  const routines = useMemo(() => todayQuery.data?.routines ?? [], [todayQuery.data]);
+  const holiday = todayQuery.data?.holiday ?? null;
+
+  const completions = useMemo(() => {
+    const map: Record<string, RoutineCompletion> = {};
+    for (const c of todayQuery.data?.completions ?? []) map[c.routine_id] = c;
+    return map;
+  }, [todayQuery.data]);
+
+  // 완료기록이 새로 도착할 때마다(포커스마다 재조회 포함) 입력창을 그 값 기준으로 다시 채운다 —
+  // 기존 load() 방식과 동일한 동작(입력하다 만 값은 다음 새로고침에 덮어써짐)
+  useEffect(() => {
+    const inputMap: Record<string, string> = {};
+    for (const c of todayQuery.data?.completions ?? []) {
+      if (c.tracking_value !== null) inputMap[c.routine_id] = String(c.tracking_value);
+    }
+    setTrackingInputs(inputMap);
+  }, [todayQuery.data]);
+
+  // 스트릭은 배지 장식용이라 필수 정보가 아님 — 오늘 목록 쿼리가 끝난 뒤에만 이어서 돈다
+  // (enabled). 목록이 뜨는 걸 기다리게 하지 않아서 첫 로딩 체감 속도가 그대로 유지된다.
+  const streaksQuery = useQuery({
+    queryKey: ['streaks', userId, routines.map((r) => r.id), todayDateStr],
+    queryFn: () => fetchStreaks(routines, todayDateStr),
+    enabled: !!todayQuery.data,
+  });
+  const streaks = streaksQuery.data ?? {};
+
+  // 스트릭 등급(이모지) 설정은 자주 안 바뀌는 참조 데이터라 1시간 정도는 캐시된 값을 그대로 씀
+  const streakConfigsQuery = useQuery({
+    queryKey: ['streak-configs'],
+    queryFn: fetchStreakConfigs,
+    staleTime: 60 * 60 * 1000,
+  });
+  const streakConfigs = streakConfigsQuery.data ?? [];
+
+  // LLM 남은 횟수: 화면에 들어올 때마다 갱신(배너 표시용)
+  const llmQuotaQuery = useQuery({
+    queryKey: ['llm-quota', userId],
+    queryFn: fetchLlmQuota,
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(llmQuotaQuery.refetch);
+  const llmQuota = llmQuotaQuery.data ?? null;
 
   // 1분마다 다시 렌더링해서 "지금" 강조선을 갱신하고, 날짜가 자정을 넘어간 게 감지되면
-  // 목록도 오늘 날짜 기준으로 다시 불러온다(화면을 계속 켜둔 채로 자정을 넘기면 focus 이벤트가
-  // 안 생겨서 예전 날짜 목록이 그대로 남아있던 문제)
+  // todayDateStr을 갱신한다(위 쿼리들의 key가 바뀌면서 자동으로 새 날짜로 다시 불러와짐)
   useEffect(() => {
     const interval = setInterval(() => {
       setTick((t) => t + 1);
       const currentDate = formatLocalDate(new Date());
-      if (currentDate !== lastDateRef.current) {
-        lastDateRef.current = currentDate;
-        load();
-      }
+      setTodayDateStr((prev) => (prev === currentDate ? prev : currentDate));
     }, 60 * 1000);
     return () => clearInterval(interval);
-  }, [load]);
-
-  useEffect(() => {
-    fetchStreakConfigs().then(setStreakConfigs).catch(() => {});
   }, []);
 
+  // 알림 권한 요청/채널 설정, 하루 1회 정리, 통계 탭용 백그라운드 사전 캐싱은 오늘 목록 표시와
+  // 무관한 작업들이라, 오늘 목록이 처음 뜬 뒤(최초 성공 시점)로 순서를 미루고 한 번만 실행한다.
+  // stats 쿼리를 여기서 미리 받아두면(prefetchQuery) 통계 탭이 같은 쿼리 키로 캐시를 그대로
+  // 재사용해서 로딩 없이 바로 뜬다 — 예전에 따로 만든 lib/stats-cache.ts 캐시 모듈을 대체함
+  const secondaryStartupDoneRef = useRef(false);
   useEffect(() => {
-    setIsLoading(true);
-    load().finally(() => setIsLoading(false));
-  }, [load]);
+    if (!todayQuery.isSuccess || secondaryStartupDoneRef.current || !userId) return;
+    secondaryStartupDoneRef.current = true;
+    setupNotificationChannel();
+    requestNotificationPermissions();
+    runDailyPurgeIfNeeded(userId).catch(() => {});
+    queryClient.prefetchQuery({ queryKey: ['stats', userId], queryFn: () => fetchStats(userId) });
+  }, [todayQuery.isSuccess, userId, queryClient]);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
+  // 알림 동기화는 예전 load()와 동일하게 매번 성공적으로 다시 불러올 때마다 실행
+  useEffect(() => {
+    if (userId && todayQuery.data) {
+      syncSlotAlarms(userId).catch(() => {});
+      syncReminderAlarm(userId).catch(() => {});
+    }
+  }, [userId, todayQuery.data]);
 
   async function handleRefresh() {
     setIsRefreshing(true);
-    await load();
+    await todayQuery.refetch();
     setIsRefreshing(false);
   }
 
-  async function refreshStreaks() {
-    const streakResult = await fetchStreaks(routines, formatLocalDate(new Date()));
-    setStreaks(streakResult);
-  }
-
-  async function handleToggleCheck(routine: Routine) {
-    const existing = completions[routine.id] ?? null;
-    try {
-      const result = await toggleCheckCompletion(routine.id, existing?.id ?? null);
-      setCompletions((prev) => {
-        const next = { ...prev };
-        if (result) {
-          next[routine.id] = result;
-        } else {
-          delete next[routine.id];
-        }
-        return next;
+  // 리스트뷰도 타임라인처럼 화면을 열면 지금 시각 근처 루틴이 바로 보이게 자동 스크롤한다.
+  // FlatList의 scrollToIndex(+숨겼다 보여주기/키로 강제 재생성)는 여러 번 시도해봐도 깜빡임이
+  // 남아서, 타임라인이 이미 매끄럽게 동작하는 것과 똑같은 방식(ScrollView + scrollTo)으로
+  // 바꿨다 — 리스트를 다시 만들 필요 없이, 같은 ScrollView 인스턴스를 그대로 둔 채 위치만 옮긴다
+  function computeNowIndex(list: Routine[]): number {
+    if (list.length === 0) return -1;
+    const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+    let idx = list.findIndex((r) => {
+      const range = effectiveTimeRange(r);
+      return range ? isNowWithinRange(range, r.is_instant) : false;
+    });
+    if (idx === -1) {
+      // 지금 진행 중인 루틴이 없으면 다음으로 다가올(지금 이후 가장 가까운 시각) 루틴을 기준으로 삼는다
+      idx = list.findIndex((r) => {
+        const range = effectiveTimeRange(r);
+        return range ? toMinutes(range.start) >= nowMinutes : false;
       });
-      await refreshStreaks();
+    }
+    return idx;
+  }
+
+  // 앱을 맨 처음 열어서 리스트가 이 순간 막 생겨나는 시점엔, 이 함수가 불리는 때(routines가
+  // 막 채워진 직후)에 아직 각 행의 onLayout이 한 번도 안 불려서 rowLayoutsRef가 비어있다 —
+  // 예전엔 이때 그냥 조용히 포기하고 ScrollView의 onContentSizeChange가 나중에 다시 불러주길
+  // 기다렸는데, 그 콜백이 기대만큼 안정적으로 다시 불리지 않아서 "최초 진입 시엔 위치가 전혀
+  // 안 맞는" 문제가 있었음 — 대신 레이아웃이 아직 없으면 짧게(60ms) 재시도를 몇 번 걸어서
+  // 레이아웃이 잡힐 때까지 스스로 기다리게 한다(탭을 갔다 왔을 때는 이미 레이아웃이 있어서
+  // 바로 성공하니 체감상 지연은 없음)
+  function scrollListToNow(attemptsLeft = 6) {
+    const targetIndex = computeNowIndex(routines);
+    if (targetIndex <= 0) return;
+    const targetId = routines[targetIndex].id;
+    const y = rowLayoutsRef.current[targetId];
+    if (y === undefined) {
+      if (attemptsLeft > 0) setTimeout(() => scrollListToNow(attemptsLeft - 1), 60);
+      return;
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        listScrollRef.current?.scrollTo({ y: Math.max(0, y - 40), animated: false });
+      });
+    });
+  }
+
+  // 탭에 돌아올 때마다(repositionToken), routines 내용이 실제로 바뀔 때마다, 그리고
+  // 타임라인→리스트 전환할 때 매번 다시 맞춘다
+  useEffect(() => {
+    if (viewMode === 'list') scrollListToNow();
+  }, [routines, viewMode, repositionToken]);
+
+  type TodayData = Awaited<ReturnType<typeof fetchTodayRoutines>>;
+  const todayQueryKey = ['today-routines', userId, todayDateStr] as const;
+
+  // 체크박스를 눌러도 서버 응답이 올 때까지(짧아도 수백ms~1초 이상) 화면이 그대로라
+  // "렉 걸린다"는 피드백이 있었음 — onMutate에서 서버 응답을 기다리지 않고 화면부터 먼저
+  // 바꾸고(낙관적 업데이트), 실패하면 onError에서 원래 상태로 되돌린다. 성공하면 onSuccess가
+  // 임시로 넣어둔 값을 서버가 준 진짜 값으로 다시 한번 맞춰준다
+  const toggleCheckMutation = useMutation({
+    mutationFn: ({ routineId, existingId }: { routineId: string; existingId: string | null }) =>
+      toggleCheckCompletion(routineId, existingId),
+    onMutate: async ({ routineId, existingId }) => {
+      await queryClient.cancelQueries({ queryKey: todayQueryKey });
+      const previous = queryClient.getQueryData<TodayData>(todayQueryKey);
+      queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
+        if (!old) return old;
+        if (existingId) {
+          return { ...old, completions: old.completions.filter((c) => c.id !== existingId) };
+        }
+        const optimistic: RoutineCompletion = {
+          id: `optimistic-${routineId}`,
+          routine_id: routineId,
+          completed_date: todayDateStr,
+          tracking_value: null,
+        };
+        return { ...old, completions: [...old.completions, optimistic] };
+      });
+      return { previous };
+    },
+    onSuccess: (result, { routineId }) => {
+      queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
+        if (!old) return old;
+        const nextCompletions = old.completions.filter((c) => c.routine_id !== routineId);
+        if (result) nextCompletions.push(result);
+        return { ...old, completions: nextCompletions };
+      });
+      queryClient.invalidateQueries({ queryKey: ['streaks', userId] });
       if (userId) syncReminderAlarm(userId).catch(() => {});
-    } catch (err) {
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
       setErrorMessage('체크 처리에 실패했어요.');
-    }
-  }
+    },
+  });
 
-  async function handleSkipToday(routine: Routine) {
-    try {
-      await skipRoutineToday(routine.id);
-      setRoutines((prev) => prev.filter((r) => r.id !== routine.id));
+  const skipTodayMutation = useMutation({
+    mutationFn: (routineId: string) => skipRoutineToday(routineId),
+    onMutate: async (routineId) => {
+      await queryClient.cancelQueries({ queryKey: todayQueryKey });
+      const previous = queryClient.getQueryData<TodayData>(todayQueryKey);
+      queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
+        if (!old) return old;
+        return { ...old, routines: old.routines.filter((r) => r.id !== routineId) };
+      });
+      return { previous };
+    },
+    onSuccess: (_result, routineId) => {
       if (userId) syncReminderAlarm(userId).catch(() => {});
-    } catch (err) {
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
       setErrorMessage('삭제에 실패했어요.');
-    }
+    },
+  });
+
+  const saveTrackingMutation = useMutation({
+    mutationFn: ({
+      routineId,
+      existingId,
+      value,
+    }: {
+      routineId: string;
+      existingId: string | null;
+      value: number;
+    }) => saveTrackingValue(routineId, existingId, value),
+    onMutate: async ({ routineId, existingId, value }) => {
+      await queryClient.cancelQueries({ queryKey: todayQueryKey });
+      const previous = queryClient.getQueryData<TodayData>(todayQueryKey);
+      queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
+        if (!old) return old;
+        const optimistic: RoutineCompletion = {
+          id: existingId ?? `optimistic-${routineId}`,
+          routine_id: routineId,
+          completed_date: todayDateStr,
+          tracking_value: value,
+        };
+        const nextCompletions = old.completions.filter((c) => c.routine_id !== routineId);
+        nextCompletions.push(optimistic);
+        return { ...old, completions: nextCompletions };
+      });
+      return { previous };
+    },
+    onSuccess: (result, { routineId }) => {
+      queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
+        if (!old) return old;
+        const nextCompletions = old.completions.filter((c) => c.routine_id !== routineId);
+        nextCompletions.push(result);
+        return { ...old, completions: nextCompletions };
+      });
+      queryClient.invalidateQueries({ queryKey: ['streaks', userId] });
+      if (userId) syncReminderAlarm(userId).catch(() => {});
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
+      setErrorMessage('기록 저장에 실패했어요.');
+    },
+  });
+
+  function handleToggleCheck(routine: Routine) {
+    const existing = completions[routine.id] ?? null;
+    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null });
   }
 
-  async function handleSaveTracking(routine: Routine) {
+  function handleSkipToday(routine: Routine) {
+    skipTodayMutation.mutate(routine.id);
+  }
+
+  function closeEditTracking(routineId: string) {
+    setEditingTrackingIds((prev) => {
+      if (!prev.has(routineId)) return prev;
+      const next = new Set(prev);
+      next.delete(routineId);
+      return next;
+    });
+  }
+
+  function startEditTracking(routine: Routine) {
+    setEditingTrackingIds((prev) => new Set(prev).add(routine.id));
+  }
+
+  // 트래킹 입력창이 화면 아래쪽에 있으면 키보드가 뜨는 순간 화면(또는 그 행)이 키보드에 가려져
+  // 저장 버튼을 못 누르던 버그 — 입력창에 포커스가 잡히면 그 행을 스크롤 뷰 위쪽 가까이로
+  // 당겨온다. 키보드는 화면 "아래"만 가리므로, 위쪽 근처로 당겨두면 키보드 높이와 무관하게
+  // 행과 저장 버튼이 항상 보이는 영역에 남는다.
+  // 포커스되는 순간 바로 한 번 시도하는 것만으로는 부족했음 — ScrollView가 원래 갖고 있는
+  // "포커스된 입력칸을 키보드 위로 자동 스크롤"하는 기본 동작이 키보드가 다 올라온 뒤에
+  // 한 번 더 끼어들어서, 우리가 옮겨둔 위치를 다시 아래로 밀어버리는 문제가 있었음 — 그래서
+  // keyboardDidShow(키보드가 완전히 다 올라온 시점) 때 한 번 더 강제로 맞춰서 마지막에
+  // 우리가 원하는 위치로 확정시킨다
+  function scrollRowIntoView(routineId: string) {
+    const y = rowLayoutsRef.current[routineId];
+    if (y === undefined) return;
+    listScrollRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
+  }
+
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      const id = focusedTrackingIdRef.current;
+      if (id) scrollRowIntoView(id);
+    });
+    return () => sub.remove();
+  }, []);
+
+  function handleSaveTracking(routine: Routine) {
     const raw = trackingInputs[routine.id];
     const value = Number(raw);
     if (!raw || Number.isNaN(value)) return;
-
     const existing = completions[routine.id] ?? null;
-    try {
-      const result = await saveTrackingValue(routine.id, existing?.id ?? null, value);
-      setCompletions((prev) => ({ ...prev, [routine.id]: result }));
-      await refreshStreaks();
-      if (userId) syncReminderAlarm(userId).catch(() => {});
-    } catch (err) {
-      setErrorMessage('기록 저장에 실패했어요.');
-    }
+    saveTrackingMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, value });
+    // 저장 즉시 "기록됨" 표시로 접어서, 입력창이 사라지고 새 값이 보이는 걸로 저장됐다는 걸 확인할 수 있게 한다
+    closeEditTracking(routine.id);
   }
 
-  if (isLoading) {
+  // 트래킹 기록을 완전히 지운다(체크형의 "다시 눌러서 해제"에 해당) — 저장된 값 자체를 없애고
+  // 싶을 때 쓰는 용도라, 값을 지우는 completion 삭제(toggleCheckCompletion의 delete 경로)를
+  // 그대로 재사용한다(어떤 block_type이든 id로만 지우므로 문제없음)
+  function handleCancelTracking(routine: Routine) {
+    const existing = completions[routine.id];
+    if (!existing) return;
+    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing.id });
+    closeEditTracking(routine.id);
+  }
+
+  // flat=true면 "지금" 그룹 박스 안에 여러 개가 같이 들어있는 경우 — 그룹 박스 자체가 이미
+  // 강조 테두리를 그려주므로 각 행은 자기만의 테두리 없이 밋밋하게(flat) 그린다
+  function renderListRow(item: Routine, isNow: boolean, flat: boolean) {
+    const completion = completions[item.id];
+    const isDone = Boolean(completion);
+    const streakDays = streaks[item.id] ?? 0;
+    const streakEmoji = emojiForStreak(streakDays, streakConfigs);
+
+    return (
+      <Swipeable
+        key={item.id}
+        overshootRight={false}
+        renderRightActions={() => (
+          <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
+            <Text style={styles.deleteActionText}>오늘 삭제</Text>
+          </Pressable>
+        )}>
+        <View style={[styles.row, isNow && !flat && styles.rowHighlighted, flat && styles.rowFlat]}>
+          <View style={styles.timeColumn}>
+            <Text style={styles.time}>{timeLabel(item)}</Text>
+            {item.slots && <Text style={styles.timeSub}>{slotTimeLabel(item.slots)}</Text>}
+          </View>
+          <View style={styles.rowMain}>
+            <Pressable
+              style={styles.titleLine}
+              onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+              <View style={item.is_required ? styles.requiredHighlight : undefined}>
+                <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>{item.title}</Text>
+              </View>
+              {streakEmoji && (
+                <Text style={styles.streakBadge}>
+                  {streakEmoji} {streakDays}일
+                </Text>
+              )}
+            </Pressable>
+
+            {item.block_type === 'tracking' ? (
+              isDone && !editingTrackingIds.has(item.id) ? (
+                <View style={styles.trackingRow}>
+                  <Text style={styles.trackingDoneBadge}>
+                    ✓ 오늘 기록 {completion?.tracking_value} {item.tracking_unit}
+                  </Text>
+                  <Pressable style={styles.trackingEditButton} onPress={() => startEditTracking(item)}>
+                    <Text style={styles.trackingEditButtonText}>수정</Text>
+                  </Pressable>
+                  <Pressable style={styles.cancelTrackingButton} onPress={() => handleCancelTracking(item)}>
+                    <Text style={styles.cancelTrackingButtonText}>기록삭제</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={styles.trackingRow}>
+                  <TextInput
+                    style={styles.trackingInput}
+                    keyboardType="numeric"
+                    value={trackingInputs[item.id] ?? ''}
+                    onChangeText={(text) => setTrackingInputs((prev) => ({ ...prev, [item.id]: text }))}
+                    onFocus={() => {
+                      focusedTrackingIdRef.current = item.id;
+                      scrollRowIntoView(item.id);
+                    }}
+                    onBlur={() => {
+                      if (focusedTrackingIdRef.current === item.id) focusedTrackingIdRef.current = null;
+                    }}
+                    placeholder="0"
+                    autoFocus={isDone}
+                  />
+                  <Text style={styles.unit}>{item.tracking_unit}</Text>
+                  {isDone && (
+                    <Pressable style={styles.cancelTrackingButton} onPress={() => closeEditTracking(item.id)}>
+                      <Text style={styles.cancelTrackingButtonText}>닫기</Text>
+                    </Pressable>
+                  )}
+                  <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
+                    <Text style={styles.saveButtonText}>저장</Text>
+                  </Pressable>
+                </View>
+              )
+            ) : null}
+          </View>
+
+          {item.video_id && (
+            <Pressable
+              style={styles.playButton}
+              onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
+              <Text style={styles.playButtonText}>▶</Text>
+            </Pressable>
+          )}
+
+          {item.block_type === 'check' && (
+            <Pressable
+              style={[styles.checkbox, isDone && styles.checkboxDone]}
+              onPress={() => handleToggleCheck(item)}>
+              {isDone && <Text style={styles.checkmark}>✓</Text>}
+            </Pressable>
+          )}
+
+          <Pressable
+            style={styles.editButton}
+            onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+            <Text style={styles.editButtonText}>✎</Text>
+          </Pressable>
+        </View>
+      </Swipeable>
+    );
+  }
+
+  if (todayQuery.isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />
@@ -765,7 +1101,8 @@ export default function TodayScreen() {
 
       <ScrollView
         horizontal
-        showsHorizontalScrollIndicator={false}
+        showsHorizontalScrollIndicator
+        persistentScrollbar
         style={styles.headerButtonsScroll}
         contentContainerStyle={styles.headerButtonsContent}>
         <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
@@ -822,93 +1159,55 @@ export default function TodayScreen() {
           completions={completions}
           onToggleCheck={handleToggleCheck}
           onEdit={(routine) => router.push({ pathname: '/routine-form', params: { id: routine.id } })}
+          repositionToken={repositionToken}
         />
       ) : (
-      <FlatList
+      <ScrollView
+        ref={listScrollRef}
         style={styles.list}
         contentContainerStyle={routines.length === 0 ? styles.emptyContainer : undefined}
-        data={routines}
-        keyExtractor={(item) => item.id}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
-        ListEmptyComponent={<Text style={styles.emptyText}>오늘 할 루틴이 없어요</Text>}
         keyboardShouldPersistTaps="handled"
-        renderItem={({ item }) => {
-          const completion = completions[item.id];
-          const isDone = Boolean(completion);
-          const itemRange = effectiveTimeRange(item);
-          const isNow = itemRange ? isNowWithinRange(itemRange, item.is_instant) : false;
-          const streakDays = streaks[item.id] ?? 0;
-          const streakEmoji = emojiForStreak(streakDays, streakConfigs);
+        onContentSizeChange={scrollListToNow}>
+        {routines.length === 0 ? (
+          <Text style={styles.emptyText}>오늘 할 루틴이 없어요</Text>
+        ) : (
+          (() => {
+            // "지금" 강조가 필요한 루틴이 여러 개 연달아 있으면(같은 시간대에 몰린 경우) 각자
+            // 따로 테두리를 그려서 너무 번잡해 보인다는 피드백 — 연속된 "지금" 루틴들은 하나의
+            // 큰 포인트 컬러 박스로 묶어서 보여준다
+            type RowGroup = { items: Routine[]; isNow: boolean };
+            const rowGroups: RowGroup[] = [];
+            for (const item of routines) {
+              const itemRange = effectiveTimeRange(item);
+              const isNow = itemRange ? isNowWithinRange(itemRange, item.is_instant) : false;
+              const last = rowGroups[rowGroups.length - 1];
+              if (isNow && last?.isNow) {
+                last.items.push(item);
+              } else {
+                rowGroups.push({ items: [item], isNow });
+              }
+            }
 
-          return (
-            <Swipeable
-              overshootRight={false}
-              renderRightActions={() => (
-                <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
-                  <Text style={styles.deleteActionText}>오늘 삭제</Text>
-                </Pressable>
-              )}>
-              <View style={[styles.row, isNow && styles.rowHighlighted]}>
-                <Text style={styles.time}>{timeLabel(item)}</Text>
-                <View style={styles.rowMain}>
-                  <Pressable
-                    style={styles.titleLine}
-                    onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
-                    <View style={item.is_required ? styles.requiredHighlight : undefined}>
-                      <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>{item.title}</Text>
-                    </View>
-                    {streakEmoji && (
-                      <Text style={styles.streakBadge}>
-                        {streakEmoji} {streakDays}일
-                      </Text>
-                    )}
-                  </Pressable>
-
-                  {item.block_type === 'tracking' ? (
-                    <View style={styles.trackingRow}>
-                      <TextInput
-                        style={styles.trackingInput}
-                        keyboardType="numeric"
-                        value={trackingInputs[item.id] ?? ''}
-                        onChangeText={(text) =>
-                          setTrackingInputs((prev) => ({ ...prev, [item.id]: text }))
-                        }
-                        placeholder="0"
-                      />
-                      <Text style={styles.unit}>{item.tracking_unit}</Text>
-                      <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
-                        <Text style={styles.saveButtonText}>저장</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
+            return rowGroups.map((group, groupIndex) => {
+              const isGroupBox = group.items.length > 1;
+              return (
+                <View
+                  key={isGroupBox ? `now-group-${groupIndex}` : group.items[0].id}
+                  style={isGroupBox ? styles.nowGroupBox : undefined}
+                  onLayout={(e) => {
+                    // 그룹 전체의 시작 y좌표를 그룹에 속한 모든 루틴 id에 똑같이 기록해둔다 —
+                    // "지금" 루틴으로 스크롤할 땐 그 그룹의 맨 위가 보이면 되므로 충분히 정확함
+                    const y = e.nativeEvent.layout.y;
+                    for (const it of group.items) rowLayoutsRef.current[it.id] = y;
+                  }}>
+                  {group.items.map((item) => renderListRow(item, group.isNow, isGroupBox))}
                 </View>
-
-                {item.video_id && (
-                  <Pressable
-                    style={styles.playButton}
-                    onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
-                    <Text style={styles.playButtonText}>▶</Text>
-                  </Pressable>
-                )}
-
-                {item.block_type === 'check' && (
-                  <Pressable
-                    style={[styles.checkbox, isDone && styles.checkboxDone]}
-                    onPress={() => handleToggleCheck(item)}>
-                    {isDone && <Text style={styles.checkmark}>✓</Text>}
-                  </Pressable>
-                )}
-
-                <Pressable
-                  style={styles.editButton}
-                  onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
-                  <Text style={styles.editButtonText}>✎</Text>
-                </Pressable>
-              </View>
-            </Swipeable>
-          );
-        }}
-      />
+              );
+            });
+          })()
+        )}
+      </ScrollView>
       )}
 
       {routines.length > 0 && (
@@ -1074,10 +1373,28 @@ const styles = StyleSheet.create({
   rowHighlighted: {
     borderColor: '#7C5CFC',
   },
-  time: {
+  nowGroupBox: {
+    borderWidth: 1.5,
+    borderColor: '#7C5CFC',
+    backgroundColor: 'rgba(124, 92, 252, 0.06)',
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  rowFlat: {
+    borderWidth: 0,
+    borderRadius: 0,
+  },
+  timeColumn: {
     width: 78,
+  },
+  time: {
     fontSize: 12,
     opacity: 0.6,
+  },
+  timeSub: {
+    fontSize: 10,
+    opacity: 0.45,
+    marginTop: 1,
   },
   rowMain: {
     flex: 1,
@@ -1118,6 +1435,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     width: 60,
+  },
+  trackingDoneBadge: {
+    flex: 1,
+    fontSize: 13,
+    color: '#7C5CFC',
+    fontWeight: '600',
+  },
+  trackingEditButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  trackingEditButtonText: {
+    fontSize: 12,
+    color: '#7C5CFC',
+    fontWeight: '600',
+  },
+  cancelTrackingButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  cancelTrackingButtonText: {
+    fontSize: 12,
+    color: '#FF6B6B',
   },
   unit: {
     fontSize: 13,

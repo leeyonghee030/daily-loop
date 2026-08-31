@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
@@ -12,8 +12,8 @@ import {
   setHideFromStats,
   type RoutineStats,
   type StatsSummary,
-  type StreakConfig,
 } from '@/lib/routines';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 function formatRate(completed: number, scheduled: number): string {
   if (scheduled === 0) return '-';
@@ -30,10 +30,27 @@ const SUMMARY_NOTE_SEEN_KEY = 'stats_summary_note_seen';
 export default function StatsScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
+  const queryClient = useQueryClient();
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [summary, setSummary] = useState<StatsSummary | null>(null);
-  const [streakConfigs, setStreakConfigs] = useState<StreakConfig[]>([]);
+  // 오늘 탭이 화면을 연 뒤 백그라운드로 이 같은 쿼리 키(['stats', userId])를 미리 받아두므로
+  // (queryClient.prefetchQuery), 보통 오늘 탭을 먼저 보고 통계 탭으로 넘어오면 캐시가 이미
+  // 채워져 있어서 로딩이 아예 안 보인다. 캐시가 전혀 없는 진짜 최초 진입일 때만 아래에서 스피너.
+  const summaryQuery = useQuery({
+    queryKey: ['stats', userId],
+    queryFn: () => fetchStats(userId!),
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(summaryQuery.refetch);
+  const summary = summaryQuery.data ?? null;
+
+  // 오늘 탭과 같은 쿼리 키를 쓰기 때문에 이미 오늘 탭에서 받아온 값이 있으면 재요청 없이 공유됨
+  const streakConfigsQuery = useQuery({
+    queryKey: ['streak-configs'],
+    queryFn: fetchStreakConfigs,
+    staleTime: 60 * 60 * 1000,
+  });
+  const streakConfigs = streakConfigsQuery.data ?? [];
+
   const [showHidden, setShowHidden] = useState(false);
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
   const [showSummaryNote, setShowSummaryNote] = useState(false);
@@ -49,38 +66,10 @@ export default function StatsScreen() {
     })();
   }, []);
 
-  const load = useCallback(async () => {
-    if (!userId) return;
-    setIsLoading(true);
-    try {
-      const [statsResult, configs] = await Promise.all([fetchStats(userId), fetchStreakConfigs()]);
-      setSummary(statsResult);
-      setStreakConfigs(configs);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [userId]);
-
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
-
-  // isLoading 스피너 없이 통계만 조용히 새로고침 (숨기기 토글 직후, 화면이 깜빡이지 않게)
-  async function refreshSummary() {
-    if (!userId) return;
-    try {
-      setSummary(await fetchStats(userId));
-    } catch {
-      // 무시 — 다음 포커스 때 다시 시도됨
-    }
-  }
-
   async function handleToggleHide(item: RoutineStats, hide: boolean) {
     // 즉각적인 반응을 위해 먼저 화면만 낙관적으로 바꾸고, 최근 7일/30일 수행률까지 정확히
     // 맞추기 위해 서버 반영 뒤 다시 불러온다 (숨긴 루틴은 이 수치 계산에서도 빠져야 하므로)
-    setSummary((prev) => {
+    queryClient.setQueryData(['stats', userId], (prev?: StatsSummary) => {
       if (!prev) return prev;
       if (hide) {
         return {
@@ -97,13 +86,12 @@ export default function StatsScreen() {
     });
     try {
       await setHideFromStats(item.routine.id, hide);
-      await refreshSummary();
-    } catch {
-      await refreshSummary();
+    } finally {
+      summaryQuery.refetch();
     }
   }
 
-  if (isLoading || !summary) {
+  if (!summary) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />

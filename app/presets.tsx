@@ -1,6 +1,6 @@
-import { useFocusEffect } from '@react-navigation/native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
@@ -8,6 +8,7 @@ import { useToast } from '@/components/Toast';
 import { useAuth } from '@/lib/auth-context';
 import { applyPreset, deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import { pauseRoutinesByPreset, softDeleteRoutinesByPreset } from '@/lib/routines';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 const REPEAT_LABELS: Record<string, string> = {
   daily: '매일',
@@ -20,37 +21,71 @@ export default function PresetsScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const presetsQueryKey = ['presets', userId] as const;
 
-  const [presets, setPresets] = useState<RoutinePreset[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const { show: showToast, toastNode } = useToast();
 
-  const load = useCallback(async () => {
-    if (!userId) return;
-    try {
-      setPresets(await fetchPresets(userId));
-    } catch (err) {
-      setErrorMessage('모음집을 불러오지 못했어요.');
-    }
-  }, [userId]);
+  const presetsQuery = useQuery({
+    queryKey: presetsQueryKey,
+    queryFn: () => fetchPresets(userId!),
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(presetsQuery.refetch);
+  const presets = presetsQuery.data ?? [];
+  const errorMessage = presetsQuery.isError ? '모음집을 불러오지 못했어요.' : null;
 
-  useFocusEffect(
-    useCallback(() => {
-      setIsLoading(true);
-      load().finally(() => setIsLoading(false));
-    }, [load])
-  );
+  const applyMutation = useMutation({
+    mutationFn: (preset: RoutinePreset) => applyPreset(userId!, preset.id),
+    onSuccess: (count, preset) => {
+      showToast(`"${preset.name}" 모음집의 루틴 ${count}개를 오늘 목록에 반영했어요.`);
+      queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
+      // "내 루틴" 화면의 전체 루틴 목록도 방금 새로 생긴 루틴을 반영하도록 같이 갱신한다 —
+      // 안 그러면 그 화면이 이미 메모리에 살아있는 상태에서 focus 재조회 타이밍을 놓쳤을 때
+      // 방금 적용한 루틴이 안 보이거나 개수가 어긋나 보일 수 있음
+      queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
+    },
+    onError: () => showToast('적용에 실패했어요. 다시 시도해주세요.'),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (preset: RoutinePreset) => {
+      await softDeleteRoutinesByPreset(preset.id);
+      await deletePreset(preset.id);
+    },
+    onSuccess: (_result, preset) => {
+      queryClient.setQueryData(presetsQueryKey, (old?: RoutinePreset[]) =>
+        old ? old.filter((p) => p.id !== preset.id) : old
+      );
+      queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
+      queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
+    },
+    onError: () => showToast('삭제에 실패했어요. 다시 시도해주세요.'),
+  });
+
+  const bulkPauseMutation = useMutation({
+    mutationFn: ({ preset, paused }: { preset: RoutinePreset; paused: boolean }) =>
+      pauseRoutinesByPreset(preset.id, paused),
+    onSuccess: (_result, { preset, paused }) => {
+      showToast(
+        paused
+          ? `"${preset.name}"에서 만든 루틴을 모두 일시정지했어요.`
+          : `"${preset.name}"에서 만든 루틴을 모두 다시 활성화했어요.`
+      );
+      queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
+      queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
+    },
+    onError: () => showToast('처리에 실패했어요. 다시 시도해주세요.'),
+  });
 
   async function handleApply(preset: RoutinePreset) {
     if (!userId) return;
     setBusyId(preset.id);
     try {
-      const count = await applyPreset(userId, preset.id);
-      showToast(`"${preset.name}" 모음집의 루틴 ${count}개를 오늘 목록에 추가했어요.`);
-    } catch (err) {
-      showToast('적용에 실패했어요. 다시 시도해주세요.');
+      await applyMutation.mutateAsync(preset);
+    } catch {
+      // onError에서 이미 토스트를 띄움
     } finally {
       setBusyId(null);
     }
@@ -68,11 +103,9 @@ export default function PresetsScreen() {
           onPress: async () => {
             setBusyId(preset.id);
             try {
-              await softDeleteRoutinesByPreset(preset.id);
-              await deletePreset(preset.id);
-              setPresets((prev) => prev.filter((p) => p.id !== preset.id));
-            } catch (err) {
-              showToast('삭제에 실패했어요. 다시 시도해주세요.');
+              await deleteMutation.mutateAsync(preset);
+            } catch {
+              // onError에서 이미 토스트를 띄움
             } finally {
               setBusyId(null);
             }
@@ -85,20 +118,15 @@ export default function PresetsScreen() {
   async function handleBulkPause(preset: RoutinePreset, paused: boolean) {
     setBusyId(preset.id);
     try {
-      await pauseRoutinesByPreset(preset.id, paused);
-      showToast(
-        paused
-          ? `"${preset.name}"에서 만든 루틴을 모두 일시정지했어요.`
-          : `"${preset.name}"에서 만든 루틴을 모두 다시 활성화했어요.`
-      );
-    } catch (err) {
-      showToast('처리에 실패했어요. 다시 시도해주세요.');
+      await bulkPauseMutation.mutateAsync({ preset, paused });
+    } catch {
+      // onError에서 이미 토스트를 띄움
     } finally {
       setBusyId(null);
     }
   }
 
-  if (isLoading) {
+  if (presetsQuery.isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />

@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import type { BlockType, RepeatType } from '@/lib/routines';
+import { pauseRoutinesByPreset, type BlockType, type RepeatType } from '@/lib/routines';
 
 export type PresetItemInput = {
   title: string;
@@ -163,7 +163,22 @@ function presetItemsToRoutines(userId: string, presetId: string, preset: Routine
   }));
 }
 
+// 이 모음집으로 이미 만들어진(삭제 안 된) 루틴이 있으면 새로 또 만들지 않고 일시정지만
+// 풀어서 재사용한다 — 안 그러면 "전체 비활성화" 후 "적용"을 다시 누를 때마다 예전 루틴은
+// 그대로 남아있는 채로 새 루틴이 또 생겨서 개수가 계속 불어나는 버그가 있었음(2개→4개).
 export async function applyPreset(userId: string, presetId: string): Promise<number> {
+  const { data: existing, error: existingError } = await supabase
+    .from('routines')
+    .select('id')
+    .eq('preset_id', presetId)
+    .is('deleted_at', null);
+  if (existingError) throw existingError;
+
+  if ((existing ?? []).length > 0) {
+    await pauseRoutinesByPreset(presetId, false);
+    return existing!.length;
+  }
+
   const { preset, items } = await fetchPresetWithItems(presetId);
   if (items.length === 0) return 0;
 

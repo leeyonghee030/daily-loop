@@ -1,6 +1,7 @@
-import { useFocusEffect } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 
@@ -20,6 +21,7 @@ import {
 } from '@/lib/date-memos';
 import { fetchDiaryDatesInRange } from '@/lib/diary';
 import { syncSlotAlarms } from '@/lib/notifications';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
   computeDayStatus,
   fetchStats,
@@ -70,28 +72,10 @@ function groupMemosByDate(list: DateMemo[]): Record<string, DateMemo[]> {
   return map;
 }
 
-// 방금 새로 불러온 범위(start~end)에 한해서만 통째로 교체한다 — 그냥 합치기만 하면 그 사이에
-// 일기/메모를 지워서 더 이상 없는 날짜도 예전 상태가 그대로 남아있게 됨(날짜 표시가 안 지워지는 버그)
-function replaceDiaryRange(prev: Set<string>, rangeStart: string, rangeEnd: string, freshDates: string[]): Set<string> {
-  const next = new Set(prev);
-  for (const date of prev) {
-    if (date >= rangeStart && date <= rangeEnd) next.delete(date);
-  }
-  for (const date of freshDates) next.add(date);
-  return next;
-}
-
-function replaceMemoRange(
-  prev: Record<string, DateMemo[]>,
-  rangeStart: string,
-  rangeEnd: string,
-  freshMemos: DateMemo[]
-): Record<string, DateMemo[]> {
-  const next = { ...prev };
-  for (const date of Object.keys(prev)) {
-    if (date >= rangeStart && date <= rangeEnd) delete next[date];
-  }
-  return { ...next, ...groupMemosByDate(freshMemos) };
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return formatLocalDate(d);
 }
 
 
@@ -100,29 +84,30 @@ export default function CalendarScreen() {
   const userId = session?.user.id;
   const theme = useColorScheme() ?? 'light';
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const today = new Date();
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
-  const [bestStreakEver, setBestStreakEver] = useState<number | null>(null);
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
+  // CalendarList의 current prop 전용 — year/month(스와이프하면 계속 바뀜)와 일부러 분리했다.
+  // current를 year/month에 그대로 묶으면, 라이브러리가 current prop이 바뀔 때마다
+  // "그 달로 다시 스크롤"을 실행해서(내부 useEffect) 사용자가 직접 스와이프하는 것과
+  // 서로 되먹임을 일으켜 빠르게 몇 달을 넘기면 화면이 혼자 이 달 저 달로 튀는 버그가 있었음.
+  // 이제 current는 "명시적으로 이 달로 점프하고 싶을 때"(최초 진입, "월" 탭 클릭)만 바꾼다
+  const [calendarCursor, setCalendarCursor] = useState(
+    () => `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`
+  );
   const [weekStart, setWeekStart] = useState(() => formatLocalDate(sundayOf(today)));
-  const [monthData, setMonthData] = useState<MonthData | null>(null);
-  const [weekData, setWeekData] = useState<MonthData | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [memosByDate, setMemosByDate] = useState<Record<string, DateMemo[]>>({});
-  const [diaryDates, setDiaryDates] = useState<Set<string>>(new Set());
   const [memoText, setMemoText] = useState('');
   const [memoColor, setMemoColor] = useState<MemoColor>('yellow');
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
 
-  const activeData = viewMode === 'week' ? weekData : monthData;
-  // "월" 버튼이 매번 이번 달로 리셋시키다 보니, 이미 오늘 안에 한 번 본 달/주면 다시 안
-  // 받아오고 바로 보여준다 — 로딩 스피너 자체를 아예 안 쓰고, 화면은 항상 즉시 그리되
-  // (날짜 칸은 먼저 뜨고) 완료 색상 등은 데이터가 도착하는 대로 채워 넣는 방식으로 감
-  const loadedMonthKeyRef = useRef<string | null>(null);
-  const loadedWeekKeyRef = useRef<string | null>(null);
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+  const monthEnd = formatLocalDate(new Date(year, month, 0));
+  const weekEnd = addDaysToDateStr(weekStart, 6);
 
   useEffect(() => {
     setMemoText('');
@@ -130,84 +115,112 @@ export default function CalendarScreen() {
     setEditingMemoId(null);
   }, [selectedDate]);
 
-  // 역대 최고 스트릭 배지용 — fetchStats는 전체 루틴을 하루하루 훑는 무거운 계산이라, 탭에
-  // 들어올 때마다(포커스마다) 다시 돌리지 않고 화면이 처음 뜰 때 한 번만 가져온다
+  // 역대 최고 스트릭 배지용 — 오늘/통계 탭과 정확히 같은 쿼리 키(['stats', userId])를 써서
+  // 캐시를 공유한다. 예전엔 이 화면만 따로 fetchStats를 불러서, 다른 탭에서 체크해도 이 배지가
+  // 안 바뀌다가 앱을 껐다 켜야만 갱신되는 버그가 있었음 — 이제는 어느 탭에서 체크하든 셋 중
+  // 하나가 다시 불러오면 나머지도 같은 캐시를 보고 있어 자연스럽게 같이 갱신된다
+  const statsQuery = useQuery({
+    queryKey: ['stats', userId],
+    queryFn: () => fetchStats(userId!),
+    enabled: !!userId,
+  });
+  const bestStreakEver = statsQuery.data?.bestStreakEver ?? null;
+
+  // 월/주 각각의 루틴+완료기록. react-query가 알아서 "최신 요청만 반영"하고 이전 화면을
+  // 그대로 둔 채 조용히 최신화해주므로, 예전에 손으로 만들던 요청 순번 가드/로딩 스피너
+  // 억제 로직이 필요 없어졌다 — key(연/월 또는 주 시작일)가 바뀌면 자동으로 다시 불러온다
+  // enabled에 viewMode 조건을 넣어서, 지금 화면에 안 보이는 뷰(월/주)는 백그라운드에서
+  // 계속 요청하지 않게 한다 — 이게 빠져 있으면 항상 월+주 데이터를 둘 다 불러오게 되어
+  // 예전(둘 중 활성화된 뷰만 load)보다 네트워크 요청이 오히려 늘어나는 회귀가 생김
+  const monthQuery = useQuery({
+    queryKey: ['month-data', userId, year, month],
+    queryFn: () => fetchMonthData(userId!, year, month),
+    enabled: !!userId && viewMode === 'month',
+  });
+  const weekQuery = useQuery({
+    queryKey: ['week-data', userId, weekStart],
+    queryFn: () => fetchWeekData(userId!, weekStart),
+    enabled: !!userId && viewMode === 'week',
+  });
+  const activeData = viewMode === 'week' ? (weekQuery.data ?? null) : (monthQuery.data ?? null);
+
+  // 메모/일기 표시는 부가 정보 — 월/주 각각 자기 범위만큼만 따로 쿼리한다(예전엔 전역
+  // Map/Set에 "새로 불러온 범위만 교체"하는 방식으로 손으로 병합했었는데, 이제 범위별로
+  // 쿼리 키가 다르니 react-query가 알아서 캐시를 나눠서 관리해준다)
+  const monthMemosQuery = useQuery({
+    queryKey: ['memos', userId, monthStart, monthEnd],
+    queryFn: () => fetchMemosInRange(userId!, monthStart, monthEnd),
+    enabled: !!userId && viewMode === 'month',
+  });
+  const monthDiaryQuery = useQuery({
+    queryKey: ['diary-dates', userId, monthStart, monthEnd],
+    queryFn: () => fetchDiaryDatesInRange(userId!, monthStart, monthEnd),
+    enabled: !!userId && viewMode === 'month',
+  });
+  const weekMemosQuery = useQuery({
+    queryKey: ['memos', userId, weekStart, weekEnd],
+    queryFn: () => fetchMemosInRange(userId!, weekStart, weekEnd),
+    enabled: !!userId && viewMode === 'week',
+  });
+  // 메모 추가/수정/삭제는 지금 보고 있는 뷰(월 또는 주)의 메모 쿼리 캐시를 직접 갱신한다
+  const activeMemoQueryKey =
+    viewMode === 'week' ? ['memos', userId, weekStart, weekEnd] : ['memos', userId, monthStart, monthEnd];
+
+  const weekDiaryQuery = useQuery({
+    queryKey: ['diary-dates', userId, weekStart, weekEnd],
+    queryFn: () => fetchDiaryDatesInRange(userId!, weekStart, weekEnd),
+    enabled: !!userId && viewMode === 'week',
+  });
+
+  const monthMemosByDate = useMemo(() => groupMemosByDate(monthMemosQuery.data ?? []), [monthMemosQuery.data]);
+  const monthDiaryDates = useMemo(() => new Set(monthDiaryQuery.data ?? []), [monthDiaryQuery.data]);
+  const weekMemosByDate = useMemo(() => groupMemosByDate(weekMemosQuery.data ?? []), [weekMemosQuery.data]);
+  const weekDiaryDates = useMemo(() => new Set(weekDiaryQuery.data ?? []), [weekDiaryQuery.data]);
+  const activeMemosByDate = viewMode === 'week' ? weekMemosByDate : monthMemosByDate;
+
+  // 탭에 돌아올 때마다 지금 보고 있는 뷰(월 또는 주)의 데이터만 다시 불러온다 — 예전
+  // useFocusEffect(if viewMode==='month' load(...) else loadWeek(...))와 동일한 범위
+  const refetchActive = useCallback(() => {
+    if (viewMode === 'month') {
+      monthQuery.refetch();
+      monthMemosQuery.refetch();
+      monthDiaryQuery.refetch();
+    } else {
+      weekQuery.refetch();
+      weekMemosQuery.refetch();
+      weekDiaryQuery.refetch();
+    }
+    statsQuery.refetch();
+  }, [
+    viewMode,
+    monthQuery.refetch,
+    monthMemosQuery.refetch,
+    monthDiaryQuery.refetch,
+    weekQuery.refetch,
+    weekMemosQuery.refetch,
+    weekDiaryQuery.refetch,
+    statsQuery.refetch,
+  ]);
+  useRefetchOnFocus(refetchActive);
+
+  // "다른 탭에 갔다가 캘린더 탭으로 다시 들어올 때" 항상 이번 주 주간뷰로 되돌리려는
+  // 의도였는데, useFocusEffect는 diary-form처럼 캘린더 위에 잠깐 띄운 화면(스택 화면)에서
+  // 뒤로 돌아올 때도 "포커스 재획득"으로 똑같이 잡혀서, 월간뷰에서 일기 보고 저장하고
+  // 돌아오면 의도치 않게 주간뷰로 밀려나는 버그가 있었음. 하단 탭 아이콘을 실제로 눌렀을
+  // 때만 발생하는 'tabPress' 이벤트로 바꿔서, 다른 탭에서 진짜로 넘어올 때만 리셋되게 한다
+  const navigation = useNavigation();
   useEffect(() => {
-    if (!userId) return;
-    fetchStats(userId)
-      .then((stats) => setBestStreakEver(stats.bestStreakEver))
-      .catch(() => {});
-  }, [userId]);
-
-  // 스피너를 아예 안 띄운다 — 달력 칸(날짜 숫자)은 데이터 없이도 이미 즉시 그려지고 있으므로,
-  // 완료 색상(핵심 정보)이 도착하는 대로 반영하고, 메모/일기 아이콘(부가 정보)은 그다음에 반영
-  const load = useCallback(
-    async (y: number, m: number) => {
-      if (!userId) return;
-      const key = `${y}-${m}`;
-      const monthStart = `${y}-${String(m).padStart(2, '0')}-01`;
-      const monthEnd = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
-      const data = await fetchMonthData(userId, y, m);
-      setMonthData(data);
-      loadedMonthKeyRef.current = key;
-      try {
-        const [memos, diaryList] = await Promise.all([
-          fetchMemosInRange(userId, monthStart, monthEnd),
-          fetchDiaryDatesInRange(userId, monthStart, monthEnd),
-        ]);
-        setMemosByDate((prev) => replaceMemoRange(prev, monthStart, monthEnd, memos));
-        setDiaryDates((prev) => replaceDiaryRange(prev, monthStart, monthEnd, diaryList));
-      } catch {
-        // 메모/일기 표시는 부가 정보라 실패해도 조용히 무시 — 캘린더 자체는 이미 정상 로드됨
-      }
-    },
-    [userId]
-  );
-
-  const loadWeek = useCallback(
-    async (start: string) => {
-      if (!userId) return;
-      const endDate = new Date(`${start}T00:00:00`);
-      endDate.setDate(endDate.getDate() + 6);
-      const endDateStr = formatLocalDate(endDate);
-      const data = await fetchWeekData(userId, start);
-      setWeekData(data);
-      loadedWeekKeyRef.current = start;
-      requestAnimationFrame(() => requestAnimationFrame(scrollWeekToToday));
-      try {
-        const [memos, diaryList] = await Promise.all([
-          fetchMemosInRange(userId, start, endDateStr),
-          fetchDiaryDatesInRange(userId, start, endDateStr),
-        ]);
-        setMemosByDate((prev) => replaceMemoRange(prev, start, endDateStr, memos));
-        setDiaryDates((prev) => replaceDiaryRange(prev, start, endDateStr, diaryList));
-      } catch {
-        // 메모/일기 표시는 부가 정보라 실패해도 조용히 무시 — 캘린더 자체는 이미 정상 로드됨
-      }
-    },
-    [userId]
-  );
-
-  // 다른 탭에 갔다가 캘린더 탭으로 다시 들어올 때마다(진짜 포커스 전환일 때만) 항상 이번 주
-  // 주간뷰로 되돌린다 — deps를 빈 배열로 둬서 화면 안에서 월/주 버튼을 누르거나 화살표로 주를
-  // 이동하는 것과는 구분됨(그 경우는 아래 데이터 로딩 effect가 알아서 처리).
-  // 이미 이번 주 주간뷰였던 상태로 돌아오면 weekStart 값이 안 바뀌어서 화면이 다시 그려지지
-  // 않고(onContentSizeChange가 안 불림) 스크롤 위치가 예전 그대로 남는 문제가 있어서,
-  // 여기서 직접 한 번 더 스크롤을 걸어준다
-  useFocusEffect(
-    useCallback(() => {
+    const unsubscribe = navigation.addListener('tabPress' as never, () => {
       setViewMode('week');
       setWeekStart(formatLocalDate(sundayOf(new Date())));
-      scrollWeekToToday();
-    }, [])
-  );
+      scrollWeekToTodayRef.current();
+    });
+    return unsubscribe;
+  }, [navigation]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (viewMode === 'month') load(year, month);
-      else loadWeek(weekStart);
-    }, [viewMode, load, year, month, loadWeek, weekStart])
-  );
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollWeekToTodayRef.current()));
+  }, [weekQuery.data]);
 
   function handleMonthChange(date: DateData) {
     setYear(date.year);
@@ -245,7 +258,13 @@ export default function CalendarScreen() {
       }
       cursor.setDate(cursor.getDate() + 1);
     }
-    if (todayColumnIndex === -1) return;
+    if (todayColumnIndex === -1) {
+      // 오늘이 없는 주(화살표로 다른 주로 이동한 경우)는 항상 맨 앞(일요일)부터 보이게 리셋한다 —
+      // 안 그러면 이전 주에서 스크롤해뒀던 위치(예: 토요일 근처)가 새 주에도 그대로 남아있어서
+      // 매번 직접 되돌려 스크롤해야 하는 불편함이 있었음
+      weekScrollRef.current?.scrollTo({ x: 0, animated: false });
+      return;
+    }
     const targetX = Math.max(
       0,
       todayColumnIndex * WEEK_COLUMN_WIDTH + WEEK_COLUMN_WIDTH / 2 - screenWidth / 2
@@ -253,8 +272,20 @@ export default function CalendarScreen() {
     weekScrollRef.current?.scrollTo({ x: targetX, animated: false });
   }
 
+  // scrollWeekToToday는 매 렌더마다 새로 만들어지는 함수라서, weekStart가 바뀔 때마다 최신 값을
+  // 읽는다. 그런데 loadWeek는 deps를 [userId]로만 좁혀둔 useCallback이라 처음 만들어질 때(=화면을
+  // 맨 처음 열었을 때) 클로저에 잡힌 scrollWeekToToday를 계속 재사용한다 — 그 안에 든 weekStart는
+  // 그때의(=오늘이 들어있는 처음 주) 값 그대로 박제됨. 그 결과 화살표로 다른 주로 이동해도
+  // loadWeek가 부르는 scrollWeekToToday는 항상 "처음 열었을 때 주의 오늘 요일" 위치를 계산해서,
+  // 어느 주로 이동하든 늘 같은 요일(예: 오늘이 토요일이면 항상 토요일)로 스크롤되는 버그가 있었음.
+  // 최신 함수를 ref에 담아두고 loadWeek 등에서는 이 ref를 통해서만 호출하면 이 문제가 없어진다
+  const scrollWeekToTodayRef = useRef(scrollWeekToToday);
+  useEffect(() => {
+    scrollWeekToTodayRef.current = scrollWeekToToday;
+  });
+
   async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
-    const applyUpdate = (prev: MonthData | null, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
+    const applyUpdate = (prev: MonthData | undefined, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
       if (!prev) return prev;
       const completionsByRoutine = new Map(prev.completionsByRoutine);
       const routineMap = new Map(completionsByRoutine.get(routineId) ?? []);
@@ -269,8 +300,9 @@ export default function CalendarScreen() {
 
     try {
       const result = await toggleCheckCompletion(routineId, existingCompletionId);
-      setMonthData((prev) => applyUpdate(prev, result));
-      setWeekData((prev) => applyUpdate(prev, result));
+      queryClient.setQueryData(['month-data', userId, year, month], (prev?: MonthData) => applyUpdate(prev, result));
+      queryClient.setQueryData(['week-data', userId, weekStart], (prev?: MonthData) => applyUpdate(prev, result));
+      queryClient.invalidateQueries({ queryKey: ['stats', userId] });
     } catch {
       setErrorMessage('체크 처리에 실패했어요.');
     }
@@ -289,16 +321,12 @@ export default function CalendarScreen() {
     try {
       if (editingMemoId) {
         const updated = await updateMemo(editingMemoId, text, memoColor);
-        setMemosByDate((prev) => ({
-          ...prev,
-          [selectedDate]: (prev[selectedDate] ?? []).map((m) => (m.id === updated.id ? updated : m)),
-        }));
+        queryClient.setQueryData(activeMemoQueryKey, (prev?: DateMemo[]) =>
+          (prev ?? []).map((m) => (m.id === updated.id ? updated : m))
+        );
       } else {
         const created = await createMemo(userId, selectedDate, text, memoColor);
-        setMemosByDate((prev) => ({
-          ...prev,
-          [selectedDate]: [...(prev[selectedDate] ?? []), created],
-        }));
+        queryClient.setQueryData(activeMemoQueryKey, (prev?: DateMemo[]) => [...(prev ?? []), created]);
       }
       setMemoText('');
       setMemoColor('yellow');
@@ -313,10 +341,7 @@ export default function CalendarScreen() {
     if (!selectedDate) return;
     try {
       await deleteMemo(memoId);
-      setMemosByDate((prev) => ({
-        ...prev,
-        [selectedDate]: (prev[selectedDate] ?? []).filter((m) => m.id !== memoId),
-      }));
+      queryClient.setQueryData(activeMemoQueryKey, (prev?: DateMemo[]) => (prev ?? []).filter((m) => m.id !== memoId));
       if (editingMemoId === memoId) {
         setEditingMemoId(null);
         setMemoText('');
@@ -329,54 +354,65 @@ export default function CalendarScreen() {
 
   const todayStr = formatLocalDate(today);
 
-  function renderDay({ date, state }: { date?: DateData; state?: string }) {
-    if (!date) return <View />;
-    const dateStr = date.dateString;
-    const status = monthData && dateStr <= todayStr ? computeDayStatus(dateStr, monthData) : null;
-    const memos = (memosByDate[dateStr] ?? []).slice(0, 5);
-    const isSelected = selectedDate === dateStr;
-    const isDisabled = state === 'disabled';
+  // useCallback으로 감싸지 않으면 CalendarScreen이 리렌더될 때마다(예: 메모 입력창에 타이핑,
+  // 모달 열고 닫기 등 월간뷰와 무관한 상태 변화까지 포함) renderDay가 매번 새 함수로
+  // 만들어지고, 이 새 함수가 CalendarList에 전달되면서 현재 화면에 미리 그려둔 달(최대 7개월치,
+  // 빠른 스와이프 대비용)의 날짜 칸 전부가 memo 비교에서 걸려 통째로 다시 그려짐 —
+  // 이게 월간뷰가 느리고 데이터 갱신될 때마다 깜빡이는 것처럼 보이던 원인이었음.
+  // monthData/memosByDate/diaryDates/selectedDate/theme처럼 실제로 화면에 영향을 주는
+  // 값이 바뀔 때만 함수가 새로 만들어지게 해서, 무관한 상태 변화로는 재렌더가 안 일어나게 한다
+  const renderDay = useCallback(
+    ({ date, state }: { date?: DateData; state?: string }) => {
+      if (!date) return <View />;
+      const dateStr = date.dateString;
+      const monthData = monthQuery.data;
+      const status = monthData && dateStr <= todayStr ? computeDayStatus(dateStr, monthData) : null;
+      const memos = (monthMemosByDate[dateStr] ?? []).slice(0, 5);
+      const isSelected = selectedDate === dateStr;
+      const isDisabled = state === 'disabled';
 
-    return (
-      <Pressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
-        <View style={styles.diaryIconSlot}>
-          {diaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
-        </View>
-        <View
-          style={[
-            styles.dayNumberWrap,
-            status ? { backgroundColor: STATUS_COLORS[status] } : null,
-            isSelected && { borderWidth: 2, borderColor: Colors[theme].tint },
-          ]}>
-          <Text
-            style={[
-              styles.dayNumberText,
-              { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : Colors[theme].text },
-              status ? styles.dayNumberTextOnStatus : null,
-              dateStr === todayStr ? { color: Colors[theme].tint, fontWeight: '700' } : null,
-            ]}>
-            {date.day}
-          </Text>
-        </View>
-        {memos.length > 0 && (
-          <View style={styles.memoStack}>
-            {memos.map((memo) => (
-              <View
-                key={memo.id}
-                style={[
-                  styles.memoBar,
-                  { backgroundColor: MEMO_COLORS[memo.color].bg, borderColor: MEMO_COLORS[memo.color].border },
-                ]}
-              />
-            ))}
+      return (
+        <Pressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
+          <View style={styles.diaryIconSlot}>
+            {monthDiaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
           </View>
-        )}
-      </Pressable>
-    );
-  }
+          <View
+            style={[
+              styles.dayNumberWrap,
+              status ? { backgroundColor: STATUS_COLORS[status] } : null,
+              isSelected && { borderWidth: 2, borderColor: Colors[theme].tint },
+            ]}>
+            <Text
+              style={[
+                styles.dayNumberText,
+                { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : Colors[theme].text },
+                status ? styles.dayNumberTextOnStatus : null,
+                dateStr === todayStr ? { color: Colors[theme].tint, fontWeight: '700' } : null,
+              ]}>
+              {date.day}
+            </Text>
+          </View>
+          {memos.length > 0 && (
+            <View style={styles.memoStack}>
+              {memos.map((memo) => (
+                <View
+                  key={memo.id}
+                  style={[
+                    styles.memoBar,
+                    { backgroundColor: MEMO_COLORS[memo.color].bg, borderColor: MEMO_COLORS[memo.color].border },
+                  ]}
+                />
+              ))}
+            </View>
+          )}
+        </Pressable>
+      );
+    },
+    [monthQuery.data, monthMemosByDate, monthDiaryDates, selectedDate, theme, todayStr]
+  );
 
   const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
-  const selectedMemos = selectedDate ? memosByDate[selectedDate] ?? [] : [];
+  const selectedMemos = selectedDate ? activeMemosByDate[selectedDate] ?? [] : [];
 
   const weekDates: string[] = [];
   if (viewMode === 'week') {
@@ -403,8 +439,11 @@ export default function CalendarScreen() {
           onPress={() => {
             // 월간뷰로 들어갈 때마다 예전에 보던 달이 아니라 항상 지금 달부터 보여준다
             const now = new Date();
-            setYear(now.getFullYear());
-            setMonth(now.getMonth() + 1);
+            const y = now.getFullYear();
+            const m = now.getMonth() + 1;
+            setYear(y);
+            setMonth(m);
+            setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
             setViewMode('month');
           }}>
           <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>월</Text>
@@ -420,6 +459,13 @@ export default function CalendarScreen() {
           ) : (
             <Text style={styles.streakBadgeEmptyText}>아직 최고 기록이 없어요</Text>
           )}
+          {/* TEMP TEST — 통계 탭 각 루틴 카드의 "현재 스트릭"과 하나씩 값이 맞는지 확인용,
+              확인 끝나면 지울 것. 최대값 하나만 보여줬더니 그 루틴이 아니면 체크해도 값이
+              안 바뀐 것처럼 보여서, 통계 탭과 똑같이 루틴별로 다 나열하도록 바꿈 */}
+          <Text style={styles.streakBadgeEmptyText}>
+            (테스트 {new Date(statsQuery.dataUpdatedAt).toLocaleTimeString()} 기준){' '}
+            {statsQuery.data?.routines.map((r) => `${r.routine.title}:${r.currentStreak}`).join(' / ') || '데이터 없음'}
+          </Text>
         </View>
       )}
 
@@ -432,7 +478,7 @@ export default function CalendarScreen() {
           pastScrollRange={24}
           futureScrollRange={12}
           calendarWidth={screenWidth}
-          current={`${year}-${String(month).padStart(2, '0')}-01`}
+          current={calendarCursor}
           onMonthChange={handleMonthChange}
           dayComponent={renderDay}
           theme={{
@@ -469,6 +515,7 @@ export default function CalendarScreen() {
               const isFuture = dateStr > todayStr;
               // weekData가 아직 안 왔어도(막 로딩 중이어도) 칸 자체는 항상 바로 그려지게 하고,
               // 완료 색상/일정만 데이터가 도착하는 대로 채워 넣는다(스피너로 화면을 막지 않기 위함)
+              const weekData = weekQuery.data;
               const status = weekData && !isFuture ? computeDayStatus(dateStr, weekData) : null;
               const dayNum = Number(dateStr.slice(8, 10));
               const scheduled = weekData && !isFuture ? routinesForDate(dateStr, weekData) : [];
@@ -482,14 +529,14 @@ export default function CalendarScreen() {
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
                       <View style={styles.diaryIconSlot}>
-                        {diaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
+                        {weekDiaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
                       </View>
                       <Text style={styles.weekRowWeekday}>{WEEKDAY_LABELS[dow]}</Text>
                       <Text style={styles.weekRowDay}>{dayNum}</Text>
                       {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
-                      {(memosByDate[dateStr] ?? []).length > 0 && (
+                      {(weekMemosByDate[dateStr] ?? []).length > 0 && (
                         <View style={styles.weekMemoRow}>
-                          {(memosByDate[dateStr] ?? []).slice(0, 5).map((memo) => (
+                          {(weekMemosByDate[dateStr] ?? []).slice(0, 5).map((memo) => (
                             <View
                               key={memo.id}
                               style={[styles.weekMemoDot, { backgroundColor: MEMO_COLORS[memo.color].border }]}
@@ -628,6 +675,10 @@ export default function CalendarScreen() {
               ) : (
                 detail.map(({ routine, completion }) => {
                   const isToday = selectedDate === todayStr;
+                  // 트래킹형은 숫자 기록이라 "체크 토글"(toggleCheckCompletion)을 누르면 그
+                  // 숫자 기록이 지워지거나 값 없는 완료로 잘못 덮어써질 수 있어서, 오늘 날짜라도
+                  // 체크형(block_type==='check')만 눌러서 토글 가능하게 한다
+                  const isCheckToggleable = isToday && routine.block_type === 'check';
                   const row = (
                     <View style={styles.detailRow}>
                       <View style={[styles.detailCheckbox, completion && styles.detailCheckboxDone]}>
@@ -640,7 +691,7 @@ export default function CalendarScreen() {
                         </Text>
                         <Text style={styles.detailTime}>{timeLabel(routine)}</Text>
                       </View>
-                      {!isToday && routine.block_type === 'tracking' && completion?.tracking_value !== null && (
+                      {routine.block_type === 'tracking' && completion?.tracking_value !== null && (
                         <Text style={styles.detailValue}>
                           {completion?.tracking_value} {routine.tracking_unit}
                         </Text>
@@ -648,7 +699,7 @@ export default function CalendarScreen() {
                     </View>
                   );
 
-                  return isToday ? (
+                  return isCheckToggleable ? (
                     <Pressable
                       key={routine.id}
                       onPress={() => handleToggleToday(routine.id, completion?.id ?? null)}>

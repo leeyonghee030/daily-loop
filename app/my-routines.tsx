@@ -1,6 +1,6 @@
-import { useFocusEffect } from '@react-navigation/native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 import ReorderableList, {
   reorderItems,
@@ -13,13 +13,17 @@ import { useAuth } from '@/lib/auth-context';
 import { deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import {
   fetchAllRoutines,
+  fetchSkippedRoutineIds,
+  formatLocalDate,
   softDeleteRoutine,
   softDeleteRoutines,
+  unskipRoutine,
   updateSortOrder,
   SLOT_LABELS,
   type RepeatType,
   type Routine,
 } from '@/lib/routines';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 type FilterValue = RepeatType | 'all';
 
@@ -88,16 +92,20 @@ function RoutineRow({
   routine,
   selectMode,
   isSelected,
+  isSkippedToday,
   onEdit,
   onToggleSelect,
   onDelete,
+  onUnskip,
 }: {
   routine: Routine;
   selectMode: boolean;
   isSelected: boolean;
+  isSkippedToday: boolean;
   onEdit: () => void;
   onToggleSelect: () => void;
   onDelete: () => void;
+  onUnskip: () => void;
 }) {
   // react-native-reorderable-list가 제공하는 훅 — 이 핸들을 길게 누르면 그 항목의 드래그가 시작됨
   const drag = useReorderableDrag();
@@ -122,8 +130,14 @@ function RoutineRow({
         </Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
           {metaLabel(routine)}
+          {isSkippedToday ? ' · 오늘 제외됨' : ''}
         </Text>
       </Pressable>
+      {!selectMode && isSkippedToday && (
+        <Pressable style={styles.unskipButton} onPress={onUnskip} hitSlop={8}>
+          <Text style={styles.unskipButtonText}>오늘 목록에 추가</Text>
+        </Pressable>
+      )}
       {!selectMode && (
         <Pressable style={styles.deleteButton} onPress={onDelete} hitSlop={8}>
           <Text style={styles.deleteButtonText}>삭제</Text>
@@ -137,10 +151,13 @@ export default function MyRoutinesScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const routinesQueryKey = ['all-routines', userId] as const;
+  // presets 탭 화면과 정확히 같은 쿼리 키를 써서 캐시를 공유한다
+  const presetsQueryKey = ['presets', userId] as const;
+  const todayDateStr = formatLocalDate(new Date());
+  const skippedTodayQueryKey = ['today-skips', userId, todayDateStr] as const;
 
-  const [routines, setRoutines] = useState<Routine[]>([]);
-  const [presets, setPresets] = useState<RoutinePreset[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [groupMode, setGroupMode] = useState<'repeat' | 'preset'>('repeat');
   const [filter, setFilter] = useState<FilterValue>('all');
@@ -148,25 +165,59 @@ export default function MyRoutinesScreen() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    if (!userId) return;
-    setIsLoading(true);
-    try {
-      const [data, presetList] = await Promise.all([fetchAllRoutines(userId), fetchPresets(userId)]);
-      setRoutines(data);
-      setPresets(presetList);
-    } catch {
-      setErrorMessage('루틴을 불러오지 못했어요.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [userId]);
+  const routinesQuery = useQuery({
+    queryKey: routinesQueryKey,
+    queryFn: () => fetchAllRoutines(userId!),
+    enabled: !!userId,
+  });
+  const presetsQuery = useQuery({
+    queryKey: presetsQueryKey,
+    queryFn: () => fetchPresets(userId!),
+    enabled: !!userId,
+  });
+  // 오늘 탭에서 스와이프로 "오늘 삭제"된(건너뛴) 루틴 — 여기서 다시 오늘 목록에 추가할 수 있게 표시
+  const skippedTodayQuery = useQuery({
+    queryKey: skippedTodayQueryKey,
+    queryFn: () => fetchSkippedRoutineIds(todayDateStr),
+    enabled: !!userId,
+  });
+  const refetchAll = useCallback(() => {
+    routinesQuery.refetch();
+    presetsQuery.refetch();
+    skippedTodayQuery.refetch();
+  }, [routinesQuery.refetch, presetsQuery.refetch, skippedTodayQuery.refetch]);
+  useRefetchOnFocus(refetchAll);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
+  const routines = routinesQuery.data ?? [];
+  const presets = presetsQuery.data ?? [];
+  const skippedTodayIds = skippedTodayQuery.data ?? new Set<string>();
+  const isLoading = routinesQuery.isLoading || presetsQuery.isLoading;
+
+  async function handleUnskip(routine: Routine) {
+    try {
+      await unskipRoutine(routine.id, todayDateStr);
+      queryClient.setQueryData(skippedTodayQueryKey, (prev?: Set<string>) => {
+        const next = new Set(prev);
+        next.delete(routine.id);
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
+    } catch {
+      setErrorMessage('되돌리기에 실패했어요.');
+    }
+  }
+
+  function setRoutines(next: Routine[]) {
+    queryClient.setQueryData(routinesQueryKey, next);
+  }
+
+  function setPresets(updater: (prev: RoutinePreset[]) => RoutinePreset[]) {
+    queryClient.setQueryData(presetsQueryKey, (old?: RoutinePreset[]) => updater(old ?? []));
+  }
+
+  useEffect(() => {
+    if (routinesQuery.isError || presetsQuery.isError) setErrorMessage('루틴을 불러오지 못했어요.');
+  }, [routinesQuery.isError, presetsQuery.isError]);
 
   const filtered = routines.filter((r) => {
     if (groupMode === 'repeat') {
@@ -189,7 +240,7 @@ export default function MyRoutinesScreen() {
     let cursor = 0;
     const merged = routines.map((r) => (filteredIds.has(r.id) ? newFilteredOrder[cursor++] : r));
     setRoutines(merged);
-    updateSortOrder(merged.map((r) => r.id)).catch(() => load());
+    updateSortOrder(merged.map((r) => r.id)).catch(() => routinesQuery.refetch());
   }
 
   function handleReorder({ from, to }: ReorderableListReorderEvent) {
@@ -447,9 +498,11 @@ export default function MyRoutinesScreen() {
               routine={item}
               selectMode={selectMode}
               isSelected={selectedIds.has(item.id)}
+              isSkippedToday={skippedTodayIds.has(item.id)}
               onEdit={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}
               onToggleSelect={() => toggleSelected(item.id)}
               onDelete={() => handleDelete(item)}
+              onUnskip={() => handleUnskip(item)}
             />
           )}
         />
@@ -680,6 +733,18 @@ const styles = StyleSheet.create({
   deleteButtonText: {
     fontSize: 12,
     color: '#FF6B6B',
+    fontWeight: '600',
+  },
+  unskipButton: {
+    borderWidth: 1,
+    borderColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  unskipButtonText: {
+    fontSize: 12,
+    color: '#7C5CFC',
     fontWeight: '600',
   },
 });

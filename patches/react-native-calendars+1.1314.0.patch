@@ -1,0 +1,41 @@
+diff --git a/node_modules/react-native-calendars/src/calendar-list/index.js b/node_modules/react-native-calendars/src/calendar-list/index.js
+index 6cf1b71..310df19 100644
+--- a/node_modules/react-native-calendars/src/calendar-list/index.js
++++ b/node_modules/react-native-calendars/src/calendar-list/index.js
+@@ -57,6 +57,11 @@ const CalendarList = (props, ref) => {
+     const shouldMeasureHeader = useRef(true);
+     const style = useRef(styleConstructor(theme));
+     const list = useRef();
++    // range를 늘려서(좌우 3개월씩, 총 7개월 항상 풀렌더) "빠르게 스와이프하면 raw 날짜 문자열이
++    // 보이는" 문제를 막아봤는데, 그 대가로 달을 옮길 때마다(monthQuery.data가 바뀌어 renderDay가
++    // 매번 새로 만들어짐) 7개월치를 통째로 다시 그리게 되어 오히려 평소 이동이 느려지는 부작용이
++    // 더 컸음 — 원래 기본값(1)으로 되돌리고, 대신 달력.tsx에서 placeholderText 색을 투명하게
++    // 덮어써서 "raw 텍스트가 안 보이게"만 해결하는 쪽으로 방향을 바꿨다
+     const range = useRef(horizontal ? 1 : 3);
+     const initialDate = useRef(parseDate(current) || new XDate());
+     const visibleMonth = useRef(currentMonth);
+diff --git a/node_modules/react-native-calendars/src/calendar-list/item.js b/node_modules/react-native-calendars/src/calendar-list/item.js
+index 0e5be76..103159f 100644
+--- a/node_modules/react-native-calendars/src/calendar-list/item.js
++++ b/node_modules/react-native-calendars/src/calendar-list/item.js
+@@ -1,5 +1,5 @@
+ import React, { useRef, useMemo, useCallback } from 'react';
+-import { Text } from 'react-native';
++import { Text, View } from 'react-native';
+ import { toMarkingFormat } from '../interface';
+ import { extractCalendarProps } from '../componentUpdater';
+ import styleConstructor from './style';
+@@ -52,7 +52,12 @@ const CalendarListItem = React.memo((props) => {
+         }
+     }, [onPressArrowRight, scrollToMonth]);
+     if (!visible) {
+-        return (<Text style={textStyle}>{dateString}</Text>);
++        // 원래는 raw 날짜 문자열(예: "2026-07-01")을 그대로 Text로 보여주는 자리표시자였는데,
++        // theme의 placeholderText 색을 투명하게 덮어써서 안 보이게 하는 시도는 CalendarListItem이
++        // React.memo + useRef(styleConstructor(theme))로 스타일을 처음 마운트 시점에 한 번만
++        // 계산해서 고정해버리는 내부 구조 때문에 새로 마운트되는 시점이 아니면 안 먹힐 수 있어서
++        // 신뢰할 수 없었음 — 아예 텍스트 자체를 안 그리고 빈 View만 그려서 근본적으로 안 보이게 함
++        return (<View style={calendarStyle} />);
+     }
+     return (<Calendar hideArrows={true} hideExtraDays={true} {...calendarProps} current={dateString} style={calendarStyle} headerStyle={horizontal ? headerStyle : undefined} disableMonthChange onPressArrowLeft={horizontal ? _onPressArrowLeft : onPressArrowLeft} onPressArrowRight={horizontal ? _onPressArrowRight : onPressArrowRight}/>);
+ });

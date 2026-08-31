@@ -1,5 +1,5 @@
-import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
@@ -18,6 +18,9 @@ import {
   SLOT_LABELS,
   type Routine,
 } from '@/lib/routines';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+
+type TrashData = { routines: Routine[]; presets: RoutinePreset[] };
 
 function timeLabel(routine: Routine): string {
   if (routine.is_instant && routine.scheduled_time_start) {
@@ -40,35 +43,71 @@ function daysUntilPurge(deletedAt: string): number {
 export default function RoutineTrashScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
+  const queryClient = useQueryClient();
+  const trashQueryKey = ['deleted-routines', userId] as const;
 
-  const [deletedRoutines, setDeletedRoutines] = useState<Routine[]>([]);
-  const [deletedPresets, setDeletedPresets] = useState<RoutinePreset[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedPresetIds, setSelectedPresetIds] = useState<Set<string>>(new Set());
   const [selectedRoutineIds, setSelectedRoutineIds] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    if (!userId) return;
-    setIsLoading(true);
-    try {
-      const [routines, presets] = await Promise.all([fetchDeletedRoutines(userId), fetchDeletedPresets(userId)]);
-      setDeletedRoutines(routines);
-      setDeletedPresets(presets);
-    } catch {
-      setErrorMessage('불러오지 못했어요.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [userId]);
+  const trashQuery = useQuery({
+    queryKey: trashQueryKey,
+    queryFn: async (): Promise<TrashData> => {
+      const [routines, presets] = await Promise.all([fetchDeletedRoutines(userId!), fetchDeletedPresets(userId!)]);
+      return { routines, presets };
+    },
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(trashQuery.refetch);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
+  const deletedRoutines = trashQuery.data?.routines ?? [];
+  const deletedPresets = trashQuery.data?.presets ?? [];
+
+  const restorePresetMutation = useMutation({
+    mutationFn: async (preset: RoutinePreset) => {
+      await restorePreset(preset.id);
+      await restoreRoutinesByPreset(preset.id);
+    },
+    onSuccess: (_result, preset) => {
+      queryClient.setQueryData(trashQueryKey, (old?: TrashData) => {
+        if (!old) return old;
+        return {
+          presets: old.presets.filter((p) => p.id !== preset.id),
+          routines: old.routines.filter((r) => r.preset_id !== preset.id),
+        };
+      });
+    },
+    onError: () => setErrorMessage('복구에 실패했어요.'),
+  });
+
+  const restoreRoutineMutation = useMutation({
+    mutationFn: (routine: Routine) => restoreRoutine(routine.id),
+    onSuccess: (_result, routine) => {
+      queryClient.setQueryData(trashQueryKey, (old?: TrashData) => {
+        if (!old) return old;
+        return { ...old, routines: old.routines.filter((r) => r.id !== routine.id) };
+      });
+    },
+    onError: () => setErrorMessage('복구에 실패했어요.'),
+  });
+
+  const deleteSelectedMutation = useMutation({
+    mutationFn: async ({ presetIds, routineIds }: { presetIds: string[]; routineIds: string[] }) => {
+      await Promise.all([
+        ...presetIds.map((id) => hardDeletePreset(id)),
+        routineIds.length > 0 ? archiveRoutines(routineIds) : Promise.resolve(),
+      ]);
+    },
+    onSuccess: () => {
+      setSelectedPresetIds(new Set());
+      setSelectedRoutineIds(new Set());
+      setSelectMode(false);
+      trashQuery.refetch();
+    },
+    onError: () => setErrorMessage('정리에 실패했어요.'),
+  });
 
   const deletedPresetIds = useMemo(() => new Set(deletedPresets.map((p) => p.id)), [deletedPresets]);
 
@@ -92,12 +131,9 @@ export default function RoutineTrashScreen() {
     setBusyKey(preset.id);
     setErrorMessage(null);
     try {
-      await restorePreset(preset.id);
-      await restoreRoutinesByPreset(preset.id);
-      setDeletedPresets((prev) => prev.filter((p) => p.id !== preset.id));
-      setDeletedRoutines((prev) => prev.filter((r) => r.preset_id !== preset.id));
+      await restorePresetMutation.mutateAsync(preset);
     } catch {
-      setErrorMessage('복구에 실패했어요.');
+      // onError에서 이미 에러 메시지를 채움
     } finally {
       setBusyKey(null);
     }
@@ -107,10 +143,9 @@ export default function RoutineTrashScreen() {
     setBusyKey(routine.id);
     setErrorMessage(null);
     try {
-      await restoreRoutine(routine.id);
-      setDeletedRoutines((prev) => prev.filter((r) => r.id !== routine.id));
+      await restoreRoutineMutation.mutateAsync(routine);
     } catch {
-      setErrorMessage('복구에 실패했어요.');
+      // onError에서 이미 에러 메시지를 채움
     } finally {
       setBusyKey(null);
     }
@@ -168,23 +203,16 @@ export default function RoutineTrashScreen() {
         onPress: async () => {
           setErrorMessage(null);
           try {
-            await Promise.all([
-              ...presetIds.map((id) => hardDeletePreset(id)),
-              routineIds.length > 0 ? archiveRoutines(routineIds) : Promise.resolve(),
-            ]);
-            setSelectedPresetIds(new Set());
-            setSelectedRoutineIds(new Set());
-            setSelectMode(false);
-            await load();
+            await deleteSelectedMutation.mutateAsync({ presetIds, routineIds });
           } catch {
-            setErrorMessage('정리에 실패했어요.');
+            // onError에서 이미 에러 메시지를 채움
           }
         },
       },
     ]);
   }
 
-  if (isLoading) {
+  if (trashQuery.isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator />

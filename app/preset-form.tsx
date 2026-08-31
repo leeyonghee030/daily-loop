@@ -1,4 +1,5 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
@@ -17,7 +18,7 @@ import {
   savePreset,
   type PresetItemInput,
 } from '@/lib/presets';
-import { fetchSlots, SLOT_LABELS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
+import { fetchSlots, slotTimeLabel, SLOT_LABELS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
 
 const REPEAT_OPTIONS: { value: Exclude<RepeatType, 'once'>; label: string }[] = [
   { value: 'daily', label: '매일' },
@@ -72,10 +73,30 @@ export default function PresetFormScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
 
-  const [isLoading, setIsLoading] = useState(isEditing);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [slots, setSlots] = useState<Slot[]>([]);
+
+  // 즐겨찾기/모음집 폼 등 여러 화면이 같은 쿼리 키를 쓰므로 서로 캐시를 공유한다
+  const slotsQuery = useQuery({
+    queryKey: ['slots', userId],
+    queryFn: () => fetchSlots(userId!),
+    enabled: !!userId,
+  });
+  const slots = slotsQuery.data ?? [];
+
+  const favoritesQuery = useQuery({
+    queryKey: ['favorites', userId],
+    queryFn: () => fetchFavorites(userId!),
+    enabled: !!userId,
+  });
+  const favorites = favoritesQuery.data ?? [];
+
+  const presetQuery = useQuery({
+    queryKey: ['preset-with-items', id],
+    queryFn: () => fetchPresetWithItems(id!),
+    enabled: !!id,
+  });
+  const isLoading = isEditing && presetQuery.isLoading;
 
   const [name, setName] = useState('');
   const [repeatType, setRepeatType] = useState<Exclude<RepeatType, 'once'>>('weekday');
@@ -98,48 +119,45 @@ export default function PresetFormScreen() {
   // 화면엔 반영하지 않다가 "완료"를 눌러야만 실제 항목에 반영한다
   const pickerDraftRef = useRef<Date | null>(null);
   const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
 
   useEffect(() => {
-    if (!userId) return;
-    fetchSlots(userId)
-      .then(setSlots)
-      .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'));
-    fetchFavorites(userId)
-      .then(setFavorites)
-      .catch(() => setErrorMessage('즐겨찾기를 불러오지 못했어요.'));
-  }, [userId]);
+    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+  }, [slotsQuery.isError]);
 
   useEffect(() => {
-    if (!id) return;
-    fetchPresetWithItems(id)
-      .then(({ preset, items: fetchedItems }) => {
-        setName(preset.name);
-        setRepeatType(preset.repeat_type as Exclude<RepeatType, 'once'>);
-        setRepeatDays(preset.repeat_days ?? []);
-        setSkipHolidays(preset.skip_holidays);
-        const loadedItems = fetchedItems.map((item) => ({
-          key: makeKey(),
-          title: item.title,
-          block_type: item.block_type,
-          scheduled_time_start: item.scheduled_time_start,
-          scheduled_time_end: item.scheduled_time_end,
-          is_instant: item.is_instant,
-          slot_id: item.slot_id,
-          is_required: item.is_required,
-          tracking_unit: item.tracking_unit,
-          collapsed: true,
-          isNew: false,
-        }));
-        setItems(loadedItems);
-        originalItemsByKey.current = Object.fromEntries(
-          loadedItems.map(({ key, collapsed, isNew, ...rest }) => [key, rest])
-        );
-      })
-      .catch(() => setErrorMessage('모음집 정보를 불러오지 못했어요.'))
-      .finally(() => setIsLoading(false));
-  }, [id]);
+    if (favoritesQuery.isError) setErrorMessage('즐겨찾기를 불러오지 못했어요.');
+  }, [favoritesQuery.isError]);
+
+  useEffect(() => {
+    if (!presetQuery.data) return;
+    const { preset, items: fetchedItems } = presetQuery.data;
+    setName(preset.name);
+    setRepeatType(preset.repeat_type as Exclude<RepeatType, 'once'>);
+    setRepeatDays(preset.repeat_days ?? []);
+    setSkipHolidays(preset.skip_holidays);
+    const loadedItems = fetchedItems.map((item) => ({
+      key: makeKey(),
+      title: item.title,
+      block_type: item.block_type,
+      scheduled_time_start: item.scheduled_time_start,
+      scheduled_time_end: item.scheduled_time_end,
+      is_instant: item.is_instant,
+      slot_id: item.slot_id,
+      is_required: item.is_required,
+      tracking_unit: item.tracking_unit,
+      collapsed: true,
+      isNew: false,
+    }));
+    setItems(loadedItems);
+    originalItemsByKey.current = Object.fromEntries(
+      loadedItems.map(({ key, collapsed, isNew, ...rest }) => [key, rest])
+    );
+  }, [presetQuery.data]);
+
+  useEffect(() => {
+    if (presetQuery.isError) setErrorMessage('모음집 정보를 불러오지 못했어요.');
+  }, [presetQuery.isError]);
 
   function toggleRepeatDay(day: number) {
     setRepeatDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()));
@@ -526,7 +544,7 @@ export default function PresetFormScreen() {
                 {slots.map((slot) => (
                   <Chip
                     key={slot.id}
-                    label={SLOT_LABELS[slot.slot_type]}
+                    label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
                     selected={item.slot_id === slot.id}
                     onPress={() => updateItem(index, { slot_id: slot.id })}
                   />

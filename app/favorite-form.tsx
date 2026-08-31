@@ -1,7 +1,8 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { Text, View } from '@/components/Themed';
@@ -13,7 +14,7 @@ import {
   updateFavorite,
   type FavoriteInput,
 } from '@/lib/favorites';
-import { fetchSlots, SLOT_LABELS, type BlockType, type Slot } from '@/lib/routines';
+import { fetchSlots, slotTimeLabel, SLOT_LABELS, type BlockType, type Slot } from '@/lib/routines';
 
 const TRACKING_UNIT_PRESETS = ['잔', '개', '분', '페이지', 'km'];
 
@@ -41,10 +42,24 @@ export default function FavoriteFormScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
 
-  const [isLoading, setIsLoading] = useState(isEditing);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [slots, setSlots] = useState<Slot[]>([]);
+
+  // 슬롯 목록은 루틴 폼/모음집 폼 등 여러 화면이 똑같이 fetchSlots(userId)를 부르므로,
+  // 쿼리 키를 통일해두면 그 화면들 중 아무 데서나 먼저 받아온 값을 그대로 재사용할 수 있다
+  const slotsQuery = useQuery({
+    queryKey: ['slots', userId],
+    queryFn: () => fetchSlots(userId!),
+    enabled: !!userId,
+  });
+  const slots = slotsQuery.data ?? [];
+
+  const favoriteQuery = useQuery({
+    queryKey: ['favorite', id],
+    queryFn: () => fetchFavoriteById(id!),
+    enabled: !!id,
+  });
+  const isLoading = isEditing && favoriteQuery.isLoading;
 
   const [title, setTitle] = useState('');
   const [blockType, setBlockType] = useState<BlockType>('check');
@@ -56,46 +71,60 @@ export default function FavoriteFormScreen() {
   const [isRequired, setIsRequired] = useState(false);
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
+  // iOS 스피너가 열려있는 동안 고르고 있는 값 — routine-form.tsx와 동일한 패턴(스크롤 중엔 리렌더
+  // 없이 ref로만 추적하다가 "완료"를 눌러야 실제 시작/끝 시각에 반영)
+  const pickerDraftRef = useRef<Date | null>(null);
+  const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
 
   useEffect(() => {
-    if (!userId) return;
-    fetchSlots(userId)
-      .then((fetched) => {
-        setSlots(fetched);
-        setSlotId((prev) => prev ?? fetched.find((s) => s.slot_type === 'morning')?.id ?? fetched[0]?.id ?? null);
-      })
-      .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'));
-  }, [userId]);
+    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+  }, [slotsQuery.isError]);
 
   useEffect(() => {
-    if (!id) return;
-    fetchFavoriteById(id)
-      .then((favorite) => {
-        setTitle(favorite.title);
-        setBlockType(favorite.block_type);
-        setTrackingUnit(favorite.tracking_unit ?? '');
-        setIsRequired(favorite.is_required);
-        if (favorite.is_instant && favorite.scheduled_time_start) {
-          setTimeMode('instant');
-          setStartTime(timeToDate(favorite.scheduled_time_start));
-        } else if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
-          setTimeMode('exact');
-          setStartTime(timeToDate(favorite.scheduled_time_start));
-          setEndTime(timeToDate(favorite.scheduled_time_end));
-        } else if (favorite.slot_id) {
-          setTimeMode('slot');
-          setSlotId(favorite.slot_id);
-        }
-      })
-      .catch(() => setErrorMessage('즐겨찾기 정보를 불러오지 못했어요.'))
-      .finally(() => setIsLoading(false));
-  }, [id]);
+    const fetched = slotsQuery.data;
+    if (!fetched) return;
+    setSlotId((prev) => prev ?? fetched.find((s) => s.slot_type === 'morning')?.id ?? fetched[0]?.id ?? null);
+  }, [slotsQuery.data]);
+
+  useEffect(() => {
+    const favorite = favoriteQuery.data;
+    if (!favorite) return;
+    setTitle(favorite.title);
+    setBlockType(favorite.block_type);
+    setTrackingUnit(favorite.tracking_unit ?? '');
+    setIsRequired(favorite.is_required);
+    if (favorite.is_instant && favorite.scheduled_time_start) {
+      setTimeMode('instant');
+      setStartTime(timeToDate(favorite.scheduled_time_start));
+    } else if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
+      setTimeMode('exact');
+      setStartTime(timeToDate(favorite.scheduled_time_start));
+      setEndTime(timeToDate(favorite.scheduled_time_end));
+    } else if (favorite.slot_id) {
+      setTimeMode('slot');
+      setSlotId(favorite.slot_id);
+    }
+  }, [favoriteQuery.data]);
+
+  useEffect(() => {
+    if (favoriteQuery.isError) setErrorMessage('즐겨찾기 정보를 불러오지 못했어요.');
+  }, [favoriteQuery.isError]);
 
   function handleTimeChange(setter: (date: Date) => void, hide: () => void) {
     return (event: DateTimePickerEvent, date?: Date) => {
       hide();
       if (event.type === 'set' && date) setter(date);
     };
+  }
+
+  function openTimePicker(current: Date, show: () => void) {
+    pickerDraftRef.current = current;
+    setPickerOpenValue(current);
+    show();
+  }
+
+  function handleSpinnerTimeChange(event: DateTimePickerEvent, date?: Date) {
+    if (date) pickerDraftRef.current = date;
   }
 
   // 끝이 시작보다 같거나 이르면 무시한다 — 안 그러면 자정을 넘겨 이어지는 걸로 잘못 계산돼서
@@ -215,17 +244,23 @@ export default function FavoriteFormScreen() {
 
       {timeMode === 'exact' ? (
         <View style={styles.chipRow}>
-          <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
+          <Pressable
+            style={styles.timeButton}
+            onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
             <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
           </Pressable>
           <Text>~</Text>
-          <Pressable style={styles.timeButton} onPress={() => setShowEndPicker(true)}>
+          <Pressable
+            style={styles.timeButton}
+            onPress={() => openTimePicker(endTime, () => setShowEndPicker(true))}>
             <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
           </Pressable>
         </View>
       ) : timeMode === 'instant' ? (
         <View style={styles.chipRow}>
-          <Pressable style={styles.timeButton} onPress={() => setShowStartPicker(true)}>
+          <Pressable
+            style={styles.timeButton}
+            onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
             <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
           </Pressable>
         </View>
@@ -234,7 +269,7 @@ export default function FavoriteFormScreen() {
           {slots.map((slot) => (
             <Chip
               key={slot.id}
-              label={SLOT_LABELS[slot.slot_type]}
+              label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
               selected={slotId === slot.id}
               onPress={() => setSlotId(slot.id)}
             />
@@ -242,22 +277,71 @@ export default function FavoriteFormScreen() {
         </View>
       )}
 
-      {showStartPicker && (
-        <DateTimePicker
-          value={startTime}
-          mode="time"
-          minuteInterval={15}
-          onChange={handleTimeChange(setStartTime, () => setShowStartPicker(false))}
-        />
-      )}
-      {showEndPicker && (
-        <DateTimePicker
-          value={endTime}
-          mode="time"
-          minuteInterval={15}
-          onChange={handleTimeChange(applyEndTime, () => setShowEndPicker(false))}
-        />
-      )}
+      {/* 안드로이드는 시계가 OS 다이얼로그로 뜨고 확인/취소를 누르면 다이얼로그 스스로 닫히므로,
+          그때마다 우리도 showXPicker를 꺼줘야 함. iOS는 계속 스크롤 가능한 스피너라서 "완료" 버튼을
+          직접 눌러야 닫히게 함 — routine-form.tsx와 동일한 패턴 */}
+      {showStartPicker &&
+        (Platform.OS === 'android' ? (
+          <DateTimePicker
+            value={startTime}
+            mode="time"
+            display="spinner"
+            minuteInterval={15}
+            onChange={handleTimeChange(setStartTime, () => setShowStartPicker(false))}
+          />
+        ) : (
+          <View style={styles.spinnerBox}>
+            <DateTimePicker
+              value={pickerOpenValue ?? startTime}
+              mode="time"
+              display="spinner"
+              minuteInterval={15}
+              onChange={handleSpinnerTimeChange}
+            />
+            <Pressable
+              style={styles.spinnerDoneButton}
+              onPress={() => {
+                const picked = pickerDraftRef.current;
+                if (picked) setStartTime(picked);
+                pickerDraftRef.current = null;
+                setPickerOpenValue(null);
+                setShowStartPicker(false);
+              }}>
+              <Text style={styles.spinnerDoneText}>완료</Text>
+            </Pressable>
+          </View>
+        ))}
+      {showEndPicker &&
+        (Platform.OS === 'android' ? (
+          <DateTimePicker
+            value={endTime}
+            mode="time"
+            display="spinner"
+            minuteInterval={15}
+            onChange={handleTimeChange(applyEndTime, () => setShowEndPicker(false))}
+          />
+        ) : (
+          <View style={styles.spinnerBox}>
+            <DateTimePicker
+              value={pickerOpenValue ?? endTime}
+              mode="time"
+              display="spinner"
+              minuteInterval={15}
+              onChange={handleSpinnerTimeChange}
+            />
+            <Pressable
+              style={styles.spinnerDoneButton}
+              onPress={() => {
+                const picked = pickerDraftRef.current;
+                if (picked) applyEndTime(picked);
+                pickerDraftRef.current = null;
+                setPickerOpenValue(null);
+                setShowEndPicker(false);
+              }}>
+              <Text style={styles.spinnerDoneText}>완료</Text>
+            </Pressable>
+          </View>
+        ))}
 
       <View style={styles.switchRow}>
         <Text style={styles.label}>필수</Text>
@@ -322,6 +406,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  spinnerBox: {
+    alignItems: 'center',
+  },
+  spinnerDoneButton: {
+    alignSelf: 'center',
+    backgroundColor: '#7C5CFC',
+    borderRadius: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  spinnerDoneText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   switchRow: {
     flexDirection: 'row',

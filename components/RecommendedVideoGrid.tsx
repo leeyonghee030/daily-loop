@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
@@ -7,7 +8,6 @@ import {
   addRecommendedVideoToMyGrid,
   fetchDefaultCategories,
   fetchRecommendedVideosByCategory,
-  type Category,
   type Video,
 } from '@/lib/videos';
 
@@ -15,26 +15,31 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
   const { session } = useAuth();
   const userId = session?.user.id;
 
-  const [categories, setCategories] = useState<Category[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [addingId, setAddingId] = useState<string | null>(null);
 
+  // 관리자가 큐레이션한 기본 카테고리/추천 영상이라 자주 안 바뀜 — 1시간 정도는 캐시된 값 재사용
+  const categoriesQuery = useQuery({
+    queryKey: ['default-video-categories'],
+    queryFn: fetchDefaultCategories,
+    staleTime: 60 * 60 * 1000,
+  });
+  const categories = categoriesQuery.data ?? [];
+  const hasSetInitialCategoryRef = useRef(false);
   useEffect(() => {
-    fetchDefaultCategories().then((cats) => {
-      setCategories(cats);
-      setSelectedId(cats[0]?.id ?? null);
-    });
-  }, []);
+    if (!categoriesQuery.data || hasSetInitialCategoryRef.current) return;
+    hasSetInitialCategoryRef.current = true;
+    setSelectedId(categoriesQuery.data[0]?.id ?? null);
+  }, [categoriesQuery.data]);
 
-  useEffect(() => {
-    if (selectedId === null) return;
-    setIsLoading(true);
-    fetchRecommendedVideosByCategory(selectedId)
-      .then(setVideos)
-      .finally(() => setIsLoading(false));
-  }, [selectedId]);
+  const videosQuery = useQuery({
+    queryKey: ['recommended-videos', selectedId],
+    queryFn: () => fetchRecommendedVideosByCategory(selectedId!),
+    enabled: selectedId !== null,
+    staleTime: 60 * 60 * 1000,
+  });
+  const videos = videosQuery.data ?? [];
+  const isLoading = videosQuery.isLoading;
 
   async function handleAdd(video: Video) {
     if (!userId) return;

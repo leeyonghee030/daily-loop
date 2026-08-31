@@ -1,5 +1,6 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useNavigation } from '@react-navigation/native';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
@@ -21,6 +22,7 @@ import {
   updateRoutine,
   uploadRoutinePhoto,
   SLOT_LABELS,
+  slotTimeLabel,
   type BlockType,
   type RepeatType,
   type RoutineInput,
@@ -107,10 +109,8 @@ export default function RoutineFormScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
 
-  const [isLoading, setIsLoading] = useState(isEditing);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [slots, setSlots] = useState<Slot[]>([]);
 
   const [title, setTitle] = useState('');
   const [blockType, setBlockType] = useState<BlockType>('check');
@@ -143,7 +143,6 @@ export default function RoutineFormScreen() {
   const pickerDraftRef = useRef<Date | null>(null);
   const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
   const [isApplyingFavorite, setIsApplyingFavorite] = useState(false);
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -154,56 +153,84 @@ export default function RoutineFormScreen() {
   const [newPhotoUri, setNewPhotoUri] = useState<string | null>(null);
   const [isPickingPhoto, setIsPickingPhoto] = useState(false);
 
-  useEffect(() => {
-    if (!userId) return;
-    fetchSlots(userId)
-      .then((fetched) => {
-        setSlots(fetched);
-        setSlotId(
-          (prev) => prev ?? fetched.find((s) => s.slot_type === 'morning')?.id ?? fetched[0]?.id ?? null
-        );
-      })
-      .catch(() => setErrorMessage('슬롯 정보를 불러오지 못했어요.'));
-    fetchFavorites(userId)
-      .then(setFavorites)
-      .catch(() => setErrorMessage('즐겨찾기를 불러오지 못했어요.'));
-  }, [userId]);
+  // 즐겨찾기/모음집 폼 등과 같은 쿼리 키를 써서 캐시를 공유한다
+  const slotsQuery = useQuery({
+    queryKey: ['slots', userId],
+    queryFn: () => fetchSlots(userId!),
+    enabled: !!userId,
+  });
+  const slots = slotsQuery.data ?? [];
 
   useEffect(() => {
-    if (!id) return;
-    fetchRoutineById(id)
-      .then((routine) => {
-        setTitle(routine.title);
-        setBlockType(routine.block_type);
-        setRepeatType(routine.repeat_type);
-        setRepeatDays(routine.repeat_days ?? []);
-        setIsRequired(routine.is_required);
-        setSkipHolidays(routine.skip_holidays);
-        setTrackingUnit(routine.tracking_unit ?? '');
-        setCategoryId(routine.category_id);
-        setMemo(routine.memo ?? '');
-        setPhotoUrl(routine.photo_url);
-        if (routine.video_id) {
-          fetchVideoById(routine.video_id).then(setSelectedVideo).catch(() => {});
-        }
-        if (routine.is_instant && routine.scheduled_time_start) {
-          setTimeMode('instant');
-          setStartTime(timeToDate(routine.scheduled_time_start));
-        } else if (routine.scheduled_time_start && routine.scheduled_time_end) {
-          setTimeMode('exact');
-          setStartTime(timeToDate(routine.scheduled_time_start));
-          setEndTime(timeToDate(routine.scheduled_time_end));
-        } else if (routine.slot_id) {
-          setTimeMode('slot');
-          setSlotId(routine.slot_id);
-        }
-        if (routine.scheduled_date) {
-          setScheduledDate(new Date(routine.scheduled_date));
-        }
-      })
-      .catch(() => setErrorMessage('루틴 정보를 불러오지 못했어요.'))
-      .finally(() => setIsLoading(false));
-  }, [id]);
+    const fetched = slotsQuery.data;
+    if (!fetched) return;
+    setSlotId((prev) => prev ?? fetched.find((s) => s.slot_type === 'morning')?.id ?? fetched[0]?.id ?? null);
+  }, [slotsQuery.data]);
+
+  useEffect(() => {
+    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+  }, [slotsQuery.isError]);
+
+  const favoritesQuery = useQuery({
+    queryKey: ['favorites', userId],
+    queryFn: () => fetchFavorites(userId!),
+    enabled: !!userId,
+  });
+  const favorites = favoritesQuery.data ?? [];
+
+  useEffect(() => {
+    if (favoritesQuery.isError) setErrorMessage('즐겨찾기를 불러오지 못했어요.');
+  }, [favoritesQuery.isError]);
+
+  const routineQuery = useQuery({
+    queryKey: ['routine', id],
+    queryFn: () => fetchRoutineById(id!),
+    enabled: !!id,
+  });
+  const isLoading = isEditing && routineQuery.isLoading;
+
+  const videoQuery = useQuery({
+    queryKey: ['video', routineQuery.data?.video_id],
+    queryFn: () => fetchVideoById(routineQuery.data!.video_id!),
+    enabled: !!routineQuery.data?.video_id,
+  });
+
+  useEffect(() => {
+    if (videoQuery.data) setSelectedVideo(videoQuery.data);
+  }, [videoQuery.data]);
+
+  useEffect(() => {
+    const routine = routineQuery.data;
+    if (!routine) return;
+    setTitle(routine.title);
+    setBlockType(routine.block_type);
+    setRepeatType(routine.repeat_type);
+    setRepeatDays(routine.repeat_days ?? []);
+    setIsRequired(routine.is_required);
+    setSkipHolidays(routine.skip_holidays);
+    setTrackingUnit(routine.tracking_unit ?? '');
+    setCategoryId(routine.category_id);
+    setMemo(routine.memo ?? '');
+    setPhotoUrl(routine.photo_url);
+    if (routine.is_instant && routine.scheduled_time_start) {
+      setTimeMode('instant');
+      setStartTime(timeToDate(routine.scheduled_time_start));
+    } else if (routine.scheduled_time_start && routine.scheduled_time_end) {
+      setTimeMode('exact');
+      setStartTime(timeToDate(routine.scheduled_time_start));
+      setEndTime(timeToDate(routine.scheduled_time_end));
+    } else if (routine.slot_id) {
+      setTimeMode('slot');
+      setSlotId(routine.slot_id);
+    }
+    if (routine.scheduled_date) {
+      setScheduledDate(new Date(routine.scheduled_date));
+    }
+  }, [routineQuery.data]);
+
+  useEffect(() => {
+    if (routineQuery.isError) setErrorMessage('루틴 정보를 불러오지 못했어요.');
+  }, [routineQuery.isError]);
 
   // LLM 미리보기에서 넘어온 프리필 값을 폼에 한 번만 반영 (신규 추가일 때만)
   useEffect(() => {
@@ -648,7 +675,7 @@ export default function RoutineFormScreen() {
           {slots.map((slot) => (
             <Chip
               key={slot.id}
-              label={SLOT_LABELS[slot.slot_type]}
+              label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
               selected={slotId === slot.id}
               onPress={() => setSlotId(slot.id)}
             />

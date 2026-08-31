@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +15,7 @@ import {
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/lib/auth-context';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
   countRoutinesUsingVideo,
   createCategory,
@@ -45,11 +47,10 @@ function daysUntilCategoryPurge(deletedAt: string): number {
 export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Video) => void }) {
   const { session } = useAuth();
   const userId = session?.user.id;
+  const queryClient = useQueryClient();
+  const categoriesQueryKey = ['video-categories', userId] as const;
 
-  const [categories, setCategories] = useState<Category[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -68,28 +69,50 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   const [trashBusyId, setTrashBusyId] = useState<number | null>(null);
   const [recreatingDefaults, setRecreatingDefaults] = useState(false);
 
-  const selectedCategory = categories.find((c) => c.id === selectedId) ?? null;
-
+  const categoriesQuery = useQuery({
+    queryKey: categoriesQueryKey,
+    queryFn: () => fetchCategories(userId!),
+    enabled: !!userId,
+  });
+  useRefetchOnFocus(categoriesQuery.refetch);
+  const categories = categoriesQuery.data ?? [];
+  // 카테고리 값이 새로 바뀔 때마다(포커스마다 재조회 포함) 첫 번째로 리셋해버리면, 탭을
+  // 옮겼다 돌아왔을 때 보고 있던 카테고리가 자꾸 1번으로 튕기게 됨 — 진짜 최초 1회만 정해준다
+  const hasSetInitialCategoryRef = useRef(false);
   useEffect(() => {
-    if (!userId) return;
-    fetchCategories(userId).then((cats) => {
-      setCategories(cats);
-      setSelectedId(cats[0]?.id ?? null);
-    });
-  }, [userId]);
+    if (!categoriesQuery.data || hasSetInitialCategoryRef.current) return;
+    hasSetInitialCategoryRef.current = true;
+    setSelectedId(categoriesQuery.data[0]?.id ?? null);
+  }, [categoriesQuery.data]);
 
-  function loadVideos(categoryId: number) {
-    if (!userId) return;
-    setIsLoading(true);
-    fetchVideosByCategory(categoryId, userId)
-      .then(setVideos)
-      .finally(() => setIsLoading(false));
+  // 기존 호출부(setCategories(배열) 또는 setCategories(prev => ...))를 그대로 두기 위해
+  // useState 셋터와 똑같은 형태로 만든 얇은 래퍼 — 실제로는 react-query 캐시를 갱신한다
+  function setCategories(value: Category[] | ((prev: Category[]) => Category[])) {
+    queryClient.setQueryData(categoriesQueryKey, (old?: Category[]) =>
+      typeof value === 'function' ? (value as (prev: Category[]) => Category[])(old ?? []) : value
+    );
   }
 
-  useEffect(() => {
-    if (selectedId === null) return;
-    loadVideos(selectedId);
-  }, [selectedId, userId]);
+  const selectedCategory = categories.find((c) => c.id === selectedId) ?? null;
+
+  const videosQueryKey = ['videos-by-category', selectedId, userId] as const;
+  const videosQuery = useQuery({
+    queryKey: videosQueryKey,
+    queryFn: () => fetchVideosByCategory(selectedId!, userId!),
+    enabled: selectedId !== null && !!userId,
+  });
+  const videos = videosQuery.data ?? [];
+  const isLoading = videosQuery.isLoading;
+
+  function setVideos(value: Video[] | ((prev: Video[]) => Video[])) {
+    queryClient.setQueryData(videosQueryKey, (old?: Video[]) =>
+      typeof value === 'function' ? (value as (prev: Video[]) => Video[])(old ?? []) : value
+    );
+  }
+
+  function loadVideos(_categoryId: number) {
+    videosQuery.refetch();
+  }
 
   async function performDeleteVideo(video: Video) {
     try {

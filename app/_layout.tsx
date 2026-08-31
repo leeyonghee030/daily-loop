@@ -1,5 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -11,6 +12,7 @@ import 'react-native-reanimated';
 import { View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+import { persistOptions, queryClient } from '@/lib/query-client';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -47,9 +49,11 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={styles.flex}>
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
+      <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
+        <AuthProvider>
+          <RootLayoutNav />
+        </AuthProvider>
+      </PersistQueryClientProvider>
     </GestureHandlerRootView>
   );
 }

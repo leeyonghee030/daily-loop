@@ -1,9 +1,11 @@
 import { useNavigation } from '@react-navigation/native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
+import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota, parseRoutine, QuotaExceededError, type LlmQuota } from '@/lib/llm';
 import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
 
@@ -34,15 +36,22 @@ function draftToParams(draft: ParsedRoutineDraft): Record<string, string> {
 export default function LlmInputScreen() {
   const router = useRouter();
   const navigation = useNavigation();
+  const { session } = useAuth();
+  const userId = session?.user.id;
+  const queryClient = useQueryClient();
+  // 오늘 탭과 같은 쿼리 키를 써서 캐시를 공유한다
+  const llmQuotaQueryKey = ['llm-quota', userId] as const;
   const [text, setText] = useState(persistedText);
   const [loadingMode, setLoadingMode] = useState<'none' | 'auto' | 'ai'>('none');
   const isLoading = loadingMode !== 'none';
   const [errorState, setErrorState] = useState<ErrorState>('none');
-  const [quota, setQuota] = useState<LlmQuota | null>(null);
 
-  useEffect(() => {
-    fetchLlmQuota().then(setQuota).catch(() => {});
-  }, []);
+  const quotaQuery = useQuery({
+    queryKey: llmQuotaQueryKey,
+    queryFn: fetchLlmQuota,
+    enabled: !!userId,
+  });
+  const quota = quotaQuery.data ?? null;
 
   useEffect(() => {
     persistedText = text;
@@ -64,6 +73,11 @@ export default function LlmInputScreen() {
     setErrorState('none');
     try {
       const result = await parseRoutine(trimmed, forceLlm);
+      if (result.source === 'llm' && result.quotaRemaining !== undefined) {
+        queryClient.setQueryData(llmQuotaQueryKey, (prev?: LlmQuota | null) =>
+          prev ? { ...prev, remaining: result.quotaRemaining!, used: prev.limit - result.quotaRemaining! } : prev
+        );
+      }
       // 미리보기 화면에서 뒤로가기로 돌아와도 방금 쓴 문장이 남아있도록 여기서는 지우지 않는다.
       // replace가 아니라 push라서, 뒤로가기하면 (오늘 탭이 아니라) 이 입력 화면으로 돌아온다.
       // 미리보기 = routine-form을 프리필해서 재사용 (기획 4-8 ③ / 4-9)

@@ -14,6 +14,8 @@ export type Slot = {
   end_time: string;
   notify_enabled: boolean;
   memo_notify_enabled: boolean;
+  // true(기본값)면 설정 화면에 "정확히 이 시각" 하나만 보여줌(체크형), false면 몇시~몇시 범위로 보여줌
+  is_instant: boolean;
 };
 
 export type Routine = {
@@ -64,6 +66,12 @@ export type StreakConfig = {
   emoji: string;
   label: string;
 };
+
+// 슬롯 선택 칩 등에서 "아침" 옆에 같이 보여줄 시각 — 체크형이면 한 시각만, 아니면 범위로
+export function slotTimeLabel(slot: Slot): string {
+  if (slot.is_instant) return slot.start_time.slice(0, 5);
+  return `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`;
+}
 
 export const SLOT_LABELS: Record<SlotType, string> = {
   morning: '아침',
@@ -167,15 +175,23 @@ export async function fetchTodayRoutines(userId: string): Promise<{
   if (routinesError) throw routinesError;
 
   const allIds = (routines ?? []).map((r) => r.id);
-  const { data: skipRows, error: skipError } =
+
+  // 건너뛴 날짜와 완료기록 둘 다 "전체 루틴 id" 기준으로만 필요해서(오늘 예정 여부 필터링 전),
+  // 서로 의존관계가 없어 병렬로 같이 요청한다 — 예전엔 건너뛴 날짜부터 받아서 오늘 예정 목록을
+  // 추린 뒤에야 완료기록을 요청해서 왕복이 하나 더 걸렸음(첫 로딩 체감 속도에 영향)
+  const [{ data: skipRows, error: skipError }, { data: completionRows, error: completionsError }] =
     allIds.length > 0
-      ? await supabase
-          .from('routine_skip_dates')
-          .select('routine_id')
-          .eq('skip_date', todayDate)
-          .in('routine_id', allIds)
-      : { data: [], error: null };
+      ? await Promise.all([
+          supabase
+            .from('routine_skip_dates')
+            .select('routine_id')
+            .eq('skip_date', todayDate)
+            .in('routine_id', allIds),
+          supabase.from('routine_completions').select('*').in('routine_id', allIds).eq('completed_date', todayDate),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
   if (skipError) throw skipError;
+  if (completionsError) throw completionsError;
   const skippedIds = new Set((skipRows ?? []).map((row) => row.routine_id));
 
   const isHoliday = Boolean(holiday);
@@ -185,20 +201,10 @@ export async function fetchTodayRoutines(userId: string): Promise<{
     )
   );
 
-  const ids = todays.map((r) => r.id);
-  if (ids.length === 0) {
-    return { routines: todays, completions: [], holiday };
-  }
+  const todayIdSet = new Set(todays.map((r) => r.id));
+  const completions = (completionRows ?? []).filter((c) => todayIdSet.has(c.routine_id));
 
-  const { data: completions, error: completionsError } = await supabase
-    .from('routine_completions')
-    .select('*')
-    .in('routine_id', ids)
-    .eq('completed_date', todayDate);
-
-  if (completionsError) throw completionsError;
-
-  return { routines: todays, completions: completions ?? [], holiday };
+  return { routines: todays, completions, holiday };
 }
 
 // "내 루틴" 전체보기 화면용 — 오늘 예정 여부와 무관하게 삭제되지 않은 루틴 전체.
@@ -244,6 +250,24 @@ export async function skipRoutineToday(routineId: string): Promise<void> {
   const { error } = await supabase
     .from('routine_skip_dates')
     .insert({ routine_id: routineId, skip_date: formatLocalDate(new Date()) });
+  if (error) throw error;
+}
+
+// 오늘 탭에서 스와이프로 "오늘 삭제"(건너뛰기) 된 루틴 id 목록 — "내 루틴" 화면에서
+// 오늘만 빠진 루틴을 표시하고 다시 되돌릴 수 있게 하기 위함. RLS가 본인 루틴으로 자동 스코프함
+export async function fetchSkippedRoutineIds(date: string): Promise<Set<string>> {
+  const { data, error } = await supabase.from('routine_skip_dates').select('routine_id').eq('skip_date', date);
+  if (error) throw error;
+  return new Set((data ?? []).map((row) => row.routine_id));
+}
+
+// "오늘 삭제"(건너뛰기)를 되돌린다 — 반복 규칙 자체는 안 건드리고 그날 건너뛴 기록만 지운다
+export async function unskipRoutine(routineId: string, date: string): Promise<void> {
+  const { error } = await supabase
+    .from('routine_skip_dates')
+    .delete()
+    .eq('routine_id', routineId)
+    .eq('skip_date', date);
   if (error) throw error;
 }
 
@@ -378,7 +402,7 @@ export type RoutineInput = {
 export async function fetchSlots(userId: string): Promise<Slot[]> {
   const { data, error } = await supabase
     .from('slots')
-    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled')
+    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled, is_instant')
     .eq('user_id', userId);
   if (error) throw error;
   return data ?? [];
@@ -386,13 +410,19 @@ export async function fetchSlots(userId: string): Promise<Slot[]> {
 
 export async function updateSlot(
   slotId: string,
-  input: { start_time: string; end_time: string; notify_enabled: boolean; memo_notify_enabled: boolean }
+  input: {
+    start_time: string;
+    end_time: string;
+    notify_enabled: boolean;
+    memo_notify_enabled: boolean;
+    is_instant: boolean;
+  }
 ): Promise<Slot> {
   const { data, error } = await supabase
     .from('slots')
     .update(input)
     .eq('id', slotId)
-    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled')
+    .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled, is_instant')
     .single();
   if (error) throw error;
   return data;

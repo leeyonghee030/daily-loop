@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
@@ -32,24 +33,28 @@ export default function DiaryFormScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
 
-  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [diaryId, setDiaryId] = useState<string | null>(null);
   const [content, setContent] = useState('');
 
+  const diaryQuery = useQuery({
+    queryKey: ['diary', userId, date],
+    queryFn: () => fetchDiary(userId!, date),
+    enabled: !!userId && !!date,
+  });
+  const isLoading = diaryQuery.isLoading;
+
   useEffect(() => {
-    if (!userId || !date) return;
-    fetchDiary(userId, date)
-      .then((diary) => {
-        if (diary) {
-          setDiaryId(diary.id);
-          setContent(diary.content);
-        }
-      })
-      .catch(() => setErrorMessage('일기를 불러오지 못했어요.'))
-      .finally(() => setIsLoading(false));
-  }, [userId, date]);
+    const diary = diaryQuery.data;
+    if (!diary) return;
+    setDiaryId(diary.id);
+    setContent(diary.content);
+  }, [diaryQuery.data]);
+
+  useEffect(() => {
+    if (diaryQuery.isError) setErrorMessage('일기를 불러오지 못했어요.');
+  }, [diaryQuery.isError]);
 
   async function handleSave() {
     if (!userId || !date) return;
