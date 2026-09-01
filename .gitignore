@@ -37,6 +37,9 @@ yarn-error.*
 # oh-my-claudecode local state
 .omc/
 
+# scratch files (artifact drafts, font downloads, etc.)
+.tmp/
+
 # typescript
 *.tsbuildinfo
 
