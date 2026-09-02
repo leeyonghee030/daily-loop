@@ -7,6 +7,7 @@ import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { fetchFavorites, type Favorite } from '@/lib/favorites';
 import {
@@ -679,8 +680,8 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
@@ -694,8 +695,8 @@ const styles = StyleSheet.create({
   },
   timeButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
@@ -704,8 +705,8 @@ const styles = StyleSheet.create({
   },
   spinnerDoneButton: {
     alignSelf: 'center',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 24,
     paddingVertical: 10,
     marginTop: 4,
@@ -723,8 +724,8 @@ const styles = StyleSheet.create({
   },
   itemCard: {
     borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 14,
     marginBottom: 12,
   },
@@ -737,8 +738,8 @@ const styles = StyleSheet.create({
   itemTitleInput: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 8,
     fontSize: 14,
@@ -749,8 +750,8 @@ const styles = StyleSheet.create({
   },
   itemDoneButton: {
     marginTop: 4,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 10,
     alignItems: 'center',
   },
@@ -764,8 +765,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 14,
     marginBottom: 12,
     gap: 10,
@@ -791,19 +792,19 @@ const styles = StyleSheet.create({
   },
   addItemButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 10,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 12,
     alignItems: 'center',
   },
   addItemButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
   favoritePickButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
@@ -818,8 +819,8 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     marginTop: 24,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
   },

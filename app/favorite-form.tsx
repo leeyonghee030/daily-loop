@@ -6,6 +6,7 @@ import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Switch,
 
 import { Chip } from '@/components/Chip';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import {
   createFavorite,
@@ -388,8 +389,8 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
@@ -402,8 +403,8 @@ const styles = StyleSheet.create({
   },
   timeButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
@@ -412,8 +413,8 @@ const styles = StyleSheet.create({
   },
   spinnerDoneButton: {
     alignSelf: 'center',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 24,
     paddingVertical: 10,
     marginTop: 4,
@@ -435,8 +436,8 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     marginTop: 32,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
   },

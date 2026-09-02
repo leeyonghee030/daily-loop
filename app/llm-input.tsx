@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota, parseRoutine, QuotaExceededError, type LlmQuota } from '@/lib/llm';
 import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
@@ -183,7 +184,7 @@ export default function LlmInputScreen() {
         disabled={!text.trim() || isLoading}>
         {loadingMode === 'ai' ? (
           <View style={styles.loadingRow}>
-            <ActivityIndicator color="#7C5CFC" />
+            <ActivityIndicator color={accent} />
             <Text style={styles.aiButtonText}>AI가 분석 중...</Text>
           </View>
         ) : (
@@ -216,8 +217,8 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 14,
     fontSize: 16,
     minHeight: 90,
@@ -237,8 +238,8 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     marginTop: 24,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
   },
@@ -253,13 +254,13 @@ const styles = StyleSheet.create({
   aiButton: {
     marginTop: 10,
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 10,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 12,
     alignItems: 'center',
   },
   aiButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -284,7 +285,7 @@ const styles = StyleSheet.create({
   errorBox: {
     marginTop: 20,
     padding: 14,
-    borderRadius: 10,
+    borderRadius: cardRadius,
     backgroundColor: 'rgba(255,107,107,0.1)',
     gap: 12,
   },
@@ -299,8 +300,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   errorPrimaryButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 18,
     paddingVertical: 9,
   },
@@ -310,13 +311,13 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 16,
     paddingVertical: 8,
   },
   secondaryButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
 });

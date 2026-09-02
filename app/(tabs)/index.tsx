@@ -16,7 +16,9 @@ import {
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius, dangerMuted, fontMono, withAlpha } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota } from '@/lib/llm';
 import { purgeOldDeletedPresets } from '@/lib/presets';
@@ -287,10 +289,19 @@ function TimelineView({
     );
   }
 
-  // 지금 시간대에 해당하는 블록은 색/밑줄로 눈에 띄게 강조
+  // 지금 시간대에 해당하는 블록은 색/밑줄로 눈에 띄게 강조.
+  // "더보기"로 펼친 블록(expanded)은 실제 시간 위치와 무관하게 겹쳐 그려지므로, 아래 깔린
+  // 다른 글자가 비치지 않도록 불투명한 카드로 그 자리를 가리고 글자색도 카드에 맞춰 고정한다
   function renderBlock(
     block: TimelineBlock,
-    pos: { top: number; height: number; left: DimensionValue; width: DimensionValue; showTime: boolean }
+    pos: {
+      top: number;
+      height: number;
+      left: DimensionValue;
+      width: DimensionValue;
+      showTime: boolean;
+      expanded?: boolean;
+    }
   ) {
     const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].isInstant);
     return (
@@ -299,6 +310,7 @@ function TimelineView({
         style={[
           timelineStyles.block,
           isNowBlock && timelineStyles.blockNow,
+          pos.expanded && timelineStyles.blockExpanded,
           { top: pos.top, height: pos.height, left: pos.left, width: pos.width },
         ]}>
         {block.items.map(({ routine }, index) => {
@@ -308,13 +320,16 @@ function TimelineView({
             <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
               <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
                 {pos.showTime && index === 0 && (
-                  <Text style={timelineStyles.blockTime}>{formatTime(block.start)}</Text>
+                  <Text style={[timelineStyles.blockTime, pos.expanded && timelineStyles.blockTextExpanded]}>
+                    {formatTime(block.start)}
+                  </Text>
                 )}
                 <Text
                   style={[
                     timelineStyles.blockTitle,
                     isDone && timelineStyles.blockTitleDone,
                     isNowBlock && timelineStyles.blockTitleNow,
+                    pos.expanded && timelineStyles.blockTextExpanded,
                   ]}
                   numberOfLines={1}>
                   {routine.title}
@@ -328,7 +343,8 @@ function TimelineView({
                   {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
                 </Pressable>
               ) : pos.showTime ? (
-                <Text style={timelineStyles.blockTrackingValue}>
+                <Text
+                  style={[timelineStyles.blockTrackingValue, pos.expanded && timelineStyles.blockTextExpanded]}>
                   {completion?.tracking_value ?? '-'} {routine.tracking_unit}
                 </Text>
               ) : null}
@@ -370,11 +386,12 @@ function TimelineView({
           if (expandedClusters.size > 0) setExpandedClusters(new Set());
         }}>
       {hours.map((hour) => (
-        <View
-          key={hour}
-          style={[timelineStyles.hourLine, { top: (hour - minHour) * HOUR_HEIGHT }]}>
-          <Text style={timelineStyles.hourLabel}>{String(hour).padStart(2, '0')}:00</Text>
-        </View>
+        <Fragment key={hour}>
+          <View style={[timelineStyles.hourLine, { top: (hour - minHour) * HOUR_HEIGHT }]} />
+          <View style={[timelineStyles.hourLabelWrap, { top: (hour - minHour) * HOUR_HEIGHT - 7 }]}>
+            <Text style={timelineStyles.hourLabel}>{String(hour).padStart(2, '0')}:00</Text>
+          </View>
+        </Fragment>
       ))}
 
       {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
@@ -396,17 +413,18 @@ function TimelineView({
           const isExpanded = expandedClusters.has(clusterId);
 
           // 겹치면 기본은 1개 + "더보기" 버튼만 보여주고, 누르면 위아래로 1개씩 전부 펼쳐서 보여준다
+          // 이때도 각 블록의 실제 소요 시간(block.height)을 유지 — 강제로 작은 고정 높이로 뭉개지 않는다
           if (!isExpanded) {
             const first = sortedItems[0];
             const hiddenCount = sortedItems.length - 1;
             return (
               <Fragment key={clusterId}>
-                {renderBlock(first, { top: clusterTop, height: ROW_HEIGHT, left: '0%', width: '80%', showTime: false })}
+                {renderBlock(first, { top: clusterTop, height: first.height, left: '0%', width: '80%', showTime: false })}
                 <Pressable
                   style={[
                     timelineStyles.block,
                     timelineStyles.moreBlock,
-                    { top: clusterTop, height: ROW_HEIGHT, left: '84%', width: '16%' },
+                    { top: clusterTop, height: first.height, left: '84%', width: '16%' },
                   ]}
                   onPress={() => setExpandedClusters((prev) => new Set(prev).add(clusterId))}>
                   <Text style={timelineStyles.moreBlockText}>+{hiddenCount}</Text>
@@ -417,15 +435,18 @@ function TimelineView({
 
           return (
             <Fragment key={clusterId}>
-              {sortedItems.map((block, index) =>
-                renderBlock(block, {
-                  top: clusterTop + index * ROW_HEIGHT,
-                  height: ROW_HEIGHT,
+              {sortedItems.map((block, index) => {
+                const offsetTop =
+                  clusterTop + sortedItems.slice(0, index).reduce((sum, b) => sum + b.height, 0);
+                return renderBlock(block, {
+                  top: offsetTop,
+                  height: block.height,
                   left: '0%',
                   width: '100%',
                   showTime: true,
-                })
-              )}
+                  expanded: true,
+                });
+              })}
             </Fragment>
           );
         })}
@@ -443,8 +464,8 @@ const timelineStyles = StyleSheet.create({
     marginHorizontal: 20,
     marginBottom: 10,
     padding: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.1)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.1)',
     gap: 8,
   },
   hintText: {
@@ -464,14 +485,14 @@ const timelineStyles = StyleSheet.create({
   hintCheckbox: {
     width: 16,
     height: 16,
-    borderRadius: 4,
+    borderRadius: cardRadius,
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   hintCheckboxChecked: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   hintCheckmark: {
     color: '#fff',
@@ -484,7 +505,7 @@ const timelineStyles = StyleSheet.create({
   },
   hintCloseText: {
     fontSize: 12,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
   container: {
@@ -500,43 +521,46 @@ const timelineStyles = StyleSheet.create({
     opacity: 0.5,
   },
   hourLine: {
+    // 시간 라벨 구역(0~69, blocksArea와 동일 너비)엔 선을 안 그어서 라벨을 안 가리게 함
     position: 'absolute',
-    left: 0,
+    left: 69,
     right: 0,
     height: 1,
-    backgroundColor: '#eee',
+    backgroundColor: 'rgba(26,26,26,0.1)',
     justifyContent: 'center',
+  },
+  hourLabelWrap: {
+    position: 'absolute',
+    left: 4,
   },
   hourLabel: {
     fontSize: 10,
     opacity: 0.4,
-    position: 'absolute',
-    top: -7,
   },
   blocksArea: {
     position: 'absolute',
-    left: 46,
+    left: 69,
     right: 0,
     top: 0,
     bottom: 0,
   },
   block: {
     position: 'absolute',
-    backgroundColor: 'rgba(124, 92, 252, 0.12)',
+    backgroundColor: 'rgba(169, 196, 224, 0.12)',
     borderLeftWidth: 3,
-    borderLeftColor: '#7C5CFC',
-    borderRadius: 6,
+    borderLeftColor: accent,
+    borderRadius: cardRadius,
     overflow: 'hidden',
   },
   moreBlock: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(124, 92, 252, 0.2)',
+    backgroundColor: 'rgba(169, 196, 224, 0.2)',
   },
   moreBlockText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#7C5CFC',
+    color: accent,
   },
   nowLine: {
     position: 'absolute',
@@ -550,6 +574,16 @@ const timelineStyles = StyleSheet.create({
   blockNow: {
     backgroundColor: 'rgba(255, 152, 0, 0.18)',
     borderLeftColor: '#FF9800',
+  },
+  // "더보기"로 펼쳤을 때만 적용 — 실제 시간 위치와 무관하게 겹쳐 그려지는 자리라, 밑에 깔린
+  // 다른 글자가 비쳐 보이지 않도록 불투명하게 가려주고 다른 블록들보다 위에 그려지게 한다
+  blockExpanded: {
+    backgroundColor: '#EAF1F9',
+    zIndex: 10,
+    elevation: 4,
+  },
+  blockTextExpanded: {
+    color: '#1A1A1A',
   },
   blockTitleNow: {
     textDecorationLine: 'underline',
@@ -576,6 +610,7 @@ const timelineStyles = StyleSheet.create({
     fontSize: 11,
     opacity: 0.6,
     width: 36,
+    fontFamily: fontMono,
   },
   blockTitle: {
     flex: 1,
@@ -589,12 +624,12 @@ const timelineStyles = StyleSheet.create({
     height: 22,
     borderRadius: 11,
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   blockCheckboxDone: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   blockCheckmark: {
     color: '#fff',
@@ -986,43 +1021,78 @@ export default function TodayScreen() {
         key={item.id}
         overshootRight={false}
         renderRightActions={() => (
-          <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
-            <Text style={styles.deleteActionText}>오늘 삭제</Text>
-          </Pressable>
+          <View style={styles.swipeActionsRow}>
+            <Pressable
+              style={styles.editAction}
+              onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+              <Text style={styles.editActionText}>수정</Text>
+            </Pressable>
+            {item.block_type === 'tracking' && isDone && !editingTrackingIds.has(item.id) && (
+              <Pressable style={styles.cancelTrackingAction} onPress={() => handleCancelTracking(item)}>
+                <Text style={styles.editActionText}>기록삭제</Text>
+              </Pressable>
+            )}
+            <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
+              <Text style={styles.deleteActionText}>오늘 삭제</Text>
+            </Pressable>
+          </View>
         )}>
         <View style={[styles.row, isNow && !flat && styles.rowHighlighted, flat && styles.rowFlat]}>
           <View style={styles.timeColumn}>
-            <Text style={styles.time}>{timeLabel(item)}</Text>
-            {item.slots && <Text style={styles.timeSub}>{slotTimeLabel(item.slots)}</Text>}
+            <Text style={styles.time} numberOfLines={1}>
+              {timeLabel(item)}
+            </Text>
+            {item.slots && (
+              <Text style={styles.timeSub} numberOfLines={1}>
+                {slotTimeLabel(item.slots)}
+              </Text>
+            )}
           </View>
           <View style={styles.rowMain}>
             <Pressable
               style={styles.titleLine}
               onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
-              <View style={item.is_required ? styles.requiredHighlight : undefined}>
-                <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]}>{item.title}</Text>
-              </View>
+              <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
+                {item.title}
+              </Text>
               {streakEmoji && (
                 <Text style={styles.streakBadge}>
                   {streakEmoji} {streakDays}일
                 </Text>
               )}
             </Pressable>
+            {item.is_required && !isDone && <View style={styles.requiredBar} />}
+          </View>
 
-            {item.block_type === 'tracking' ? (
-              isDone && !editingTrackingIds.has(item.id) ? (
-                <View style={styles.trackingRow}>
-                  <Text style={styles.trackingDoneBadge}>
-                    ✓ 오늘 기록 {completion?.tracking_value} {item.tracking_unit}
+          {item.video_id && (
+            <Pressable
+              style={styles.playButton}
+              onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
+              <Text style={styles.playButtonText}>▶</Text>
+            </Pressable>
+          )}
+
+          {item.block_type === 'check' && (
+            <View style={styles.actionSlot}>
+              <Pressable
+                style={[styles.checkbox, isDone && styles.checkboxDone]}
+                onPress={() => handleToggleCheck(item)}>
+                {isDone && <Text style={styles.checkmark}>✓</Text>}
+              </Pressable>
+            </View>
+          )}
+
+          {item.block_type === 'tracking' ? (
+            isDone && !editingTrackingIds.has(item.id) ? (
+              <View style={styles.actionSlot}>
+                <Pressable onPress={() => startEditTracking(item)}>
+                  <Text style={styles.trackingDoneBadge} numberOfLines={1}>
+                    ✓ {completion?.tracking_value} {item.tracking_unit}
                   </Text>
-                  <Pressable style={styles.trackingEditButton} onPress={() => startEditTracking(item)}>
-                    <Text style={styles.trackingEditButtonText}>수정</Text>
-                  </Pressable>
-                  <Pressable style={styles.cancelTrackingButton} onPress={() => handleCancelTracking(item)}>
-                    <Text style={styles.cancelTrackingButtonText}>기록삭제</Text>
-                  </Pressable>
-                </View>
-              ) : (
+                </Pressable>
+              </View>
+            ) : (
+              <>
                 <View style={styles.trackingRow}>
                   <TextInput
                     style={styles.trackingInput}
@@ -1045,35 +1115,15 @@ export default function TodayScreen() {
                       <Text style={styles.cancelTrackingButtonText}>닫기</Text>
                     </Pressable>
                   )}
+                </View>
+                <View style={styles.actionSlot}>
                   <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
                     <Text style={styles.saveButtonText}>저장</Text>
                   </Pressable>
                 </View>
-              )
-            ) : null}
-          </View>
-
-          {item.video_id && (
-            <Pressable
-              style={styles.playButton}
-              onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
-              <Text style={styles.playButtonText}>▶</Text>
-            </Pressable>
-          )}
-
-          {item.block_type === 'check' && (
-            <Pressable
-              style={[styles.checkbox, isDone && styles.checkboxDone]}
-              onPress={() => handleToggleCheck(item)}>
-              {isDone && <Text style={styles.checkmark}>✓</Text>}
-            </Pressable>
-          )}
-
-          <Pressable
-            style={styles.editButton}
-            onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
-            <Text style={styles.editButtonText}>✎</Text>
-          </Pressable>
+              </>
+            )
+          ) : null}
         </View>
       </Swipeable>
     );
@@ -1136,14 +1186,16 @@ export default function TodayScreen() {
         </Pressable>
       </View>
 
-      <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
-        <Text style={styles.llmBannerText}>✨ 말로 루틴 추가하기</Text>
-        {llmQuota && (
-          <Text style={styles.llmBannerCount}>
-            남은 {llmQuota.remaining}/{llmQuota.limit}회
-          </Text>
-        )}
-      </Pressable>
+      <ShadowCard style={styles.llmBannerOuter} contentStyle={styles.llmBannerContent}>
+        <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
+          <Text style={styles.llmBannerText}>✨ 말로 루틴 추가하기</Text>
+          {llmQuota && (
+            <Text style={styles.llmBannerCount}>
+              남은 {llmQuota.remaining}/{llmQuota.limit}회
+            </Text>
+          )}
+        </Pressable>
+      </ShadowCard>
 
       {holiday && (
         <View style={styles.holidayBanner}>
@@ -1249,11 +1301,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 12,
   },
-  llmBanner: {
+  llmBannerOuter: {
     marginHorizontal: 20,
     marginBottom: 12,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 12,
+  },
+  // 배경이 흰 카드가 아니라 포인트색으로 꽉 채워진 배너라, 테두리는 회색 대신 진한 톤으로 덮어씀
+  llmBannerContent: {
+    borderColor: 'rgba(0,0,0,0.15)',
+  },
+  llmBanner: {
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 16,
     paddingVertical: 14,
     flexDirection: 'row',
@@ -1283,19 +1341,19 @@ const styles = StyleSheet.create({
   },
   presetButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
   presetButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
   addButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
@@ -1308,19 +1366,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginHorizontal: 20,
     marginBottom: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
     gap: 4,
   },
   viewModeTab: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: cardRadius,
     alignItems: 'center',
   },
   viewModeTabActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   viewModeTabText: {
     fontSize: 13,
@@ -1341,7 +1399,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    borderRadius: 10,
+    borderRadius: cardRadius,
     backgroundColor: '#FF6B6B',
   },
   holidayBannerText: {
@@ -1368,16 +1426,16 @@ const styles = StyleSheet.create({
     gap: 12,
     borderWidth: 1.5,
     borderColor: 'transparent',
-    borderRadius: 10,
+    borderRadius: cardRadius,
   },
   rowHighlighted: {
-    borderColor: '#7C5CFC',
+    borderColor: accent,
   },
   nowGroupBox: {
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
-    backgroundColor: 'rgba(124, 92, 252, 0.06)',
-    borderRadius: 10,
+    borderColor: accent,
+    backgroundColor: 'rgba(169, 196, 224, 0.06)',
+    borderRadius: cardRadius,
     overflow: 'hidden',
   },
   rowFlat: {
@@ -1385,24 +1443,26 @@ const styles = StyleSheet.create({
     borderRadius: 0,
   },
   timeColumn: {
-    width: 78,
+    width: 70,
   },
   time: {
-    fontSize: 12,
+    fontSize: 10,
     opacity: 0.6,
+    fontFamily: fontMono,
   },
   timeSub: {
     fontSize: 10,
     opacity: 0.45,
     marginTop: 1,
+    fontFamily: fontMono,
   },
   rowMain: {
     flex: 1,
+    position: 'relative',
   },
   titleLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 6,
   },
   rowTitle: {
@@ -1410,94 +1470,118 @@ const styles = StyleSheet.create({
   },
   rowTitleDone: {
     opacity: 0.4,
-    textDecorationLine: 'line-through',
   },
-  requiredHighlight: {
-    backgroundColor: 'rgba(255, 107, 107, 0.35)',
-    borderRadius: 3,
-    paddingHorizontal: 4,
-    transform: [{ rotate: '-1.5deg' }],
+  requiredBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: -4,
+    height: 2,
+    backgroundColor: withAlpha(accent, 0.35),
   },
   streakBadge: {
     fontSize: 12,
     opacity: 0.7,
   },
+  // 체크박스(28px)와 시각적 중심을 맞추기 위해 같은 높이로 고정하고 그 안에서 가운데 정렬
   trackingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
-    gap: 8,
+    height: 28,
+    gap: 6,
+    flexShrink: 0,
   },
   trackingInput: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 6,
-    paddingHorizontal: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    width: 60,
+    width: 44,
   },
   trackingDoneBadge: {
-    flex: 1,
-    fontSize: 13,
-    color: '#7C5CFC',
-    fontWeight: '600',
-  },
-  trackingEditButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  trackingEditButtonText: {
     fontSize: 12,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
+    includeFontPadding: false,
   },
   cancelTrackingButton: {
+    height: 28,
     paddingHorizontal: 8,
-    paddingVertical: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cancelTrackingButtonText: {
     fontSize: 12,
-    color: '#FF6B6B',
+    color: dangerMuted,
+    includeFontPadding: false,
   },
   unit: {
     fontSize: 13,
     opacity: 0.7,
+    includeFontPadding: false,
   },
   saveButton: {
-    marginLeft: 'auto',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    height: 28,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
+    paddingHorizontal: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   saveButtonText: {
     color: '#fff',
     fontSize: 13,
+    includeFontPadding: false,
+  },
+  // 체크박스/저장 버튼/완료 뱃지가 항상 같은 가로 위치에서 중심을 잡도록 고정폭 슬롯으로 감쌈
+  // (버튼 내용이 이 폭보다 작아야 눌려서 깨지지 않음 — "저장" 버튼 기준 여유있게 56)
+  actionSlot: {
+    width: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   checkbox: {
     width: 28,
     height: 28,
     borderRadius: 14,
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxDone: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   checkmark: {
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
   },
-  editButton: {
-    paddingHorizontal: 4,
-    paddingVertical: 4,
+  swipeActionsRow: {
+    flexDirection: 'row',
+    gap: 6,
   },
-  editButtonText: {
-    fontSize: 15,
-    opacity: 0.5,
+  editAction: {
+    backgroundColor: accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 64,
+    borderRadius: cardRadius,
+    marginVertical: 2,
+  },
+  editActionText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  cancelTrackingAction: {
+    backgroundColor: dangerMuted,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 64,
+    borderRadius: cardRadius,
+    marginVertical: 2,
   },
   playButton: {
     paddingHorizontal: 4,
@@ -1505,19 +1589,19 @@ const styles = StyleSheet.create({
   },
   playButtonText: {
     fontSize: 14,
-    color: '#7C5CFC',
+    color: accent,
   },
   deleteAction: {
     backgroundColor: '#FF6B6B',
     justifyContent: 'center',
     alignItems: 'center',
-    width: 84,
-    borderRadius: 10,
+    width: 64,
+    borderRadius: cardRadius,
     marginVertical: 2,
   },
   deleteActionText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
   },
   summaryBar: {

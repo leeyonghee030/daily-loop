@@ -9,6 +9,7 @@ import ReorderableList, {
 } from 'react-native-reorderable-list';
 
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import {
@@ -535,8 +536,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   addButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
@@ -559,19 +560,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginHorizontal: 20,
     marginBottom: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
     gap: 4,
   },
   groupModeTab: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: cardRadius,
     alignItems: 'center',
   },
   groupModeTabActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   groupModeTabText: {
     fontSize: 13,
@@ -608,16 +609,16 @@ const styles = StyleSheet.create({
   },
   filterChip: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 16,
+    borderColor: accent,
+    borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 7,
   },
   filterChipActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   filterChipText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -643,7 +644,7 @@ const styles = StyleSheet.create({
   },
   toolbarButtonText: {
     fontSize: 13,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
   toolbarButtonDangerText: {
@@ -677,7 +678,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#e5e5e5',
-    borderRadius: 12,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 12,
     marginBottom: 10,
@@ -709,14 +710,14 @@ const styles = StyleSheet.create({
   checkboxBox: {
     width: 22,
     height: 22,
-    borderRadius: 6,
+    borderRadius: cardRadius,
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxBoxChecked: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   checkboxMark: {
     color: '#fff',
@@ -726,7 +727,7 @@ const styles = StyleSheet.create({
   deleteButton: {
     borderWidth: 1,
     borderColor: '#FF6B6B',
-    borderRadius: 8,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
@@ -737,14 +738,14 @@ const styles = StyleSheet.create({
   },
   unskipButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   unskipButtonText: {
     fontSize: 12,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
 });

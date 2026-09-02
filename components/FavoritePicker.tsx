@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View as RNView } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
+import { accent, border } from '@/constants/theme';
 import type { Favorite } from '@/lib/favorites';
 import { SLOT_LABELS, type Slot } from '@/lib/routines';
 
@@ -99,7 +100,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   closeText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
   },
   list: {
@@ -117,7 +118,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: border,
     gap: 10,
   },
   rowInfo: {
@@ -140,7 +141,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   manageButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
   },
 });

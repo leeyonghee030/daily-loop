@@ -5,6 +5,7 @@ import { Pressable, StyleSheet } from 'react-native';
 import { CategoryVideoGrid } from '@/components/CategoryVideoGrid';
 import { RecommendedVideoGrid } from '@/components/RecommendedVideoGrid';
 import { Text, View } from '@/components/Themed';
+import { accent, cardRadius } from '@/constants/theme';
 
 export default function VideosScreen() {
   const router = useRouter();
@@ -56,16 +57,16 @@ const styles = StyleSheet.create({
   },
   tabButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   tabButtonActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   tabButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
     fontWeight: '600',
   },

@@ -3,8 +3,10 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useToast } from '@/components/Toast';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { applyPreset, deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import { pauseRoutinesByPreset, softDeleteRoutinesByPreset } from '@/lib/routines';
@@ -149,7 +151,7 @@ export default function PresetsScreen() {
         )}
 
         {presets.map((preset) => (
-          <View key={preset.id} style={styles.card}>
+          <ShadowCard key={preset.id} style={styles.cardOuter} contentStyle={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>{preset.name}</Text>
               <Text style={styles.cardMeta}>
@@ -193,7 +195,7 @@ export default function PresetsScreen() {
                 <Text style={styles.bulkButtonText}>전체 활성화</Text>
               </Pressable>
             </View>
-          </View>
+          </ShadowCard>
         ))}
       </ScrollView>
     </View>
@@ -217,8 +219,8 @@ const styles = StyleSheet.create({
     paddingBottom: 60,
   },
   addButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
     marginBottom: 16,
@@ -238,12 +240,11 @@ const styles = StyleSheet.create({
     marginTop: 40,
     lineHeight: 20,
   },
-  card: {
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
-    padding: 16,
+  cardOuter: {
     marginBottom: 12,
+  },
+  card: {
+    padding: 16,
   },
   cardHeader: {
     marginBottom: 12,
@@ -263,8 +264,8 @@ const styles = StyleSheet.create({
   },
   applyButton: {
     flex: 1,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 10,
     alignItems: 'center',
   },
@@ -275,8 +276,8 @@ const styles = StyleSheet.create({
   },
   editButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingVertical: 10,
     paddingHorizontal: 14,
     justifyContent: 'center',
@@ -287,7 +288,7 @@ const styles = StyleSheet.create({
   deleteButton: {
     borderWidth: 1,
     borderColor: '#FF6B6B',
-    borderRadius: 8,
+    borderRadius: cardRadius,
     paddingVertical: 10,
     paddingHorizontal: 14,
     justifyContent: 'center',
@@ -305,8 +306,8 @@ const styles = StyleSheet.create({
   bulkButton: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingVertical: 8,
     alignItems: 'center',
   },

@@ -19,6 +19,7 @@ import {
 const SCROLL_SPACER_HEIGHT = Math.round(Dimensions.get('window').height * 0.8);
 
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { deleteDiary, fetchDiary, saveDiary } from '@/lib/diary';
 
@@ -159,8 +160,8 @@ const styles = StyleSheet.create({
   textArea: {
     minHeight: 220,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 14,
     fontSize: 15,
   },
@@ -170,8 +171,8 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     marginTop: 16,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
   },
@@ -185,7 +186,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center',
     backgroundColor: '#FF6B6B',
-    borderRadius: 10,
+    borderRadius: cardRadius,
   },
   deleteButtonText: {
     color: '#fff',

@@ -13,7 +13,9 @@ import {
   View as RNView,
 } from 'react-native';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
@@ -370,20 +372,22 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
           columnWrapperStyle={styles.row}
           contentContainerStyle={styles.grid}
           renderItem={({ item }) => (
-            <Pressable style={styles.card} onPress={() => onSelectVideo(item)}>
-              <View style={styles.thumbnailWrap}>
-                <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
-                <Pressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
-                  <Text style={styles.deleteBadgeText}>✕</Text>
-                </Pressable>
-              </View>
-              <Text style={styles.cardTitle} numberOfLines={2}>
-                {item.title}
-              </Text>
-              <Text style={styles.cardChannel} numberOfLines={1}>
-                {item.channel_name}
-              </Text>
-            </Pressable>
+            <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
+              <Pressable onPress={() => onSelectVideo(item)}>
+                <View style={styles.thumbnailWrap}>
+                  <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
+                  <Pressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
+                    <Text style={styles.deleteBadgeText}>✕</Text>
+                  </Pressable>
+                </View>
+                <Text style={styles.cardTitle} numberOfLines={2}>
+                  {item.title}
+                </Text>
+                <Text style={styles.cardChannel} numberOfLines={1}>
+                  {item.channel_name}
+                </Text>
+              </Pressable>
+            </ShadowCard>
           )}
         />
       )}
@@ -539,14 +543,14 @@ const styles = StyleSheet.create({
   },
   tab: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 20,
+    borderColor: border,
+    borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   tabActive: {
-    backgroundColor: '#7C5CFC',
-    borderColor: '#7C5CFC',
+    backgroundColor: accent,
+    borderColor: accent,
   },
   tabText: {
     fontSize: 13,
@@ -556,15 +560,15 @@ const styles = StyleSheet.create({
   },
   tabAdd: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     borderStyle: 'dashed',
-    borderRadius: 20,
+    borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   tabAddText: {
     fontSize: 13,
-    color: '#7C5CFC',
+    color: accent,
   },
   actionsRow: {
     flexDirection: 'row',
@@ -578,7 +582,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   categoryActionText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -602,8 +606,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 10,
     marginTop: 10,
   },
@@ -621,7 +625,7 @@ const styles = StyleSheet.create({
   trashHardDeleteButton: {
     borderWidth: 1,
     borderColor: '#FF6B6B',
-    borderRadius: 8,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
@@ -632,13 +636,13 @@ const styles = StyleSheet.create({
   },
   restoreButtonSmall: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   restoreButtonSmallText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 12,
     fontWeight: '600',
   },
@@ -656,9 +660,12 @@ const styles = StyleSheet.create({
   row: {
     gap: 12,
   },
-  card: {
+  cardOuter: {
     flex: 1,
     marginBottom: 16,
+  },
+  card: {
+    padding: 8,
   },
   thumbnailWrap: {
     position: 'relative',
@@ -666,8 +673,8 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     aspectRatio: 16 / 9,
-    borderRadius: 10,
-    backgroundColor: '#eee',
+    borderRadius: cardRadius,
+    backgroundColor: border,
   },
   deleteBadge: {
     position: 'absolute',
@@ -687,6 +694,8 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 13,
+    lineHeight: 17,
+    height: 34, // 2줄 고정 — 제목이 1줄이든 2줄이든 카드 높이가 항상 같게
     fontWeight: '600',
     marginTop: 6,
   },
@@ -697,13 +706,13 @@ const styles = StyleSheet.create({
   },
   addButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
   addButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -734,8 +743,8 @@ const styles = StyleSheet.create({
   recreateButton: {
     marginTop: 12,
     alignSelf: 'flex-start',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 9,
   },
@@ -757,8 +766,8 @@ const styles = StyleSheet.create({
   },
   modalInput: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
@@ -777,9 +786,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: cardRadius,
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: border,
   },
   modalCancelText: {
     fontSize: 14,
@@ -788,8 +797,8 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: '#7C5CFC',
+    borderRadius: cardRadius,
+    backgroundColor: accent,
   },
   modalSaveText: {
     color: '#fff',

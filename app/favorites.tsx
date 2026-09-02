@@ -3,7 +3,9 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { deleteFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchSlots, SLOT_LABELS, type Slot } from '@/lib/routines';
@@ -139,7 +141,7 @@ function FavoriteRow({
   onDelete: () => void;
 }) {
   return (
-    <View style={styles.card}>
+    <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
       <View style={styles.cardInfo}>
         <Text style={styles.cardTitle}>
           {favorite.title}
@@ -158,7 +160,7 @@ function FavoriteRow({
           <Text style={styles.deleteButtonText}>삭제</Text>
         </Pressable>
       </View>
-    </View>
+    </ShadowCard>
   );
 }
 
@@ -176,8 +178,8 @@ const styles = StyleSheet.create({
     paddingBottom: 60,
   },
   addButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
     marginBottom: 16,
@@ -203,15 +205,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 8,
   },
+  cardOuter: {
+    marginBottom: 10,
+  },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
     padding: 14,
-    marginBottom: 10,
     gap: 10,
   },
   cardInfo: {
@@ -231,8 +232,8 @@ const styles = StyleSheet.create({
   },
   editButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingVertical: 8,
     paddingHorizontal: 12,
   },
@@ -242,7 +243,7 @@ const styles = StyleSheet.create({
   deleteButton: {
     borderWidth: 1,
     borderColor: '#FF6B6B',
-    borderRadius: 8,
+    borderRadius: cardRadius,
     paddingVertical: 8,
     paddingHorizontal: 12,
   },

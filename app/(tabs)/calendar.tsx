@@ -5,9 +5,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
+import {
+  accent,
+  border,
+  cardRadius,
+  fontDisplay,
+  fontMono,
+  statusDone,
+  statusMissed,
+  statusPartial,
+  textMuted,
+  withAlpha,
+} from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import {
   createMemo,
@@ -36,9 +49,9 @@ import {
 } from '@/lib/routines';
 
 const STATUS_COLORS: Record<DayStatus, string> = {
-  done: '#4CAF50',
-  partial: '#FFA726',
-  missed_required: '#FF6B6B',
+  done: statusDone,
+  partial: statusPartial,
+  missed_required: statusMissed,
 };
 
 const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
@@ -379,15 +392,14 @@ export default function CalendarScreen() {
           <View
             style={[
               styles.dayNumberWrap,
-              status ? { backgroundColor: STATUS_COLORS[status] } : null,
-              isSelected && { borderWidth: 2, borderColor: Colors[theme].tint },
+              status ? { backgroundColor: withAlpha(STATUS_COLORS[status], 0.35) } : null,
+              (isSelected || dateStr === todayStr) && { borderWidth: 2, borderColor: Colors[theme].tint },
             ]}>
             <Text
               style={[
                 styles.dayNumberText,
                 { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : Colors[theme].text },
-                status ? styles.dayNumberTextOnStatus : null,
-                dateStr === todayStr ? { color: Colors[theme].tint, fontWeight: '700' } : null,
+                dateStr === todayStr ? { fontWeight: '700' } : null,
               ]}>
               {date.day}
             </Text>
@@ -451,22 +463,19 @@ export default function CalendarScreen() {
       </View>
 
       {viewMode === 'week' && (
-        <View style={styles.streakBadgeRow}>
+        <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
           {bestStreakEver !== null && bestStreakEver > 0 ? (
-            <View style={styles.streakBadge}>
-              <Text style={styles.streakBadgeText}>🔥 역대 최고 {bestStreakEver}일</Text>
-            </View>
+            <>
+              <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
+              <View style={styles.streakHeroNumRow}>
+                <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
+                <Text style={styles.streakHeroUnit}>일 연속 · 역대 최고</Text>
+              </View>
+            </>
           ) : (
             <Text style={styles.streakBadgeEmptyText}>아직 최고 기록이 없어요</Text>
           )}
-          {/* TEMP TEST — 통계 탭 각 루틴 카드의 "현재 스트릭"과 하나씩 값이 맞는지 확인용,
-              확인 끝나면 지울 것. 최대값 하나만 보여줬더니 그 루틴이 아니면 체크해도 값이
-              안 바뀐 것처럼 보여서, 통계 탭과 똑같이 루틴별로 다 나열하도록 바꿈 */}
-          <Text style={styles.streakBadgeEmptyText}>
-            (테스트 {new Date(statsQuery.dataUpdatedAt).toLocaleTimeString()} 기준){' '}
-            {statsQuery.data?.routines.map((r) => `${r.routine.title}:${r.currentStreak}`).join(' / ') || '데이터 없음'}
-          </Text>
-        </View>
+        </ShadowCard>
       )}
 
       {viewMode === 'month' && (
@@ -730,19 +739,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginHorizontal: 20,
     marginBottom: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
     gap: 4,
   },
   viewModeTab: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: cardRadius,
     alignItems: 'center',
   },
   viewModeTabActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   viewModeTabText: {
     fontSize: 13,
@@ -753,21 +762,34 @@ const styles = StyleSheet.create({
     color: '#fff',
     opacity: 1,
   },
-  streakBadgeRow: {
-    alignItems: 'center',
+  streakHeroOuter: {
     marginHorizontal: 20,
     marginBottom: 10,
   },
-  streakBadge: {
-    backgroundColor: 'rgba(255, 152, 0, 0.12)',
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+  streakHero: {
+    padding: 14,
   },
-  streakBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#E67E00',
+  streakHeroLabel: {
+    fontFamily: fontMono,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    color: textMuted,
+  },
+  streakHeroNumRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+    marginTop: 6,
+  },
+  streakHeroNum: {
+    fontFamily: fontDisplay,
+    fontSize: 34,
+    color: accent,
+  },
+  streakHeroUnit: {
+    fontSize: 13,
+    color: textMuted,
   },
   streakBadgeEmptyText: {
     fontSize: 11,
@@ -785,7 +807,7 @@ const styles = StyleSheet.create({
   },
   weekArrow: {
     fontSize: 20,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '700',
     paddingHorizontal: 12,
   },
@@ -798,14 +820,14 @@ const styles = StyleSheet.create({
     minHeight: 200,
     marginRight: 6,
     borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingVertical: 8,
     paddingHorizontal: 6,
   },
   weekColumnToday: {
-    borderColor: '#7C5CFC',
-    backgroundColor: 'rgba(124, 92, 252, 0.06)',
+    borderColor: accent,
+    backgroundColor: 'rgba(169, 196, 224, 0.06)',
   },
   weekColumnHeader: {
     alignItems: 'center',
@@ -826,8 +848,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 4,
     marginBottom: 3,
-    borderRadius: 4,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
   },
   weekChipDone: {
     opacity: 0.5,
@@ -878,9 +900,6 @@ const styles = StyleSheet.create({
   },
   dayNumberText: {
     fontSize: 14,
-  },
-  dayNumberTextOnStatus: {
-    color: '#fff',
   },
   memoStack: {
     marginTop: 3,
@@ -937,13 +956,13 @@ const styles = StyleSheet.create({
   },
   diaryButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   diaryButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 12,
     fontWeight: '600',
   },
@@ -970,7 +989,7 @@ const styles = StyleSheet.create({
   },
   memoCard: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: cardRadius,
     padding: 10,
     marginBottom: 8,
     flexDirection: 'row',
@@ -1013,15 +1032,15 @@ const styles = StyleSheet.create({
   memoInput: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
     fontSize: 13,
   },
   memoAddButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 9,
   },
@@ -1045,15 +1064,15 @@ const styles = StyleSheet.create({
   detailCheckbox: {
     width: 24,
     height: 24,
-    borderRadius: 6,
+    borderRadius: cardRadius,
     borderWidth: 1.5,
-    borderColor: '#ccc',
+    borderColor: border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   detailCheckboxDone: {
-    backgroundColor: '#4CAF50',
-    borderColor: '#4CAF50',
+    backgroundColor: statusDone,
+    borderColor: statusDone,
   },
   detailCheckmark: {
     color: '#fff',
@@ -1073,6 +1092,7 @@ const styles = StyleSheet.create({
   detailTime: {
     fontSize: 12,
     opacity: 0.6,
+    fontFamily: fontMono,
   },
   detailValue: {
     fontSize: 13,
@@ -1083,7 +1103,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   closeButtonText: {
     color: '#fff',

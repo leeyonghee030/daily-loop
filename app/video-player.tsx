@@ -5,6 +5,7 @@ import { ActivityIndicator, Linking, Pressable, StyleSheet, useWindowDimensions 
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { Text, View } from '@/components/Themed';
+import { accent, cardRadius } from '@/constants/theme';
 import { extractYoutubeId, fetchVideoById } from '@/lib/videos';
 
 export default function VideoPlayerScreen() {
@@ -88,8 +89,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 10,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
@@ -98,7 +99,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   channelLink: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },

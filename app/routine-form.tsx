@@ -11,6 +11,7 @@ import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { VideoPicker } from '@/components/VideoPicker';
 import { clearPersistedLlmText } from '@/app/llm-input';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchVideoById, type Video } from '@/lib/videos';
@@ -22,7 +23,6 @@ import {
   updateRoutine,
   uploadRoutinePhoto,
   SLOT_LABELS,
-  slotTimeLabel,
   type BlockType,
   type RepeatType,
   type RoutineInput,
@@ -387,7 +387,7 @@ export default function RoutineFormScreen() {
       } else {
         await createRoutine(userId, input);
       }
-      if (saveAsFavorite) {
+      if (saveAsFavorite && repeatType !== 'once') {
         try {
           await createFavorite(userId, {
             title: input.title,
@@ -675,7 +675,7 @@ export default function RoutineFormScreen() {
           {slots.map((slot) => (
             <Chip
               key={slot.id}
-              label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
+              label={SLOT_LABELS[slot.slot_type]}
               selected={slotId === slot.id}
               onPress={() => setSlotId(slot.id)}
             />
@@ -792,7 +792,7 @@ export default function RoutineFormScreen() {
       ) : (
         <Pressable style={styles.videoConnectButton} onPress={pickPhoto} disabled={isPickingPhoto}>
           {isPickingPhoto ? (
-            <ActivityIndicator color="#7C5CFC" />
+            <ActivityIndicator color={accent} />
           ) : (
             <Text style={styles.videoConnectButtonText}>📷 사진 추가하기</Text>
           )}
@@ -804,17 +804,20 @@ export default function RoutineFormScreen() {
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
-      <View style={styles.switchRow}>
-        <View style={styles.switchRowLabelColumn}>
-          <Text style={styles.label}>즐겨찾기에 추가</Text>
-          <Text style={styles.favoriteHint}>켜두면 이 내용을 템플릿으로 저장해서 다음에 또 빠르게 추가할 수 있어요.</Text>
+      {/* 1회성 루틴은 그날 한 번만 쓰는 일정이라 "재사용할 템플릿"인 즐겨찾기와 개념이 맞지 않아 제외 */}
+      {repeatType !== 'once' && (
+        <View style={styles.switchRow}>
+          <View style={styles.switchRowLabelColumn}>
+            <Text style={styles.label}>즐겨찾기에 추가</Text>
+            <Text style={styles.favoriteHint}>켜두면 이 내용을 템플릿으로 저장해서 다음에 또 빠르게 추가할 수 있어요.</Text>
+          </View>
+          <Pressable
+            style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
+            onPress={() => setSaveAsFavorite((prev) => !prev)}>
+            <Text style={styles.starButtonText}>{saveAsFavorite ? '⭐' : '☆'}</Text>
+          </Pressable>
         </View>
-        <Pressable
-          style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
-          onPress={() => setSaveAsFavorite((prev) => !prev)}>
-          <Text style={styles.starButtonText}>{saveAsFavorite ? '⭐' : '☆'}</Text>
-        </Pressable>
-      </View>
+      )}
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
@@ -885,13 +888,13 @@ const styles = StyleSheet.create({
   },
   favoriteButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 10,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 12,
     alignItems: 'center',
   },
   favoriteButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -906,15 +909,15 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   favoriteActionButton: {
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   favoriteActionButtonOutline: {
     backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
   },
   favoriteActionText: {
     color: '#fff',
@@ -922,27 +925,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   favoriteActionTextOutline: {
-    color: '#7C5CFC',
+    color: accent,
   },
   starButton: {
     width: 36,
     height: 36,
     borderRadius: 18,
     borderWidth: 1.5,
-    borderColor: '#ccc',
+    borderColor: border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   starButtonActive: {
-    borderColor: '#7C5CFC',
+    borderColor: accent,
   },
   starButtonText: {
     fontSize: 18,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
@@ -955,8 +958,8 @@ const styles = StyleSheet.create({
   },
   timeButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
@@ -969,8 +972,8 @@ const styles = StyleSheet.create({
   },
   spinnerDoneButton: {
     alignSelf: 'center',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 24,
     paddingVertical: 10,
     marginTop: 4,
@@ -992,8 +995,8 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     marginTop: 32,
-    backgroundColor: '#7C5CFC',
-    borderRadius: 10,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
   },
@@ -1007,7 +1010,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center',
     backgroundColor: '#FF6B6B',
-    borderRadius: 10,
+    borderRadius: cardRadius,
   },
   deleteButtonText: {
     color: '#fff',
@@ -1015,13 +1018,13 @@ const styles = StyleSheet.create({
   },
   videoConnectButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 10,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingVertical: 12,
     alignItems: 'center',
   },
   videoConnectButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -1030,15 +1033,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 8,
   },
   selectedVideoThumb: {
     width: 60,
     height: 34,
-    borderRadius: 6,
-    backgroundColor: '#eee',
+    borderRadius: cardRadius,
+    backgroundColor: border,
   },
   selectedVideoTitle: {
     flex: 1,
@@ -1056,7 +1059,7 @@ const styles = StyleSheet.create({
   selectedPhotoThumb: {
     width: 48,
     height: 48,
-    borderRadius: 8,
-    backgroundColor: '#eee',
+    borderRadius: cardRadius,
+    backgroundColor: border,
   },
 });

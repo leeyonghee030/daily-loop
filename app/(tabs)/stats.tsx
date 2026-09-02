@@ -2,8 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
+import Svg, { Circle } from 'react-native-svg';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius, fontDisplay, fontMono, textMuted } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import {
   emojiForStreak,
@@ -26,6 +29,43 @@ function rateValue(completed: number, scheduled: number): number {
 }
 
 const SUMMARY_NOTE_SEEN_KEY = 'stats_summary_note_seen';
+const RING_SIZE = 76;
+const RING_STROKE = 8;
+
+// 이번 주/월 수행률을 도넛 링으로 보여준다 — 퍼센트 숫자는 SVG 밖에서 절대위치로 겹쳐서
+// 일반 Text로 그리므로(목업과 동일한 방식) 폰트를 자유롭게 지정할 수 있다
+function CompletionRing({ ratio }: { ratio: number }) {
+  const radius = (RING_SIZE - RING_STROKE) / 2;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <View style={styles.ringWrap}>
+      <Svg width={RING_SIZE} height={RING_SIZE}>
+        <Circle
+          cx={RING_SIZE / 2}
+          cy={RING_SIZE / 2}
+          r={radius}
+          stroke={border}
+          strokeWidth={RING_STROKE}
+          fill="none"
+        />
+        <Circle
+          cx={RING_SIZE / 2}
+          cy={RING_SIZE / 2}
+          r={radius}
+          stroke={accent}
+          strokeWidth={RING_STROKE}
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - ratio)}
+          strokeLinecap="round"
+          rotation={-90}
+          origin={`${RING_SIZE / 2}, ${RING_SIZE / 2}`}
+        />
+      </Svg>
+      <Text style={styles.ringPct}>{Math.round(ratio * 100)}%</Text>
+    </View>
+  );
+}
 
 export default function StatsScreen() {
   const { session } = useAuth();
@@ -176,15 +216,15 @@ export default function StatsScreen() {
         </Pressable>
       </View>
 
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryLabel}>{period === 'weekly' ? '최근 7일 수행률' : '최근 30일 수행률'}</Text>
-        <Text style={styles.summaryValue}>
-          {formatRate(summary[period].completed, summary[period].scheduled)}
-        </Text>
-        <Text style={styles.summarySub}>
-          {summary[period].completed}/{summary[period].scheduled} 완료
-        </Text>
-      </View>
+      <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
+        <View style={styles.summaryTextCol}>
+          <Text style={styles.summaryLabel}>{period === 'weekly' ? '최근 7일 수행률' : '최근 30일 수행률'}</Text>
+          <Text style={styles.summaryHeadline}>
+            {summary[period].completed}/{summary[period].scheduled} 완료
+          </Text>
+        </View>
+        <CompletionRing ratio={rateValue(summary[period].completed, summary[period].scheduled)} />
+      </ShadowCard>
       {showSummaryNote && (
         <Text style={styles.summaryNote}>삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요</Text>
       )}
@@ -258,19 +298,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginHorizontal: 20,
     marginBottom: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
     gap: 4,
   },
   periodTab: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: cardRadius,
     alignItems: 'center',
   },
   periodTabActive: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   periodTabText: {
     fontSize: 13,
@@ -281,30 +321,42 @@ const styles = StyleSheet.create({
     color: '#fff',
     opacity: 1,
   },
-  summaryCard: {
+  summaryCardOuter: {
     marginHorizontal: 20,
     marginBottom: 16,
+  },
+  summaryCard: {
     padding: 16,
-    borderRadius: 12,
-    backgroundColor: '#7C5CFC',
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 16,
+  },
+  summaryTextCol: {
+    flex: 1,
   },
   summaryLabel: {
-    color: '#fff',
-    fontSize: 13,
-    opacity: 0.85,
+    fontFamily: fontMono,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: textMuted,
   },
-  summaryValue: {
-    color: '#fff',
-    fontSize: 32,
-    fontWeight: 'bold',
-    marginTop: 4,
+  summaryHeadline: {
+    fontFamily: fontDisplay,
+    fontSize: 19,
+    marginTop: 6,
   },
-  summarySub: {
-    color: '#fff',
-    fontSize: 12,
-    opacity: 0.85,
-    marginTop: 2,
+  ringWrap: {
+    width: RING_SIZE,
+    height: RING_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  ringPct: {
+    position: 'absolute',
+    fontFamily: fontDisplay,
+    fontSize: 17,
   },
   summaryNote: {
     fontSize: 11,
@@ -322,8 +374,8 @@ const styles = StyleSheet.create({
   },
   card: {
     borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 12,
+    borderColor: border,
+    borderRadius: cardRadius,
     padding: 14,
     marginBottom: 12,
   },
@@ -348,8 +400,8 @@ const styles = StyleSheet.create({
   },
   streakChip: {
     flex: 1,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 92, 252, 0.08)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
@@ -377,18 +429,18 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(124, 92, 252, 0.12)',
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.12)',
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    borderRadius: 4,
-    backgroundColor: '#7C5CFC',
+    borderRadius: cardRadius,
+    backgroundColor: accent,
   },
   hiddenSection: {
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: border,
     paddingHorizontal: 20,
   },
   hiddenList: {
@@ -406,7 +458,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 10,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: border,
   },
   hiddenRowTitle: {
     fontSize: 13,
@@ -414,7 +466,7 @@ const styles = StyleSheet.create({
   },
   unhideLink: {
     fontSize: 12,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
 });

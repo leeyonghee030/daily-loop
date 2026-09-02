@@ -205,11 +205,11 @@ export async function fetchRecommendedVideosByCategory(categoryId: number): Prom
   return data ?? [];
 }
 
-export async function addRecommendedVideoToMyGrid(userId: string, video: Video): Promise<Video> {
+export async function addRecommendedVideoToMyGrid(userId: string, video: Video, categoryId: number): Promise<Video> {
   const { data, error } = await supabase
     .from('videos')
     .insert({
-      category_id: video.category_id,
+      category_id: categoryId,
       title: video.title,
       youtube_url: video.youtube_url,
       thumbnail_url: video.thumbnail_url,

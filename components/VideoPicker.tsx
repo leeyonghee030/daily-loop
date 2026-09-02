@@ -2,6 +2,7 @@ import { Modal, Pressable, StyleSheet, View as RNView } from 'react-native';
 
 import { CategoryVideoGrid } from '@/components/CategoryVideoGrid';
 import { Text, View } from '@/components/Themed';
+import { accent } from '@/constants/theme';
 import type { Video } from '@/lib/videos';
 
 export function VideoPicker({
@@ -59,7 +60,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   closeText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 14,
   },
 });

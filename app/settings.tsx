@@ -4,7 +4,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import {
   requestNotificationPermissions,
@@ -143,12 +145,28 @@ export default function SettingsScreen() {
     saveSlot({ ...slot, memo_notify_enabled: value });
   }
 
+  // 시작 시각이 바뀌면 끝 시각도 항상 시작 시각 +1시간으로 맞춰준다(routine-form.tsx와 동일한 규칙) —
+  // 안 그러면 시작을 끝보다 늦은 시각으로 옮겼을 때 "끝이 시작보다 이전 시각"으로 보이는 문제가 생김
+  function applySlotStartTime(slot: Slot, newStart: Date) {
+    const newEnd = new Date(newStart.getTime() + 60 * 60 * 1000);
+    saveSlot({ ...slot, start_time: dateToTimeString(newStart), end_time: dateToTimeString(newEnd) });
+  }
+
+  // 끝 시각은 시작 시각보다 늦어야만 반영한다. 자정(00:00)은 시계로 24:00을 고를 수 없어
+  // 저장상 00:00으로 들어오는 경우라 예외로 허용한다(routine-form.tsx와 동일한 규칙)
+  function applySlotEndTime(slot: Slot, newEnd: Date) {
+    const start = timeToDate(slot.start_time);
+    const isMidnight = newEnd.getHours() === 0 && newEnd.getMinutes() === 0;
+    if (!isMidnight && newEnd.getTime() <= start.getTime()) return;
+    saveSlot({ ...slot, end_time: dateToTimeString(newEnd) });
+  }
+
   function handleTimeChange(slot: Slot, field: 'start' | 'end') {
     return (event: DateTimePickerEvent, date?: Date) => {
       setPickerFor(null);
       if (event.type !== 'set' || !date) return;
-      const timeStr = dateToTimeString(date);
-      saveSlot(field === 'start' ? { ...slot, start_time: timeStr } : { ...slot, end_time: timeStr });
+      if (field === 'start') applySlotStartTime(slot, date);
+      else applySlotEndTime(slot, date);
     };
   }
 
@@ -166,8 +184,8 @@ export default function SettingsScreen() {
   function confirmSpinnerTime(slot: Slot, field: 'start' | 'end') {
     const picked = pickerDraftRef.current;
     if (picked) {
-      const timeStr = dateToTimeString(picked);
-      saveSlot(field === 'start' ? { ...slot, start_time: timeStr } : { ...slot, end_time: timeStr });
+      if (field === 'start') applySlotStartTime(slot, picked);
+      else applySlotEndTime(slot, picked);
     }
     pickerDraftRef.current = null;
     setPickerOpenValue(null);
@@ -215,7 +233,7 @@ export default function SettingsScreen() {
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
       {slots.map((slot) => (
-        <View key={slot.id} style={styles.slotCard}>
+        <ShadowCard key={slot.id} style={styles.slotCardOuter} contentStyle={styles.slotCard}>
           <View style={styles.slotHeaderRow}>
             <Text style={styles.slotLabel}>{SLOT_LABELS[slot.slot_type]}</Text>
             <Switch value={slot.notify_enabled} onValueChange={(v) => handleToggleNotify(slot, v)} />
@@ -300,7 +318,7 @@ export default function SettingsScreen() {
               )}
             </View>
           )}
-        </View>
+        </ShadowCard>
       ))}
 
       <Text style={styles.sectionTitle}>계정</Text>
@@ -355,12 +373,11 @@ const styles = StyleSheet.create({
     color: '#FF6B6B',
     marginBottom: 12,
   },
-  slotCard: {
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
-    padding: 12,
+  slotCardOuter: {
     marginBottom: 10,
+  },
+  slotCard: {
+    padding: 12,
   },
   slotHeaderRow: {
     flexDirection: 'row',
@@ -380,22 +397,22 @@ const styles = StyleSheet.create({
   },
   timeButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: border,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   modeToggleButton: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
     marginLeft: 4,
   },
   modeToggleButtonText: {
     fontSize: 12,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
   hintToggle: {
@@ -415,8 +432,8 @@ const styles = StyleSheet.create({
   },
   spinnerDoneButton: {
     alignSelf: 'center',
-    backgroundColor: '#7C5CFC',
-    borderRadius: 8,
+    backgroundColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 24,
     paddingVertical: 10,
     marginTop: 4,
@@ -430,7 +447,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: border,
   },
   memoNotifyHeaderRow: {
     flexDirection: 'row',
@@ -459,7 +476,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: '#FF6B6B',
-    borderRadius: 8,
+    borderRadius: cardRadius,
   },
   signOutText: {
     color: '#FF6B6B',

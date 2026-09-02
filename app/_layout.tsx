@@ -1,3 +1,5 @@
+import { BricolageGrotesque_700Bold, BricolageGrotesque_800ExtraBold } from '@expo-google-fonts/bricolage-grotesque';
+import { SpaceMono_400Regular, SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
@@ -11,7 +13,19 @@ import 'react-native-reanimated';
 
 import { View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
+import Colors from '@/constants/Colors';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+
+// react-navigation의 기본 테마는 헤더바/탭바 배경을 자체 회색으로 칠해서, 우리 Colors.ts
+// 배경색을 바꿔도 그 부분만 예전 색 그대로 남아있었다 — 우리 배경색으로 맞춰서 통일한다
+const AppLightTheme = {
+  ...DefaultTheme,
+  colors: { ...DefaultTheme.colors, background: Colors.light.background, card: Colors.light.background },
+};
+const AppDarkTheme = {
+  ...DarkTheme,
+  colors: { ...DarkTheme.colors, background: Colors.dark.background, card: Colors.dark.background },
+};
 import { persistOptions, queryClient } from '@/lib/query-client';
 
 export {
@@ -28,8 +42,11 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
     ...FontAwesome.font,
+    BricolageGrotesque_700Bold,
+    BricolageGrotesque_800ExtraBold,
+    SpaceMono_400Regular,
+    SpaceMono_700Bold,
   });
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
@@ -77,7 +94,7 @@ function RootLayoutNav() {
   }, [session, isLoading, segments, router]);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={colorScheme === 'dark' ? AppDarkTheme : AppLightTheme}>
       {isLoading ? (
         <View style={styles.loading}>
           <ActivityIndicator />
@@ -105,6 +122,7 @@ function RootLayoutNav() {
             name="diary-form"
             options={{ presentation: 'modal', title: '일기' }}
           />
+          <Stack.Screen name="llm-input" options={{ title: '' }} />
           <Stack.Screen name="videos" options={{ title: '영상' }} />
           <Stack.Screen
             name="video-player"

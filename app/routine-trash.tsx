@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { accent, border, cardRadius } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import {
   fetchDeletedPresets,
@@ -267,70 +269,75 @@ export default function RoutineTrashScreen() {
           const routines = groupedByPreset.get(preset.id) ?? [];
           const isSelected = selectedPresetIds.has(preset.id);
           return (
-            <Pressable
+            <ShadowCard
               key={preset.id}
-              style={[styles.presetCard, selectMode && isSelected && styles.cardSelected]}
-              disabled={!selectMode}
-              onPress={() => togglePresetSelected(preset.id)}>
-              <View style={styles.cardHeaderRow}>
-                {selectMode && (
-                  <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
-                    {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+              style={styles.cardOuter}
+              contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
+              <Pressable
+                style={styles.presetCard}
+                disabled={!selectMode}
+                onPress={() => togglePresetSelected(preset.id)}>
+                <View style={styles.cardHeaderRow}>
+                  {selectMode && (
+                    <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
+                      {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+                    </View>
+                  )}
+                  <View style={styles.cardHeaderText}>
+                    <Text style={styles.presetTitle}>📦 {preset.name}</Text>
+                    <Text style={styles.presetMeta}>
+                      루틴 {routines.length}개 · {daysUntilPurge(preset.deleted_at!)}일 후 완전 삭제
+                    </Text>
                   </View>
-                )}
-                <View style={styles.cardHeaderText}>
-                  <Text style={styles.presetTitle}>📦 {preset.name}</Text>
-                  <Text style={styles.presetMeta}>
-                    루틴 {routines.length}개 · {daysUntilPurge(preset.deleted_at!)}일 후 완전 삭제
-                  </Text>
                 </View>
-              </View>
-              {routines.map((routine) => (
-                <Text key={routine.id} style={styles.presetRoutineTitle} numberOfLines={1}>
-                  · {routine.title}
-                </Text>
-              ))}
-              {!selectMode && (
-                <Pressable
-                  style={styles.restoreButton}
-                  disabled={busyKey === preset.id}
-                  onPress={() => handleRestorePreset(preset)}>
-                  <Text style={styles.restoreButtonText}>모음집 복구</Text>
-                </Pressable>
-              )}
-            </Pressable>
+                {routines.map((routine) => (
+                  <Text key={routine.id} style={styles.presetRoutineTitle} numberOfLines={1}>
+                    · {routine.title}
+                  </Text>
+                ))}
+                {!selectMode && (
+                  <Pressable
+                    style={styles.restoreButton}
+                    disabled={busyKey === preset.id}
+                    onPress={() => handleRestorePreset(preset)}>
+                    <Text style={styles.restoreButtonText}>모음집 복구</Text>
+                  </Pressable>
+                )}
+              </Pressable>
+            </ShadowCard>
           );
         })}
 
         {individualRoutines.map((routine) => {
           const isSelected = selectedRoutineIds.has(routine.id);
           return (
-            <Pressable
+            <ShadowCard
               key={routine.id}
-              style={[styles.row, selectMode && isSelected && styles.cardSelected]}
-              disabled={!selectMode}
-              onPress={() => toggleRoutineSelected(routine.id)}>
-              {selectMode && (
-                <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
-                  {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+              style={styles.cardOuter}
+              contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
+              <Pressable style={styles.row} disabled={!selectMode} onPress={() => toggleRoutineSelected(routine.id)}>
+                {selectMode && (
+                  <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
+                    {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+                  </View>
+                )}
+                <View style={styles.rowInfo}>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {routine.title}
+                    {routine.preset?.name ? ` · ${routine.preset.name}` : ''}
+                  </Text>
+                  <Text style={styles.rowMeta}>{timeLabel(routine)}</Text>
                 </View>
-              )}
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowTitle} numberOfLines={1}>
-                  {routine.title}
-                  {routine.preset?.name ? ` · ${routine.preset.name}` : ''}
-                </Text>
-                <Text style={styles.rowMeta}>{timeLabel(routine)}</Text>
-              </View>
-              {!selectMode && (
-                <Pressable
-                  style={styles.restoreButtonSmall}
-                  disabled={busyKey === routine.id}
-                  onPress={() => handleRestoreRoutine(routine)}>
-                  <Text style={styles.restoreButtonSmallText}>복구</Text>
-                </Pressable>
-              )}
-            </Pressable>
+                {!selectMode && (
+                  <Pressable
+                    style={styles.restoreButtonSmall}
+                    disabled={busyKey === routine.id}
+                    onPress={() => handleRestoreRoutine(routine)}>
+                    <Text style={styles.restoreButtonSmallText}>복구</Text>
+                  </Pressable>
+                )}
+              </Pressable>
+            </ShadowCard>
           );
         })}
       </ScrollView>
@@ -373,7 +380,7 @@ const styles = StyleSheet.create({
   },
   toolbarButtonText: {
     fontSize: 13,
-    color: '#7C5CFC',
+    color: accent,
     fontWeight: '600',
   },
   desc: {
@@ -391,16 +398,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
   },
-  presetCard: {
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
-    padding: 14,
+  cardOuter: {
     marginBottom: 12,
   },
+  presetCard: {
+    padding: 14,
+  },
   cardSelected: {
-    borderColor: '#7C5CFC',
-    backgroundColor: 'rgba(124, 92, 252, 0.06)',
+    borderColor: accent,
+    backgroundColor: 'rgba(169, 196, 224, 0.15)',
   },
   cardHeaderRow: {
     flexDirection: 'row',
@@ -413,14 +419,14 @@ const styles = StyleSheet.create({
   checkboxBox: {
     width: 20,
     height: 20,
-    borderRadius: 5,
+    borderRadius: cardRadius,
     borderWidth: 1.5,
-    borderColor: '#7C5CFC',
+    borderColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxBoxChecked: {
-    backgroundColor: '#7C5CFC',
+    backgroundColor: accent,
   },
   checkboxMark: {
     color: '#fff',
@@ -446,13 +452,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     alignSelf: 'flex-start',
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   restoreButtonText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -461,11 +467,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
     padding: 12,
-    marginBottom: 10,
   },
   rowInfo: {
     flex: 1,
@@ -480,13 +482,13 @@ const styles = StyleSheet.create({
   },
   restoreButtonSmall: {
     borderWidth: 1,
-    borderColor: '#7C5CFC',
-    borderRadius: 8,
+    borderColor: accent,
+    borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
   restoreButtonSmallText: {
-    color: '#7C5CFC',
+    color: accent,
     fontSize: 13,
     fontWeight: '600',
   },
