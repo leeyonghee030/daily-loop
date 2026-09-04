@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius, textMuted } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import {
   fetchDeletedPresets,
   hardDeletePreset,
@@ -46,6 +49,9 @@ export default function RoutineTrashScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const trashQueryKey = ['deleted-routines', userId] as const;
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -284,7 +290,10 @@ export default function RoutineTrashScreen() {
                     </View>
                   )}
                   <View style={styles.cardHeaderText}>
-                    <Text style={styles.presetTitle}>📦 {preset.name}</Text>
+                    <View style={styles.presetTitleRow}>
+                      <Ionicons name="albums-outline" size={13} color={textMuted} />
+                      <Text style={styles.presetTitle}>{preset.name}</Text>
+                    </View>
                     <Text style={styles.presetMeta}>
                       루틴 {routines.length}개 · {daysUntilPurge(preset.deleted_at!)}일 후 완전 삭제
                     </Text>
@@ -345,7 +354,8 @@ export default function RoutineTrashScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   screen: {
     flex: 1,
   },
@@ -433,9 +443,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
+  presetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
   presetTitle: {
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
     fontWeight: '600',
+    fontFamily: fontKorean.fontFamily,
   },
   presetMeta: {
     fontSize: 12,
@@ -443,10 +460,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   presetRoutineTitle: {
-    fontSize: 13,
+    fontSize: 13 + fontKorean.sizeAdjust,
+    lineHeight: 18 + fontKorean.sizeAdjust,
     opacity: 0.75,
     marginTop: 8,
     marginBottom: 2,
+    fontFamily: fontKorean.fontFamily,
   },
   restoreButton: {
     marginTop: 8,
@@ -473,7 +492,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   rowTitle: {
-    fontSize: 14,
+    fontSize: 14 + fontKorean.sizeAdjust,
+    lineHeight: 19 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   rowMeta: {
     fontSize: 12,
@@ -492,4 +513,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-});
+  });
+}

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,7 +14,8 @@ import {
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import {
   addRecommendedVideoToMyGrid,
@@ -28,6 +29,8 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
   const { session } = useAuth();
   const userId = session?.user.id;
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const styles = useMemo(() => createStyles(accent), [accent]);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
@@ -164,7 +167,8 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -274,4 +278,5 @@ const styles = StyleSheet.create({
   categoryOptionText: {
     fontSize: 15,
   },
-});
+  });
+}

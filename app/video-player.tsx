@@ -1,17 +1,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { Text, View } from '@/components/Themed';
-import { accent, cardRadius } from '@/constants/theme';
+import { cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { extractYoutubeId, fetchVideoById } from '@/lib/videos';
 
 export default function VideoPlayerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [loadFailed, setLoadFailed] = useState(false);
   const { width } = useWindowDimensions();
+  const accent = useAccentColor();
+  const styles = useMemo(() => createStyles(accent), [accent]);
 
   // routine-form의 video 조회와 같은 쿼리 키를 써서 캐시를 공유한다
   const videoQuery = useQuery({
@@ -63,47 +66,49 @@ export default function VideoPlayerScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  player: {
-    width: '100%',
-  },
-  info: {
-    padding: 20,
-    paddingBottom: 48,
-  },
-  title: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
-  },
-  channelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: accent,
-    borderRadius: cardRadius,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  channelName: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  channelLink: {
-    color: accent,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  errorText: {
-    opacity: 0.5,
-  },
-});
+function createStyles(accent: string) {
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+    },
+    centered: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    player: {
+      width: '100%',
+    },
+    info: {
+      padding: 20,
+      paddingBottom: 48,
+    },
+    title: {
+      fontSize: 16,
+      fontWeight: '600',
+      marginBottom: 12,
+    },
+    channelRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderWidth: 1,
+      borderColor: accent,
+      borderRadius: cardRadius,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+    },
+    channelName: {
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    channelLink: {
+      color: accent,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    errorText: {
+      opacity: 0.5,
+    },
+  });
+}

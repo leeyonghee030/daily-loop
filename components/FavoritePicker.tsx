@@ -1,10 +1,13 @@
 import { useRouter } from 'expo-router';
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View as RNView } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { Text, View } from '@/components/Themed';
-import { accent, border } from '@/constants/theme';
+import { border } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import type { Favorite } from '@/lib/favorites';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { SLOT_LABELS, type Slot } from '@/lib/routines';
 
 function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
@@ -32,13 +35,19 @@ export function FavoritePicker({
   renderActions: (favorite: Favorite) => ReactNode;
 }) {
   const router = useRouter();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <RNView style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.headerRow}>
-            <Text style={styles.title}>⭐ 즐겨찾기</Text>
+            <View style={styles.titleRow}>
+              <Ionicons name="star-outline" size={16} color={accent} />
+              <Text style={styles.title}>즐겨찾기</Text>
+            </View>
             <Pressable onPress={onClose}>
               <Text style={styles.closeText}>닫기</Text>
             </Pressable>
@@ -77,7 +86,8 @@ export function FavoritePicker({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -94,6 +104,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   title: {
     fontSize: 17,
@@ -125,7 +140,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   rowTitle: {
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   rowMeta: {
     fontSize: 12,
@@ -144,4 +161,5 @@ const styles = StyleSheet.create({
     color: accent,
     fontSize: 13,
   },
-});
+  });
+}

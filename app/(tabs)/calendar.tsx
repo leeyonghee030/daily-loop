@@ -4,13 +4,13 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import {
-  accent,
   border,
   cardRadius,
   fontDisplay,
@@ -21,7 +21,9 @@ import {
   textMuted,
   withAlpha,
 } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import {
   createMemo,
   deleteMemo,
@@ -98,6 +100,9 @@ export default function CalendarScreen() {
   const theme = useColorScheme() ?? 'light';
   const router = useRouter();
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const today = new Date();
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
@@ -387,13 +392,13 @@ export default function CalendarScreen() {
       return (
         <Pressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
           <View style={styles.diaryIconSlot}>
-            {monthDiaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
+            {monthDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
           </View>
           <View
             style={[
               styles.dayNumberWrap,
               status ? { backgroundColor: withAlpha(STATUS_COLORS[status], 0.35) } : null,
-              (isSelected || dateStr === todayStr) && { borderWidth: 2, borderColor: Colors[theme].tint },
+              (isSelected || dateStr === todayStr) && { borderWidth: 2, borderColor: accent },
             ]}>
             <Text
               style={[
@@ -420,7 +425,7 @@ export default function CalendarScreen() {
         </Pressable>
       );
     },
-    [monthQuery.data, monthMemosByDate, monthDiaryDates, selectedDate, theme, todayStr]
+    [monthQuery.data, monthMemosByDate, monthDiaryDates, selectedDate, theme, todayStr, accent, styles]
   );
 
   const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
@@ -495,8 +500,8 @@ export default function CalendarScreen() {
             dayTextColor: Colors[theme].text,
             monthTextColor: Colors[theme].text,
             textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
-            arrowColor: Colors[theme].tint,
-            todayTextColor: Colors[theme].tint,
+            arrowColor: accent,
+            todayTextColor: accent,
           }}
         />
       )}
@@ -538,7 +543,7 @@ export default function CalendarScreen() {
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
                       <View style={styles.diaryIconSlot}>
-                        {weekDiaryDates.has(dateStr) && <Text style={styles.diaryIcon}>📖</Text>}
+                        {weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
                       </View>
                       <Text style={styles.weekRowWeekday}>{WEEKDAY_LABELS[dow]}</Text>
                       <Text style={styles.weekRowDay}>{dayNum}</Text>
@@ -611,13 +616,17 @@ export default function CalendarScreen() {
                   setSelectedDate(null);
                   if (date) router.push({ pathname: '/diary-form', params: { date } });
                 }}>
-                <Text style={styles.diaryButtonText}>📔 일기 보기</Text>
+                <Ionicons name="book-outline" size={13} color={accent} />
+                <Text style={styles.diaryButtonText}>일기 보기</Text>
               </Pressable>
             </View>
             {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
             <ScrollView style={styles.detailList} keyboardShouldPersistTaps="handled">
-              <Text style={styles.sectionLabel}>📌 메모</Text>
+              <View style={styles.sectionLabelRow}>
+                <Ionicons name="bookmark-outline" size={13} color={Colors[theme].text} style={{ opacity: 0.7 }} />
+                <Text style={styles.sectionLabel}>메모</Text>
+              </View>
               {selectedMemos.length === 0 ? (
                 <Text style={styles.memoEmptyText}>메모 없음</Text>
               ) : (
@@ -730,15 +739,16 @@ export default function CalendarScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 60,
+    paddingTop: 39,
   },
   viewModeTabs: {
     flexDirection: 'row',
     marginHorizontal: 20,
-    marginBottom: 8,
+    marginBottom: 31,
     borderRadius: cardRadius,
     backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
@@ -764,7 +774,7 @@ const styles = StyleSheet.create({
   },
   streakHeroOuter: {
     marginHorizontal: 20,
-    marginBottom: 10,
+    marginBottom: 20,
   },
   streakHero: {
     padding: 14,
@@ -844,7 +854,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   weekChip: {
-    fontSize: 11,
+    fontSize: 11 + fontKorean.sizeAdjust,
+    lineHeight: 15 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
     paddingVertical: 4,
     paddingHorizontal: 4,
     marginBottom: 3,
@@ -955,6 +967,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   diaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
@@ -976,11 +991,16 @@ const styles = StyleSheet.create({
   detailList: {
     flex: 1,
   },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 8,
+  },
   sectionLabel: {
     fontSize: 13,
     fontWeight: '700',
     opacity: 0.7,
-    marginBottom: 8,
   },
   memoEmptyText: {
     fontSize: 12,
@@ -999,11 +1019,14 @@ const styles = StyleSheet.create({
   },
   memoCardText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 13 + fontKorean.sizeAdjust,
+    lineHeight: 18 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   memoCardActions: {
     flexDirection: 'row',
     gap: 10,
+    backgroundColor: 'transparent',
   },
   memoActionText: {
     fontSize: 12,
@@ -1036,7 +1059,9 @@ const styles = StyleSheet.create({
     borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    fontSize: 13,
+    fontSize: 13 + fontKorean.sizeAdjust,
+    lineHeight: 18 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   memoAddButton: {
     backgroundColor: accent,
@@ -1083,7 +1108,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   detailTitle: {
-    fontSize: 14,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   detailRequired: {
     fontSize: 12,
@@ -1109,4 +1136,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-});
+  });
+}

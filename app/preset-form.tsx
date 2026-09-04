@@ -1,14 +1,17 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { fetchFavorites, type Favorite } from '@/lib/favorites';
 import {
   applyNewPresetItems,
@@ -73,6 +76,9 @@ export default function PresetFormScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const userId = session?.user.id;
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -618,7 +624,8 @@ export default function PresetFormScreen() {
         <Pressable
           style={[styles.addItemButton, styles.addItemButtonFlex]}
           onPress={() => setShowFavoritePicker(true)}>
-          <Text style={styles.addItemButtonText}>⭐ 즐겨찾기에서 추가</Text>
+          <Ionicons name="star-outline" size={14} color={accent} />
+          <Text style={styles.addItemButtonText}>즐겨찾기에서 추가</Text>
         </Pressable>
       </View>
 
@@ -653,7 +660,8 @@ export default function PresetFormScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -684,7 +692,9 @@ const styles = StyleSheet.create({
     borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   chipRow: {
     flexDirection: 'row',
@@ -742,7 +752,9 @@ const styles = StyleSheet.create({
     borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    fontSize: 14,
+    fontSize: 14 + fontKorean.sizeAdjust,
+    lineHeight: 19 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   removeItemText: {
     color: '#FF6B6B',
@@ -775,7 +787,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   collapsedItemTitle: {
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   collapsedItemMeta: {
     fontSize: 12,
@@ -791,6 +805,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   addItemButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 5,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
@@ -837,4 +854,5 @@ const styles = StyleSheet.create({
   deleteButtonText: {
     color: '#FF6B6B',
   },
-});
+  });
+}

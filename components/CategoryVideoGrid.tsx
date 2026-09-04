@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,10 +12,12 @@ import {
   TextInput,
   View as RNView,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
@@ -50,6 +52,8 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   const { session } = useAuth();
   const userId = session?.user.id;
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const styles = useMemo(() => createStyles(accent), [accent]);
   const categoriesQueryKey = ['video-categories', userId] as const;
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -347,12 +351,14 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         )}
         {selectedCategory?.user_id === userId && (
           <Pressable style={styles.categoryActionButton} onPress={openRenameCategoryModal}>
-            <Text style={styles.categoryActionText}>✎ 이름 수정</Text>
+            <Ionicons name="create-outline" size={14} color={accent} />
+            <Text style={styles.categoryActionText}>이름 수정</Text>
           </Pressable>
         )}
         {selectedCategory && (
           <Pressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
-            <Text style={styles.categoryActionTextDanger}>🗑 삭제</Text>
+            <Ionicons name="trash-outline" size={14} color="#FF6B6B" />
+            <Text style={styles.categoryActionTextDanger}>삭제</Text>
           </Pressable>
         )}
         <Pressable style={styles.trashLinkButton} onPress={openTrash}>
@@ -529,7 +535,8 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -578,6 +585,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   categoryActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingVertical: 6,
     paddingHorizontal: 4,
   },
@@ -805,4 +815,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-});
+  });
+}

@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius, textMuted } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { deleteFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchSlots, SLOT_LABELS, type Slot } from '@/lib/routines';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
@@ -24,6 +27,9 @@ export default function FavoritesScreen() {
   const userId = session?.user.id;
   const router = useRouter();
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   // 즐겨찾기/모음집 폼 등 여러 화면이 fetchSlots(userId)를 똑같이 부르므로, 쿼리 키를
   // 'slots'로 통일해서 어느 화면에서 먼저 받아오든 서로 캐시를 공유하게 한다
   const favoritesQueryKey = ['favorites', userId] as const;
@@ -94,7 +100,10 @@ export default function FavoritesScreen() {
 
       {checkFavorites.length > 0 && (
         <>
-          <Text style={styles.sectionLabel}>✓ 체크형</Text>
+          <View style={styles.sectionLabelRow}>
+            <Ionicons name="checkmark-circle-outline" size={13} color={textMuted} />
+            <Text style={styles.sectionLabel}>체크형</Text>
+          </View>
           {checkFavorites.map((favorite) => (
             <FavoriteRow
               key={favorite.id}
@@ -110,7 +119,10 @@ export default function FavoritesScreen() {
 
       {trackingFavorites.length > 0 && (
         <>
-          <Text style={styles.sectionLabel}>🔢 트래킹형</Text>
+          <View style={styles.sectionLabelRow}>
+            <Ionicons name="stats-chart-outline" size={13} color={textMuted} />
+            <Text style={styles.sectionLabel}>트래킹형</Text>
+          </View>
           {trackingFavorites.map((favorite) => (
             <FavoriteRow
               key={favorite.id}
@@ -140,6 +152,9 @@ function FavoriteRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   return (
     <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
       <View style={styles.cardInfo}>
@@ -164,7 +179,8 @@ function FavoriteRow({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -199,11 +215,16 @@ const styles = StyleSheet.create({
     marginTop: 40,
     lineHeight: 20,
   },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 16,
+    marginBottom: 8,
+  },
   sectionLabel: {
     fontSize: 13,
     opacity: 0.6,
-    marginTop: 16,
-    marginBottom: 8,
   },
   cardOuter: {
     marginBottom: 10,
@@ -219,7 +240,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cardTitle: {
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   cardMeta: {
     fontSize: 12,
@@ -251,4 +274,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#FF6B6B',
   },
-});
+  });
+}

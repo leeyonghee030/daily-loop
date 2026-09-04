@@ -1,7 +1,9 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import ReorderableList, {
   reorderItems,
   useReorderableDrag,
@@ -9,7 +11,9 @@ import ReorderableList, {
 } from 'react-native-reorderable-list';
 
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import {
@@ -31,6 +35,7 @@ type FilterValue = RepeatType | 'all';
 const PRESET_CHIP_GAP = 8;
 const PRESET_CHIPS_PER_ROW = 4;
 const PRESET_NAME_MAX_CHARS = 8;
+const MY_ROUTINES_NOTICE_SEEN_KEY = 'my_routines_notice_seen';
 
 // 이름은 8글자까지만 보여주고 그 뒤는 자른다 (가로 스크롤로 어차피 옆 칩을 볼 수 있어서
 // 말줄임 계산 없이 그냥 글자 수로 끊는다)
@@ -110,6 +115,9 @@ function RoutineRow({
 }) {
   // react-native-reorderable-list가 제공하는 훅 — 이 핸들을 길게 누르면 그 항목의 드래그가 시작됨
   const drag = useReorderableDrag();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   return (
     <View style={styles.row}>
@@ -153,6 +161,9 @@ export default function MyRoutinesScreen() {
   const userId = session?.user.id;
   const router = useRouter();
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const routinesQueryKey = ['all-routines', userId] as const;
   // presets 탭 화면과 정확히 같은 쿼리 키를 써서 캐시를 공유한다
   const presetsQueryKey = ['presets', userId] as const;
@@ -165,6 +176,16 @@ export default function MyRoutinesScreen() {
   const [presetFilter, setPresetFilter] = useState<string | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showSubtitle, setShowSubtitle] = useState(false);
+
+  // 안내글은 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 ⓘ 아이콘만 남아있다가 누르면 펼쳐짐
+  useEffect(() => {
+    AsyncStorage.getItem(MY_ROUTINES_NOTICE_SEEN_KEY).then((seen) => {
+      if (seen === 'true') return;
+      setShowSubtitle(true);
+      AsyncStorage.setItem(MY_ROUTINES_NOTICE_SEEN_KEY, 'true');
+    });
+  }, []);
 
   const routinesQuery = useQuery({
     queryKey: routinesQueryKey,
@@ -370,11 +391,19 @@ export default function MyRoutinesScreen() {
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <View style={styles.headerTextColumn}>
-            <Text style={styles.title}>내 루틴</Text>
-            <Text style={styles.subtitle}>오늘 예정 여부와 상관없이 전체 루틴을 보고 수정할 수 있어요</Text>
+            {showSubtitle ? (
+              <Pressable onPress={() => setShowSubtitle(false)}>
+                <Text style={styles.subtitle}>전체 루틴을 보고 수정할 수 있어요</Text>
+              </Pressable>
+            ) : (
+              <Pressable style={styles.subtitleCollapsed} onPress={() => setShowSubtitle(true)} hitSlop={8}>
+                <Text style={styles.subtitleIcon}>ⓘ</Text>
+              </Pressable>
+            )}
           </View>
           <Pressable style={styles.addButton} onPress={() => router.push('/routine-trash')}>
-            <Text style={styles.addButtonText}>♻️ 루틴 복구</Text>
+            <Ionicons name="refresh-outline" size={13} color="#fff" />
+            <Text style={styles.addButtonText}>루틴 복구</Text>
           </Pressable>
         </View>
       </View>
@@ -512,10 +541,11 @@ export default function MyRoutinesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 60,
+    paddingTop: 16,
   },
   centered: {
     flex: 1,
@@ -536,6 +566,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     backgroundColor: accent,
     borderRadius: cardRadius,
     paddingHorizontal: 12,
@@ -546,15 +579,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
   subtitle: {
     fontSize: 12,
     opacity: 0.55,
     marginTop: 4,
     lineHeight: 16,
+  },
+  subtitleCollapsed: {
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  subtitleIcon: {
+    fontSize: 14,
+    color: '#999',
   },
   groupModeTabs: {
     flexDirection: 'row',
@@ -688,7 +725,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   rowTitle: {
-    fontSize: 15,
+    fontSize: 16 + fontKorean.sizeAdjust,
+    lineHeight: 21 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   rowMeta: {
     fontSize: 12,
@@ -748,4 +787,5 @@ const styles = StyleSheet.create({
     color: accent,
     fontWeight: '600',
   },
-});
+  });
+}

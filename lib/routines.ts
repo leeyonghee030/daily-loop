@@ -123,6 +123,20 @@ function matchesToday(
   }
 }
 
+// 통계 화면의 평일/주말 카테고리 탭에서, 이 루틴이 그 카테고리에 해당하는지 판정.
+// 매일(daily)은 둘 다 해당, 커스텀(custom)/1회성(once)은 실제 요일을 따져서 판정한다
+export function routineMatchesDayCategory(routine: Routine, category: 'weekday' | 'weekend'): boolean {
+  const targetDows = category === 'weekday' ? [1, 2, 3, 4, 5] : [0, 6];
+  if (routine.repeat_type === 'daily') return true;
+  if (routine.repeat_type === category) return true;
+  if (routine.repeat_type === 'custom') return (routine.repeat_days ?? []).some((d) => targetDows.includes(d));
+  if (routine.repeat_type === 'once' && routine.scheduled_date) {
+    const dow = new Date(`${routine.scheduled_date}T00:00:00`).getDay();
+    return targetDows.includes(dow);
+  }
+  return false;
+}
+
 export async function fetchTodayHoliday(): Promise<Holiday | null> {
   const todayDate = formatLocalDate(new Date());
   const { data, error } = await supabase
@@ -709,6 +723,8 @@ export type RoutineStats = {
 export type PeriodSummary = {
   scheduled: number;
   completed: number;
+  weekday: { scheduled: number; completed: number };
+  weekend: { scheduled: number; completed: number };
 };
 
 export type StatsSummary = {
@@ -832,21 +848,29 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
   function computePeriodSummary(days: number): PeriodSummary {
     let scheduled = 0;
     let completed = 0;
+    const weekday = { scheduled: 0, completed: 0 };
+    const weekend = { scheduled: 0, completed: 0 };
     for (let i = 0; i < days; i++) {
       const cursor = new Date(`${todayDate}T00:00:00`);
       cursor.setDate(cursor.getDate() - i);
       const dateStr = formatLocalDate(cursor);
       const dow = cursor.getDay();
       const isHoliday = holidayDates.has(dateStr);
+      const bucket = dow === 0 || dow === 6 ? weekend : weekday;
       for (const routine of visibleIncludingDeleted) {
         const skipDates = skipByRoutine.get(routine.id) ?? new Set();
         if (skipDates.has(dateStr)) continue;
         if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
+        const isCompleted = completedByRoutine.get(routine.id)?.has(dateStr) ?? false;
         scheduled++;
-        if (completedByRoutine.get(routine.id)?.has(dateStr)) completed++;
+        bucket.scheduled++;
+        if (isCompleted) {
+          completed++;
+          bucket.completed++;
+        }
       }
     }
-    return { scheduled, completed };
+    return { scheduled, completed, weekday, weekend };
   }
 
   return {

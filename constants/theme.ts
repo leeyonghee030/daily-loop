@@ -12,10 +12,17 @@ export const border = 'rgba(26,26,26,0.12)';
 export const borderSubtle = 'rgba(26,26,26,0.08)';
 export const panelBackground = '#F5F5F4';
 
-export const fontDisplay = 'BricolageGrotesque_800ExtraBold';
-export const fontDisplayBold = 'BricolageGrotesque_700Bold';
+// 깔끔한 느낌은 유지하되 글자 끝을 둥글린 폰트로 바꿔 부드러운 인상을 살짝 더함(2026-09, Bricolage Grotesque → Quicksand)
+export const fontDisplay = 'Quicksand_700Bold';
+export const fontDisplayBold = 'Quicksand_600SemiBold';
 export const fontMono = 'SpaceMono_400Regular';
 export const fontMonoBold = 'SpaceMono_700Bold';
+
+// Quicksand/Space Mono는 한글을 지원 안 해서(라틴 전용) 한글 텍스트에 쓰면 그냥 시스템 폰트로
+// 대체됨 — 사용자가 직접 적는 루틴 제목처럼 한글로 된 부분을 동글동글하게 하고 싶을 때 이 폰트를 쓴다.
+// Jua(두껍고 간판느낌) → Gowun Dodum(세로로 긴 느낌) → Hi Melody(너무 유치함) 순으로
+// 시도하다 Cute Font로 최종 정착함(2026-09) — 얇은 손글씨풍 둥근 폰트
+export const fontKorean = 'CuteFont_400Regular';
 
 // 카드/버튼 모서리 — 각진 느낌은 유지하되 아이폰 카드처럼 아주 살짝만 둥글게(필/원형 요소는 기존처럼 999 또는 '50%' 유지)
 export const cardRadius = 6;

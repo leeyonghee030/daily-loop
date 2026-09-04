@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,9 @@ import {
 const SCROLL_SPACER_HEIGHT = Math.round(Dimensions.get('window').height * 0.8);
 
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { deleteDiary, fetchDiary, saveDiary } from '@/lib/diary';
 
@@ -33,6 +35,9 @@ export default function DiaryFormScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const userId = session?.user.id;
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -139,7 +144,8 @@ export default function DiaryFormScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -163,7 +169,9 @@ const styles = StyleSheet.create({
     borderColor: border,
     borderRadius: cardRadius,
     padding: 14,
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 22 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   error: {
     color: '#FF6B6B',
@@ -192,4 +200,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-});
+  });
+}

@@ -1,12 +1,15 @@
 import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius, textMuted } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { fetchLlmQuota, parseRoutine, QuotaExceededError, type LlmQuota } from '@/lib/llm';
 import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
 
@@ -40,6 +43,9 @@ export default function LlmInputScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   // 오늘 탭과 같은 쿼리 키를 써서 캐시를 공유한다
   const llmQuotaQueryKey = ['llm-quota', userId] as const;
   const [text, setText] = useState(persistedText);
@@ -103,7 +109,7 @@ export default function LlmInputScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.centerBox}>
-          <Text style={styles.bigEmoji}>✨</Text>
+          <Ionicons name="sparkles-outline" size={40} color={textMuted} />
           <Text style={styles.quotaTitle}>무료 AI 배치 횟수를 모두 사용했어요</Text>
           <Text style={styles.quotaBody}>
             요금제는 곧 출시돼요, 조금만 기다려주세요! "매일 아침 7시" 처럼 간단한 문장은 AI 없이도
@@ -142,10 +148,13 @@ export default function LlmInputScreen() {
 
       <Text style={styles.charCount}>{text.length}/100</Text>
 
-      <Text style={styles.hint}>
-        💡 이런 걸 넣으면 더 정확해요 — 언제(매일·평일·월수금) · 몇 시(아침 7시) · 꼭 할 것(꼭·반드시) ·
-        횟수(물 8잔·30분). 문장이 복잡하면 아래 &quot;AI로 정확하게 분석&quot; 버튼을 눌러보세요.
-      </Text>
+      <View style={styles.hintRow}>
+        <Ionicons name="bulb-outline" size={13} color={textMuted} style={styles.hintIcon} />
+        <Text style={styles.hint}>
+          이런 걸 넣으면 더 정확해요 — 언제(매일·평일·월수금) · 몇 시(아침 7시) · 꼭 할 것(꼭·반드시) ·
+          횟수(물 8잔·30분). 문장이 복잡하면 아래 &quot;AI로 정확하게 분석&quot; 버튼을 눌러보세요.
+        </Text>
+      </View>
 
       {errorState === 'error' && (
         <View style={styles.errorBox}>
@@ -188,14 +197,18 @@ export default function LlmInputScreen() {
             <Text style={styles.aiButtonText}>AI가 분석 중...</Text>
           </View>
         ) : (
-          <Text style={styles.aiButtonText}>🤖 AI로 정확하게 분석</Text>
+          <View style={styles.loadingRow}>
+            <Ionicons name="sparkles-outline" size={14} color={accent} />
+            <Text style={styles.aiButtonText}>AI로 정확하게 분석</Text>
+          </View>
         )}
       </Pressable>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
     padding: 20,
@@ -205,9 +218,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
-  },
-  bigEmoji: {
-    fontSize: 40,
   },
   quotaCount: {
     fontSize: 13,
@@ -220,7 +230,9 @@ const styles = StyleSheet.create({
     borderColor: border,
     borderRadius: cardRadius,
     padding: 14,
-    fontSize: 16,
+    fontSize: 16 + fontKorean.sizeAdjust,
+    lineHeight: 21 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
     minHeight: 90,
     textAlignVertical: 'top',
   },
@@ -230,10 +242,18 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: 'right',
   },
+  hintRow: {
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 12,
+  },
+  hintIcon: {
+    marginTop: 2,
+  },
   hint: {
+    flex: 1,
     fontSize: 12,
     opacity: 0.55,
-    marginTop: 12,
     lineHeight: 18,
   },
   primaryButton: {
@@ -320,4 +340,5 @@ const styles = StyleSheet.create({
     color: accent,
     fontWeight: '600',
   },
-});
+  });
+}

@@ -3,15 +3,18 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
 import { VideoPicker } from '@/components/VideoPicker';
 import { clearPersistedLlmText } from '@/app/llm-input';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius, textMuted } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchVideoById, type Video } from '@/lib/videos';
@@ -88,6 +91,9 @@ function formatLocalDate(date: Date): string {
 }
 
 export default function RoutineFormScreen() {
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const params = useLocalSearchParams<{
     id?: string;
     // LLM 미리보기에서 넘어온 프리필 값 (app/llm-input.tsx)
@@ -538,7 +544,8 @@ export default function RoutineFormScreen() {
       {!isEditing && (
         <>
           <Pressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
-            <Text style={styles.favoriteButtonText}>⭐ 즐겨찾기에서 불러오기</Text>
+            <Ionicons name="star-outline" size={14} color={accent} />
+            <Text style={styles.favoriteButtonText}>즐겨찾기에서 불러오기</Text>
           </Pressable>
           <Text style={styles.favoriteHint}>
             저장해둔 루틴 템플릿을 불러와서 바로 추가하거나, 수정해서 추가할 수 있어요.
@@ -767,7 +774,8 @@ export default function RoutineFormScreen() {
         </Pressable>
       ) : (
         <Pressable style={styles.videoConnectButton} onPress={() => setShowVideoPicker(true)}>
-          <Text style={styles.videoConnectButtonText}>🎬 영상 선택하기</Text>
+          <Ionicons name="film-outline" size={14} color={accent} />
+          <Text style={styles.videoConnectButtonText}>영상 선택하기</Text>
         </Pressable>
       )}
 
@@ -794,7 +802,10 @@ export default function RoutineFormScreen() {
           {isPickingPhoto ? (
             <ActivityIndicator color={accent} />
           ) : (
-            <Text style={styles.videoConnectButtonText}>📷 사진 추가하기</Text>
+            <>
+              <Ionicons name="camera-outline" size={14} color={accent} />
+              <Text style={styles.videoConnectButtonText}>사진 추가하기</Text>
+            </>
           )}
         </Pressable>
       )}
@@ -814,7 +825,11 @@ export default function RoutineFormScreen() {
           <Pressable
             style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
             onPress={() => setSaveAsFavorite((prev) => !prev)}>
-            <Text style={styles.starButtonText}>{saveAsFavorite ? '⭐' : '☆'}</Text>
+            <Ionicons
+              name={saveAsFavorite ? 'star' : 'star-outline'}
+              size={18}
+              color={saveAsFavorite ? accent : textMuted}
+            />
           </Pressable>
         </View>
       )}
@@ -867,7 +882,8 @@ export default function RoutineFormScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -887,6 +903,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   favoriteButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 5,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
@@ -948,7 +967,9 @@ const styles = StyleSheet.create({
     borderRadius: cardRadius,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 15,
+    fontSize: 15 + fontKorean.sizeAdjust,
+    lineHeight: 20 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   chipRow: {
     flexDirection: 'row',
@@ -1017,6 +1038,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   videoConnectButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 5,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
@@ -1062,4 +1086,5 @@ const styles = StyleSheet.create({
     borderRadius: cardRadius,
     backgroundColor: border,
   },
-});
+  });
+}

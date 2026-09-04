@@ -1,12 +1,13 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
 import { Chip } from '@/components/Chip';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import {
   createFavorite,
@@ -42,6 +43,8 @@ export default function FavoriteFormScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const userId = session?.user.id;
+  const accent = useAccentColor();
+  const styles = useMemo(() => createStyles(accent), [accent]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -368,7 +371,8 @@ export default function FavoriteFormScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -454,4 +458,5 @@ const styles = StyleSheet.create({
   deleteButtonText: {
     color: '#FF6B6B',
   },
-});
+  });
+}

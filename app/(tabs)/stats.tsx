@@ -1,17 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius, fontDisplay, fontMono, textMuted } from '@/constants/theme';
+import { border, cardRadius, fontDisplay, fontMono, textMuted } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import {
   emojiForStreak,
   fetchStats,
   fetchStreakConfigs,
+  routineMatchesDayCategory,
   setHideFromStats,
   type RoutineStats,
   type StatsSummary,
@@ -34,7 +37,15 @@ const RING_STROKE = 8;
 
 // 이번 주/월 수행률을 도넛 링으로 보여준다 — 퍼센트 숫자는 SVG 밖에서 절대위치로 겹쳐서
 // 일반 Text로 그리므로(목업과 동일한 방식) 폰트를 자유롭게 지정할 수 있다
-function CompletionRing({ ratio }: { ratio: number }) {
+function CompletionRing({
+  ratio,
+  accent,
+  styles,
+}: {
+  ratio: number;
+  accent: string;
+  styles: ReturnType<typeof createStyles>;
+}) {
   const radius = (RING_SIZE - RING_STROKE) / 2;
   const circumference = 2 * Math.PI * radius;
   return (
@@ -71,6 +82,9 @@ export default function StatsScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   // 오늘 탭이 화면을 연 뒤 백그라운드로 이 같은 쿼리 키(['stats', userId])를 미리 받아두므로
   // (queryClient.prefetchQuery), 보통 오늘 탭을 먼저 보고 통계 탭으로 넘어오면 캐시가 이미
@@ -93,6 +107,7 @@ export default function StatsScreen() {
 
   const [showHidden, setShowHidden] = useState(false);
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
+  const [dayCategory, setDayCategory] = useState<'all' | 'weekday' | 'weekend'>('all');
   const [showSummaryNote, setShowSummaryNote] = useState(false);
 
   // "삭제된 루틴 기록도 포함됩니다" 안내는 계속 떠 있으면 거슬리니 최초 1회만 보여주고,
@@ -197,12 +212,20 @@ export default function StatsScreen() {
     );
   }
 
+  const periodSummary = summary[period];
+  const categorySummary = dayCategory === 'all' ? periodSummary : periodSummary[dayCategory];
+
+  // 평일/주말 카테고리를 고르면 목록도 그 카테고리에 해당하는 루틴만 남긴다
+  // (매일=둘 다, 평일만/주말만=한쪽만, 1회성/커스텀=실제 요일 기준)
+  const filteredRoutines =
+    dayCategory === 'all' ? summary.routines : summary.routines.filter((r) => routineMatchesDayCategory(r.routine, dayCategory));
+  const filteredHiddenRoutines =
+    dayCategory === 'all'
+      ? summary.hiddenRoutines
+      : summary.hiddenRoutines.filter((r) => routineMatchesDayCategory(r.routine, dayCategory));
+
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>통계</Text>
-      </View>
-
       <View style={styles.periodTabs}>
         <Pressable
           style={[styles.periodTab, period === 'weekly' && styles.periodTabActive]}
@@ -220,23 +243,52 @@ export default function StatsScreen() {
         <View style={styles.summaryTextCol}>
           <Text style={styles.summaryLabel}>{period === 'weekly' ? '최근 7일 수행률' : '최근 30일 수행률'}</Text>
           <Text style={styles.summaryHeadline}>
-            {summary[period].completed}/{summary[period].scheduled} 완료
+            {categorySummary.completed}/{categorySummary.scheduled} 완료
           </Text>
         </View>
-        <CompletionRing ratio={rateValue(summary[period].completed, summary[period].scheduled)} />
+        <CompletionRing
+          ratio={rateValue(categorySummary.completed, categorySummary.scheduled)}
+          accent={accent}
+          styles={styles}
+        />
       </ShadowCard>
+
+      <View style={styles.categoryTabs}>
+        <Pressable
+          style={[styles.categoryTab, dayCategory === 'all' && styles.categoryTabActive]}
+          onPress={() => setDayCategory('all')}>
+          <Text style={[styles.categoryTabText, dayCategory === 'all' && styles.categoryTabTextActive]}>전체</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.categoryTab, dayCategory === 'weekday' && styles.categoryTabActive]}
+          onPress={() => setDayCategory('weekday')}>
+          <Text style={[styles.categoryTabText, dayCategory === 'weekday' && styles.categoryTabTextActive]}>
+            평일
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.categoryTab, dayCategory === 'weekend' && styles.categoryTabActive]}
+          onPress={() => setDayCategory('weekend')}>
+          <Text style={[styles.categoryTabText, dayCategory === 'weekend' && styles.categoryTabTextActive]}>
+            주말
+          </Text>
+        </Pressable>
+      </View>
+
       {showSummaryNote && (
         <Text style={styles.summaryNote}>삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요</Text>
       )}
 
       <FlatList
         style={styles.list}
-        data={summary.routines}
+        data={filteredRoutines}
         keyExtractor={(item) => item.routine.id}
         renderItem={renderRoutine}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
-          summary.hiddenRoutines.length > 0 ? (
+          summary.routines.length > 0 ? (
+            <Text style={styles.emptyText}>이 카테고리에 해당하는 루틴이 없어요</Text>
+          ) : summary.hiddenRoutines.length > 0 ? (
             <Text style={styles.emptyText}>표시할 통계가 없어요 (전부 숨김 상태)</Text>
           ) : (
             <Text style={styles.emptyText}>
@@ -246,16 +298,16 @@ export default function StatsScreen() {
         }
       />
 
-      {summary.hiddenRoutines.length > 0 && (
+      {filteredHiddenRoutines.length > 0 && (
         <View style={styles.hiddenSection}>
           <Pressable onPress={() => setShowHidden((v) => !v)}>
             <Text style={styles.hiddenToggle}>
-              {showHidden ? '숨긴 항목 접기 ▲' : `숨긴 항목 ${summary.hiddenRoutines.length}개 보기 ▼`}
+              {showHidden ? '숨긴 항목 접기 ▲' : `숨긴 항목 ${filteredHiddenRoutines.length}개 보기 ▼`}
             </Text>
           </Pressable>
           {showHidden && (
             <ScrollView style={styles.hiddenList}>
-              {summary.hiddenRoutines.map((item) => (
+              {filteredHiddenRoutines.map((item) => (
                 <View key={item.routine.id} style={styles.hiddenRow}>
                   <Text style={styles.hiddenRowTitle}>{item.routine.title}</Text>
                   <Pressable onPress={() => handleToggleHide(item, false)} hitSlop={8}>
@@ -271,7 +323,8 @@ export default function StatsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
     paddingTop: 24,
@@ -285,14 +338,6 @@ const styles = StyleSheet.create({
   emptyText: {
     opacity: 0.5,
     textAlign: 'center',
-  },
-  header: {
-    paddingHorizontal: 20,
-    marginBottom: 12,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
   },
   periodTabs: {
     flexDirection: 'row',
@@ -323,7 +368,34 @@ const styles = StyleSheet.create({
   },
   summaryCardOuter: {
     marginHorizontal: 20,
+    marginBottom: 10,
+  },
+  categoryTabs: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
     marginBottom: 16,
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
+    padding: 4,
+    gap: 4,
+  },
+  categoryTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: cardRadius,
+    alignItems: 'center',
+  },
+  categoryTabActive: {
+    backgroundColor: accent,
+  },
+  categoryTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  categoryTabTextActive: {
+    color: '#fff',
+    opacity: 1,
   },
   summaryCard: {
     padding: 16,
@@ -386,8 +458,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cardTitle: {
-    fontSize: 15,
+    fontSize: 18 + fontKorean.sizeAdjust,
+    lineHeight: 24 + fontKorean.sizeAdjust,
     fontWeight: '600',
+    fontFamily: fontKorean.fontFamily,
   },
   hideLink: {
     fontSize: 12,
@@ -469,4 +543,5 @@ const styles = StyleSheet.create({
     color: accent,
     fontWeight: '600',
   },
-});
+  });
+}

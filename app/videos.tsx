@@ -1,20 +1,21 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet } from 'react-native';
 
 import { CategoryVideoGrid } from '@/components/CategoryVideoGrid';
 import { RecommendedVideoGrid } from '@/components/RecommendedVideoGrid';
 import { Text, View } from '@/components/Themed';
-import { accent, cardRadius } from '@/constants/theme';
+import { cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
 
 export default function VideosScreen() {
   const router = useRouter();
   const [tab, setTab] = useState<'mine' | 'recommended'>('mine');
+  const accent = useAccentColor();
+  const styles = useMemo(() => createStyles(accent), [accent]);
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>영상</Text>
-
       <View style={styles.tabRow}>
         <Pressable style={[styles.tabButton, tab === 'mine' && styles.tabButtonActive]} onPress={() => setTab('mine')}>
           <Text style={[styles.tabButtonText, tab === 'mine' && styles.tabButtonTextActive]}>내 영상</Text>
@@ -39,38 +40,35 @@ export default function VideosScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingTop: 60,
-    paddingHorizontal: 20,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  tabRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  tabButton: {
-    borderWidth: 1,
-    borderColor: accent,
-    borderRadius: cardRadius,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  tabButtonActive: {
-    backgroundColor: accent,
-  },
-  tabButtonText: {
-    color: accent,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  tabButtonTextActive: {
-    color: '#fff',
-  },
-});
+function createStyles(accent: string) {
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      paddingTop: 16,
+      paddingHorizontal: 20,
+    },
+    tabRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 16,
+    },
+    tabButton: {
+      borderWidth: 1,
+      borderColor: accent,
+      borderRadius: cardRadius,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    tabButtonActive: {
+      backgroundColor: accent,
+    },
+    tabButtonText: {
+      color: accent,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    tabButtonTextActive: {
+      color: '#fff',
+    },
+  });
+}

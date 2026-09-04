@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useToast } from '@/components/Toast';
-import { accent, border, cardRadius } from '@/constants/theme';
+import { border, cardRadius } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { applyPreset, deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import { pauseRoutinesByPreset, softDeleteRoutinesByPreset } from '@/lib/routines';
@@ -24,6 +26,9 @@ export default function PresetsScreen() {
   const userId = session?.user.id;
   const router = useRouter();
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const presetsQueryKey = ['presets', userId] as const;
 
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -202,7 +207,8 @@ export default function PresetsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   screen: {
     flex: 1,
   },
@@ -250,8 +256,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cardTitle: {
-    fontSize: 16,
+    fontSize: 16 + fontKorean.sizeAdjust,
+    lineHeight: 21 + fontKorean.sizeAdjust,
     fontWeight: '600',
+    fontFamily: fontKorean.fontFamily,
   },
   cardMeta: {
     fontSize: 13,
@@ -314,4 +322,5 @@ const styles = StyleSheet.create({
   bulkButtonText: {
     fontSize: 12,
   },
-});
+  });
+}

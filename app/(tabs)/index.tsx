@@ -15,10 +15,13 @@ import {
   type DimensionValue,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { accent, border, cardRadius, dangerMuted, fontMono, withAlpha } from '@/constants/theme';
+import { border, cardRadius, dangerMuted, fontMono, textMuted, withAlpha } from '@/constants/theme';
+import { useAccentColor } from '@/lib/accent-color';
+import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota } from '@/lib/llm';
 import { purgeOldDeletedPresets } from '@/lib/presets';
@@ -177,6 +180,9 @@ function TimelineView({
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const timelineStyles = useMemo(() => createTimelineStyles(accent, koreanFont), [accent, koreanFont]);
 
   const timed = routines
     .map((routine) => {
@@ -456,7 +462,8 @@ function TimelineView({
   );
 }
 
-const timelineStyles = StyleSheet.create({
+function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   wrapper: {
     flex: 1,
   },
@@ -614,7 +621,9 @@ const timelineStyles = StyleSheet.create({
   },
   blockTitle: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 16 + fontKorean.sizeAdjust,
+    lineHeight: 21 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   blockTitleDone: {
     textDecorationLine: 'line-through',
@@ -640,13 +649,17 @@ const timelineStyles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.7,
   },
-});
+  });
+}
 
 export default function TodayScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const router = useRouter();
   const queryClient = useQueryClient();
+  const accent = useAccentColor();
+  const koreanFont = useKoreanFont();
+  const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
@@ -668,13 +681,25 @@ export default function TodayScreen() {
   // 트래킹 입력창에 포커스된 루틴 id — 키보드가 완전히 올라온 뒤(keyboardDidShow) 그 시점에
   // 맞춰 다시 한번 스크롤하기 위해 기억해둔다(아래 scrollRowIntoView 설명 참고)
   const focusedTrackingIdRef = useRef<string | null>(null);
+  // 스와이프로 연 행을 액션(수정/기록삭제) 후, 또는 아무 것도 안 누르고 방치했을 때, 또는
+  // 다른 탭 갔다 돌아왔을 때 직접 닫기 위한 인스턴스 저장소
+  const swipeRefsRef = useRef<Record<string, Swipeable | null>>({});
+  // 스와이프를 열어두고 방치하면 1.5초 뒤 자동으로 닫기 위한 타이머 저장소
+  const swipeAutoCloseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // 수정 화면에 갔다가 돌아왔을 때 "지금 시각" 위치가 아니라 방금 스와이프했던 그 루틴이
+  // 잘 보이는 위치로 스크롤하기 위해 기억해둔다 — 아래 repositionToken 효과에서 소비하고 지운다
+  const pendingFocusRoutineIdRef = useRef<string | null>(null);
   // 캘린더/통계 탭 갔다가 돌아왔을 때 리스트/타임라인을 다시 "지금 시각" 위치로 맞추는 신호.
   // routines 값 자체가 바뀌는 걸 신호로 썼더니, react-query가 내용이 똑같으면 참조를 그대로
   // 재사용하는(structural sharing) 최적화 때문에 "돌아왔는데 내용이 안 바뀐 경우"엔 재조회를
   // 해도 routines 참조가 안 바뀌어서 재정렬이 아예 실행이 안 되는 버그가 있었음 — 데이터 내용과
   // 무관하게 "탭에 돌아왔다"는 사실 자체를 별도 신호(숫자를 하나씩 올림)로 만들어서 해결
   const [repositionToken, setRepositionToken] = useState(0);
-  const bumpRepositionToken = useCallback(() => setRepositionToken((t) => t + 1), []);
+  // 다른 탭에 갔다가 돌아왔을 때, 그동안 열려있던 스와이프가 있으면 같이 닫는다
+  const bumpRepositionToken = useCallback(() => {
+    setRepositionToken((t) => t + 1);
+    Object.values(swipeRefsRef.current).forEach((ref) => ref?.close());
+  }, []);
   useRefetchOnFocus(bumpRepositionToken);
 
   // 오늘 예정 루틴 + 완료기록 + 공휴일. staleTime이 0(query-client.ts 기본값)이라 포커스마다
@@ -701,6 +726,14 @@ export default function TodayScreen() {
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
   }, [todayQuery.isFetching, todayQuery.isError]);
+
+  // 체크/삭제/기록저장 실패 등으로 뜨는 에러 배너는 1초 뒤 자동으로 사라진다(예전엔 다른 탭에
+  // 갔다 오기 전까진 계속 남아있었음)
+  useEffect(() => {
+    if (!errorMessage) return;
+    const timer = setTimeout(() => setErrorMessage(null), 2000);
+    return () => clearTimeout(timer);
+  }, [errorMessage]);
 
   const routines = useMemo(() => todayQuery.data?.routines ?? [], [todayQuery.data]);
   const holiday = todayQuery.data?.holiday ?? null;
@@ -831,9 +864,17 @@ export default function TodayScreen() {
   }
 
   // 탭에 돌아올 때마다(repositionToken), routines 내용이 실제로 바뀔 때마다, 그리고
-  // 타임라인→리스트 전환할 때 매번 다시 맞춘다
+  // 타임라인→리스트 전환할 때 매번 다시 맞춘다. 단, 수정 화면에 갔다가 막 돌아온 경우엔
+  // "지금 시각" 대신 방금 스와이프했던 그 루틴이 보이는 위치로 맞춘다
   useEffect(() => {
-    if (viewMode === 'list') scrollListToNow();
+    if (viewMode !== 'list') return;
+    const pendingId = pendingFocusRoutineIdRef.current;
+    if (pendingId) {
+      pendingFocusRoutineIdRef.current = null;
+      scrollRowIntoView(pendingId);
+    } else {
+      scrollListToNow();
+    }
   }, [routines, viewMode, repositionToken]);
 
   type TodayData = Awaited<ReturnType<typeof fetchTodayRoutines>>;
@@ -974,9 +1015,13 @@ export default function TodayScreen() {
   // 한 번 더 끼어들어서, 우리가 옮겨둔 위치를 다시 아래로 밀어버리는 문제가 있었음 — 그래서
   // keyboardDidShow(키보드가 완전히 다 올라온 시점) 때 한 번 더 강제로 맞춰서 마지막에
   // 우리가 원하는 위치로 확정시킨다
-  function scrollRowIntoView(routineId: string) {
+  function scrollRowIntoView(routineId: string, attemptsLeft = 6) {
     const y = rowLayoutsRef.current[routineId];
-    if (y === undefined) return;
+    if (y === undefined) {
+      // 화면 복귀 직후처럼 아직 그 행의 레이아웃이 안 잡혔을 수 있어 잠깐 재시도한다
+      if (attemptsLeft > 0) setTimeout(() => scrollRowIntoView(routineId, attemptsLeft - 1), 60);
+      return;
+    }
     listScrollRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
   }
 
@@ -1006,6 +1051,8 @@ export default function TodayScreen() {
     if (!existing) return;
     toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing.id });
     closeEditTracking(routine.id);
+    swipeRefsRef.current[routine.id]?.close();
+    scrollRowIntoView(routine.id);
   }
 
   // flat=true면 "지금" 그룹 박스 안에 여러 개가 같이 들어있는 경우 — 그룹 박스 자체가 이미
@@ -1016,15 +1063,32 @@ export default function TodayScreen() {
     const streakDays = streaks[item.id] ?? 0;
     const streakEmoji = emojiForStreak(streakDays, streakConfigs);
 
+    function goToEdit() {
+      swipeRefsRef.current[item.id]?.close();
+      pendingFocusRoutineIdRef.current = item.id;
+      router.push({ pathname: '/routine-form', params: { id: item.id } });
+    }
+
     return (
       <Swipeable
         key={item.id}
+        ref={(instance) => {
+          swipeRefsRef.current[item.id] = instance;
+        }}
+        onSwipeableOpen={() => {
+          clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
+          swipeAutoCloseTimersRef.current[item.id] = setTimeout(() => {
+            swipeRefsRef.current[item.id]?.close();
+          }, 2000);
+        }}
+        onSwipeableClose={() => {
+          clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
+          delete swipeAutoCloseTimersRef.current[item.id];
+        }}
         overshootRight={false}
         renderRightActions={() => (
           <View style={styles.swipeActionsRow}>
-            <Pressable
-              style={styles.editAction}
-              onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+            <Pressable style={styles.editAction} onPress={goToEdit}>
               <Text style={styles.editActionText}>수정</Text>
             </Pressable>
             {item.block_type === 'tracking' && isDone && !editingTrackingIds.has(item.id) && (
@@ -1049,9 +1113,7 @@ export default function TodayScreen() {
             )}
           </View>
           <View style={styles.rowMain}>
-            <Pressable
-              style={styles.titleLine}
-              onPress={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}>
+            <Pressable style={styles.titleLine} onPress={goToEdit}>
               <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
                 {item.title}
               </Text>
@@ -1143,7 +1205,6 @@ export default function TodayScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}>
       <View style={styles.header}>
-        <Text style={styles.title}>오늘</Text>
         <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
           <Text style={styles.addButtonText}>+ 루틴 추가</Text>
         </Pressable>
@@ -1156,18 +1217,22 @@ export default function TodayScreen() {
         style={styles.headerButtonsScroll}
         contentContainerStyle={styles.headerButtonsContent}>
         <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
-          <Text style={styles.presetButtonText}>🎬 영상</Text>
+          <Ionicons name="film-outline" size={14} color={accent} />
+          <Text style={styles.presetButtonText}>영상</Text>
         </Pressable>
         <Pressable
           style={styles.presetButton}
           onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
-          <Text style={styles.presetButtonText}>📔 일기</Text>
+          <Ionicons name="book-outline" size={14} color={accent} />
+          <Text style={styles.presetButtonText}>일기</Text>
         </Pressable>
         <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
-          <Text style={styles.presetButtonText}>📦 모음집</Text>
+          <Ionicons name="albums-outline" size={14} color={accent} />
+          <Text style={styles.presetButtonText}>모음집</Text>
         </Pressable>
         <Pressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
-          <Text style={styles.presetButtonText}>📋 내 루틴</Text>
+          <Ionicons name="list-outline" size={14} color={accent} />
+          <Text style={styles.presetButtonText}>내 루틴</Text>
         </Pressable>
       </ScrollView>
 
@@ -1188,7 +1253,10 @@ export default function TodayScreen() {
 
       <ShadowCard style={styles.llmBannerOuter} contentStyle={styles.llmBannerContent}>
         <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
-          <Text style={styles.llmBannerText}>✨ 말로 루틴 추가하기</Text>
+          <View style={styles.llmBannerLeft}>
+            <Ionicons name="sparkles-outline" size={16} color="#fff" />
+            <Text style={styles.llmBannerText}>말로 루틴 추가하기</Text>
+          </View>
           {llmQuota && (
             <Text style={styles.llmBannerCount}>
               남은 {llmQuota.remaining}/{llmQuota.limit}회
@@ -1199,11 +1267,16 @@ export default function TodayScreen() {
 
       {holiday && (
         <View style={styles.holidayBanner}>
-          <Text style={styles.holidayBannerText}>🎉 오늘은 {holiday.name}이에요</Text>
+          <Ionicons name="flag-outline" size={14} color="#fff" />
+          <Text style={styles.holidayBannerText}>오늘은 {holiday.name}이에요</Text>
         </View>
       )}
 
-      {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+      {errorMessage && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>{errorMessage}</Text>
+        </View>
+      )}
 
       {viewMode === 'timeline' ? (
         <TimelineView
@@ -1284,7 +1357,8 @@ export default function TodayScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  return StyleSheet.create({
   container: {
     flex: 1,
     paddingTop: 24,
@@ -1297,7 +1371,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     paddingHorizontal: 20,
     marginBottom: 12,
   },
@@ -1318,6 +1392,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  llmBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'transparent',
+  },
   llmBannerText: {
     color: '#fff',
     fontSize: 15,
@@ -1326,10 +1406,6 @@ const styles = StyleSheet.create({
   llmBannerCount: {
     color: 'rgba(255,255,255,0.85)',
     fontSize: 13,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
   },
   headerButtonsScroll: {
     flexGrow: 0,
@@ -1340,6 +1416,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   presetButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
@@ -1347,7 +1426,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   presetButtonText: {
-    color: accent,
+    color: textMuted,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -1389,12 +1468,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     opacity: 1,
   },
-  error: {
-    color: '#FF6B6B',
-    paddingHorizontal: 20,
+  errorBanner: {
+    marginHorizontal: 20,
     marginBottom: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: cardRadius,
+    backgroundColor: 'rgba(255, 107, 107, 0.55)',
+  },
+  errorBannerText: {
+    color: '#fff',
+    fontSize: 16 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   holidayBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginHorizontal: 20,
     marginBottom: 12,
     paddingVertical: 10,
@@ -1466,7 +1556,9 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   rowTitle: {
-    fontSize: 15,
+    fontSize: 18 + fontKorean.sizeAdjust,
+    lineHeight: 24 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
   },
   rowTitleDone: {
     opacity: 0.4,
@@ -1611,7 +1703,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   summaryText: {
-    fontSize: 13,
+    fontSize: 13 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
     opacity: 0.7,
   },
-});
+  });
+}

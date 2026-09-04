@@ -4,12 +4,14 @@ export type MemoColor = 'yellow' | 'red' | 'mint' | 'blue' | 'purple';
 
 export const MEMO_COLOR_ORDER: MemoColor[] = ['yellow', 'red', 'mint', 'blue', 'purple'];
 
+// 원래 채도 높은 원색이었는데(0.45 알파), 배경 흰색과 어울리게 흰색을 더 섞고
+// 알파도 낮춰 은은한 파스텔 톤으로 조정함(2026-09-03, 흰색 비중을 더 올려 재조정)
 export const MEMO_COLORS: Record<MemoColor, { bg: string; border: string; label: string }> = {
-  yellow: { bg: 'rgba(255, 214, 92, 0.45)', border: '#F5C518', label: '노랑' },
-  red: { bg: 'rgba(255, 138, 128, 0.45)', border: '#FF6B6B', label: '빨강' },
-  mint: { bg: 'rgba(112, 214, 190, 0.45)', border: '#3FBF9F', label: '민트' },
-  blue: { bg: 'rgba(130, 177, 255, 0.45)', border: '#5B8DEF', label: '파랑' },
-  purple: { bg: 'rgba(196, 168, 255, 0.45)', border: '#9B7BEF', label: '보라' },
+  yellow: { bg: 'rgba(251, 232, 163, 0.22)', border: '#F0DBA8', label: '노랑' },
+  red: { bg: 'rgba(255, 196, 196, 0.22)', border: '#F0BABA', label: '빨강' },
+  mint: { bg: 'rgba(178, 229, 217, 0.22)', border: '#A9D8CA', label: '민트' },
+  blue: { bg: 'rgba(189, 209, 249, 0.22)', border: '#B4C6EA', label: '파랑' },
+  purple: { bg: 'rgba(215, 202, 249, 0.22)', border: '#CCBEE9', label: '보라' },
 };
 
 export type DateMemo = {
