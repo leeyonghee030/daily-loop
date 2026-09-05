@@ -39,7 +39,7 @@ export default function PresetsScreen() {
     queryFn: () => fetchPresets(userId!),
     enabled: !!userId,
   });
-  useRefetchOnFocus(presetsQuery.refetch);
+  useRefetchOnFocus(presetsQuery.refetch, !!userId);
   const presets = presetsQuery.data ?? [];
   const errorMessage = presetsQuery.isError ? '모음집을 불러오지 못했어요.' : null;
 

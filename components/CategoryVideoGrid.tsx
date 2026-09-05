@@ -80,7 +80,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     queryFn: () => fetchCategories(userId!),
     enabled: !!userId,
   });
-  useRefetchOnFocus(categoriesQuery.refetch);
+  useRefetchOnFocus(categoriesQuery.refetch, !!userId);
   const categories = categoriesQuery.data ?? [];
   // 카테고리 값이 새로 바뀔 때마다(포커스마다 재조회 포함) 첫 번째로 리셋해버리면, 탭을
   // 옮겼다 돌아왔을 때 보고 있던 카테고리가 자꾸 1번으로 튕기게 됨 — 진짜 최초 1회만 정해준다

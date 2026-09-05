@@ -74,11 +74,11 @@ export default function RootLayout() {
       <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
         <AccentColorProvider>
           <KoreanFontProvider>
-            <OnboardingProvider>
-              <AuthProvider>
+            <AuthProvider>
+              <OnboardingProvider>
                 <RootLayoutNav />
-              </AuthProvider>
-            </OnboardingProvider>
+              </OnboardingProvider>
+            </AuthProvider>
           </KoreanFontProvider>
         </AccentColorProvider>
       </PersistQueryClientProvider>
@@ -95,7 +95,11 @@ function RootLayoutNav() {
   const router = useRouter();
 
   useEffect(() => {
-    if (isLoading || onboardingSeen === null) return;
+    if (isLoading) return;
+    // onboardingSeen은 로그아웃 상태에서도 null(서버에 물어볼 계정이 없어서)이라, 세션 유무와
+    // 상관없이 무조건 기다리면 로그아웃 상태일 때 아래 로그인 화면 리다이렉트 자체가 영원히
+    // 실행되지 않는 버그가 있었음 — 세션이 있을 때만 온보딩 조회가 끝나길 기다린다
+    if (session && onboardingSeen === null) return;
 
     const inAuthFlow = segments[0] === 'login' || segments[0] === 'auth';
 

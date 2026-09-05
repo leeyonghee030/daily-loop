@@ -43,7 +43,7 @@ export default function FavoritesScreen() {
     queryFn: () => fetchFavorites(userId!),
     enabled: !!userId,
   });
-  useRefetchOnFocus(favoritesQuery.refetch);
+  useRefetchOnFocus(favoritesQuery.refetch, !!userId);
 
   const slotsQuery = useQuery({
     queryKey: slotsQueryKey,

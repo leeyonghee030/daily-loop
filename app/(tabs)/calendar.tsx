@@ -219,7 +219,7 @@ export default function CalendarScreen() {
     weekDiaryQuery.refetch,
     statsQuery.refetch,
   ]);
-  useRefetchOnFocus(refetchActive);
+  useRefetchOnFocus(refetchActive, !!userId);
 
   // "다른 탭에 갔다가 캘린더 탭으로 다시 들어올 때" 항상 이번 주 주간뷰로 되돌리려는
   // 의도였는데, useFocusEffect는 diary-form처럼 캘린더 위에 잠깐 띄운 화면(스택 화면)에서

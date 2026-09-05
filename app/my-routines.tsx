@@ -208,7 +208,7 @@ export default function MyRoutinesScreen() {
     presetsQuery.refetch();
     skippedTodayQuery.refetch();
   }, [routinesQuery.refetch, presetsQuery.refetch, skippedTodayQuery.refetch]);
-  useRefetchOnFocus(refetchAll);
+  useRefetchOnFocus(refetchAll, !!userId);
 
   const routines = routinesQuery.data ?? [];
   const presets = presetsQuery.data ?? [];

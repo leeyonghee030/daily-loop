@@ -94,7 +94,7 @@ export default function StatsScreen() {
     queryFn: () => fetchStats(userId!),
     enabled: !!userId,
   });
-  useRefetchOnFocus(summaryQuery.refetch);
+  useRefetchOnFocus(summaryQuery.refetch, !!userId);
   const summary = summaryQuery.data ?? null;
 
   // 오늘 탭과 같은 쿼리 키를 쓰기 때문에 이미 오늘 탭에서 받아온 값이 있으면 재요청 없이 공유됨
@@ -144,6 +144,20 @@ export default function StatsScreen() {
     } finally {
       summaryQuery.refetch();
     }
+  }
+
+  // isError를 안 보고 !summary만 봤더니, 조회가 실패해도(예: 로그인 직후 userId 준비 전
+  // 타이밍에 잘못된 요청이 나가 서버 에러가 난 경우) data가 계속 없는 상태로 남아서 스피너가
+  // 영원히 도는 것처럼 보이는 버그가 있었음 — 실패했을 땐 안내+재시도 버튼을 따로 보여준다
+  if (summaryQuery.isError) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyText}>통계를 불러오지 못했어요.</Text>
+        <Pressable onPress={() => summaryQuery.refetch()} style={styles.retryButton}>
+          <Text style={[styles.retryButtonText, { color: accent }]}>다시 시도</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   if (!summary) {
@@ -334,6 +348,15 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 40,
+  },
+  retryButton: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  retryButtonText: {
+    fontWeight: '600',
+    fontSize: 14,
   },
   emptyText: {
     opacity: 0.5,

@@ -711,7 +711,7 @@ export default function TodayScreen() {
     queryFn: () => fetchTodayRoutines(userId!),
     enabled: !!userId,
   });
-  useRefetchOnFocus(todayQuery.refetch);
+  useRefetchOnFocus(todayQuery.refetch, !!userId);
 
   // 원래 load()가 새로 불러오기 시작할 때 에러 메시지를 지우고, 실패하면 채워 넣던 것과 동일 —
   // react-query로 옮기면서 이 부분이 빠져서 조회 실패 시 안내가 하나도 안 뜨는 회귀가 있었음.
@@ -723,9 +723,10 @@ export default function TodayScreen() {
     if (todayQuery.isFetching) {
       setErrorMessage(null);
     } else if (todayQuery.isError) {
+      console.error('오늘 루틴 로딩 실패:', todayQuery.error);
       setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
     }
-  }, [todayQuery.isFetching, todayQuery.isError]);
+  }, [todayQuery.isFetching, todayQuery.isError, todayQuery.error]);
 
   // 체크/삭제/기록저장 실패 등으로 뜨는 에러 배너는 1초 뒤 자동으로 사라진다(예전엔 다른 탭에
   // 갔다 오기 전까진 계속 남아있었음)
@@ -777,7 +778,7 @@ export default function TodayScreen() {
     queryFn: fetchLlmQuota,
     enabled: !!userId,
   });
-  useRefetchOnFocus(llmQuotaQuery.refetch);
+  useRefetchOnFocus(llmQuotaQuery.refetch, !!userId);
   const llmQuota = llmQuotaQuery.data ?? null;
 
   // 1분마다 다시 렌더링해서 "지금" 강조선을 갱신하고, 날짜가 자정을 넘어간 게 감지되면

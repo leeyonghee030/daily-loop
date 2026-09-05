@@ -68,7 +68,7 @@ export default function RoutineTrashScreen() {
     },
     enabled: !!userId,
   });
-  useRefetchOnFocus(trashQuery.refetch);
+  useRefetchOnFocus(trashQuery.refetch, !!userId);
 
   const deletedRoutines = trashQuery.data?.routines ?? [];
   const deletedPresets = trashQuery.data?.presets ?? [];
