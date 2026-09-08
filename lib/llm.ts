@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 import { parseRoutineInput, type ParsedRoutineDraft } from './parse-routine-input';
+import { parseRoutineInputEn } from './parse-routine-input-en';
+import type { Language } from './language';
 
 // 파싱 결과가 어디서 나왔는지 (4-8 ② 배지용): 'regex'=규칙 기반 처리, 'llm'=AI 분석
 export type ParseSource = 'regex' | 'llm';
@@ -62,8 +64,8 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
 //   1) 정규식/키워드 사전으로 먼저 시도 → 성공하면 LLM 호출 안 함(횟수 차감 X)
 //   2) 애매한 경우(needsLlmFallback)만 Edge Function으로 LLM 호출
 // forceLlm: 사용자가 "AI로 정확하게 분석" 버튼을 눌렀을 때 — 정규식 결과와 무관하게 무조건 LLM 호출
-export async function parseRoutine(text: string, forceLlm = false): Promise<ParseResult> {
-  const regex = parseRoutineInput(text);
+export async function parseRoutine(text: string, forceLlm = false, language: Language = 'ko'): Promise<ParseResult> {
+  const regex = language === 'en' ? parseRoutineInputEn(text) : parseRoutineInput(text);
   if (!forceLlm && !regex.needsLlmFallback) {
     return { draft: regex, source: 'regex' };
   }

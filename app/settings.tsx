@@ -24,6 +24,7 @@ export default function SettingsScreen() {
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [showThemeDesc, setShowThemeDesc] = useState(false);
   const [showFontDesc, setShowFontDesc] = useState(false);
+  const [showLanguageDesc, setShowLanguageDesc] = useState(false);
 
   const LANGUAGE_OPTIONS: { id: Language; label: string }[] = [
     { id: 'ko', label: t('settings.languageKorean') },
@@ -44,15 +45,15 @@ export default function SettingsScreen() {
         </AnimatedPressable>
       </ShadowCard>
 
-      <View style={styles.groupHeaderRow}>
-        <Text style={styles.groupHeader}>{t('settings.themeColor')}</Text>
-        <AnimatedPressable onPress={() => setShowThemeDesc((v) => !v)} hitSlop={8}>
-          <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
-        </AnimatedPressable>
-      </View>
-      {showThemeDesc && <Text style={styles.groupHeaderDesc}>{t('settings.themeColorDesc')}</Text>}
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
         <View style={styles.groupPadding}>
+          <View style={styles.groupHeaderRow}>
+            <Text style={styles.groupHeader}>{t('settings.themeColor')}</Text>
+            <AnimatedPressable onPress={() => setShowThemeDesc((v) => !v)} hitSlop={8}>
+              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+            </AnimatedPressable>
+          </View>
+          {showThemeDesc && <Text style={styles.groupHeaderDesc}>{t('settings.themeColorDesc')}</Text>}
           <View style={styles.accentSwatchRow}>
             {ACCENT_PRESETS.map((preset) => (
               <AnimatedPressable
@@ -73,15 +74,15 @@ export default function SettingsScreen() {
         </View>
       </ShadowCard>
 
-      <View style={styles.groupHeaderRow}>
-        <Text style={styles.groupHeader}>{t('settings.font')}</Text>
-        <AnimatedPressable onPress={() => setShowFontDesc((v) => !v)} hitSlop={8}>
-          <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
-        </AnimatedPressable>
-      </View>
-      {showFontDesc && <Text style={styles.groupHeaderDesc}>{t('settings.fontDesc')}</Text>}
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
         <View style={styles.groupPadding}>
+          <View style={styles.groupHeaderRow}>
+            <Text style={styles.groupHeader}>{t('settings.font')}</Text>
+            <AnimatedPressable onPress={() => setShowFontDesc((v) => !v)} hitSlop={8}>
+              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+            </AnimatedPressable>
+          </View>
+          {showFontDesc && <Text style={styles.groupHeaderDesc}>{t('settings.fontDesc')}</Text>}
           <View style={styles.fontOptionRow}>
             {fontPresets.map((preset) => (
               <AnimatedPressable
@@ -102,11 +103,15 @@ export default function SettingsScreen() {
         </View>
       </ShadowCard>
 
-      <View style={styles.groupHeaderRow}>
-        <Text style={styles.groupHeader}>{t('settings.language')}</Text>
-      </View>
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
         <View style={styles.groupPadding}>
+          <View style={styles.groupHeaderRow}>
+            <Text style={styles.groupHeader}>{t('settings.language')}</Text>
+            <AnimatedPressable onPress={() => setShowLanguageDesc((v) => !v)} hitSlop={8}>
+              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+            </AnimatedPressable>
+          </View>
+          {showLanguageDesc && <Text style={styles.groupHeaderDesc}>{t('settings.languageDesc')}</Text>}
           <View style={styles.fontOptionRow}>
             {LANGUAGE_OPTIONS.map((option) => (
               <AnimatedPressable
@@ -198,10 +203,10 @@ function createStyles(accent: string) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      marginBottom: 4,
+      marginBottom: 12,
     },
     groupHeader: {
-      fontSize: 16,
+      fontSize: 14,
       fontWeight: '700',
     },
     groupHeaderInfoIcon: {
@@ -211,11 +216,18 @@ function createStyles(accent: string) {
     groupHeaderDesc: {
       fontSize: 13,
       opacity: 0.6,
-      marginBottom: 10,
+      marginTop: -6,
+      marginBottom: 14,
       lineHeight: 18,
     },
+    // ShadowCard 기본 그림자(constants/theme.ts의 cardShadow)가 이 화면 카드들엔 너무 두껍게
+    // 보인다는 피드백으로, 이 화면에서만 옅고 얇게(오프셋도 낮춰서) 덮어쓴다
     groupOuter: {
-      marginBottom: 24,
+      marginBottom: 19,
+      shadowOpacity: 0.05,
+      shadowRadius: 4,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 2,
     },
     group: {
       padding: 0,

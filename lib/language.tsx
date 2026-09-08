@@ -231,6 +231,7 @@ const TRANSLATIONS = {
     'categoryVideoGrid.addVideoFailedDefault': '영상을 추가하지 못했어요.',
     'categoryVideoGrid.saveCategoryFailedDefault': '저장하지 못했어요.',
     'categoryVideoGrid.deleteCategoryConfirmTitle': '이 카테고리를 삭제할까요?',
+    'categoryVideoGrid.deleteDefaultCategoryWarningTitle': '추가한 영상은 복구되지 않아요',
     'categoryVideoGrid.deleteCategoryFailed': '카테고리를 삭제하지 못했어요.',
     'categoryVideoGrid.recreateFailedTitle': '실패',
     'categoryVideoGrid.recreateFailedDesc': '기본 카테고리를 다시 만들지 못했어요.',
@@ -325,9 +326,10 @@ const TRANSLATIONS = {
     'login.kakao': '카카오로 시작하기',
     'onboarding.headlineLine1': '나만의 느낌으로',
     'onboarding.headlineLine2': '시작해볼까요?',
-    'onboarding.subhead': '주색과 폰트는 설정에서 언제든 다시 바꿀 수 있어요',
+    'onboarding.subhead': '주색·폰트·언어는 설정에서 언제든 다시 바꿀 수 있어요',
     'onboarding.themeColor': '테마 색',
     'onboarding.font': '폰트',
+    'onboarding.language': '언어',
     'onboarding.start': '시작하기',
     'nav.preset': '모음집',
     'nav.favorites': '즐겨찾기',
@@ -585,6 +587,7 @@ const TRANSLATIONS = {
     'categoryVideoGrid.addVideoFailedDefault': 'Failed to add the video.',
     'categoryVideoGrid.saveCategoryFailedDefault': 'Failed to save.',
     'categoryVideoGrid.deleteCategoryConfirmTitle': 'Delete this category?',
+    'categoryVideoGrid.deleteDefaultCategoryWarningTitle': "Added videos can't be recovered",
     'categoryVideoGrid.deleteCategoryFailed': 'Failed to delete the category.',
     'categoryVideoGrid.recreateFailedTitle': 'Failed',
     'categoryVideoGrid.recreateFailedDesc': 'Failed to recreate default categories.',
@@ -659,7 +662,7 @@ const TRANSLATIONS = {
     'llmInput.remainingQuotaPrefix': '',
     'llmInput.remainingQuotaSuffix': ' left',
     'llmInput.placeholder': 'e.g. Drink 8 cups of water every morning at 7',
-    'llmInput.hint': 'Adding these makes it more accurate — when (daily, weekdays, Mon/Wed/Fri), what time (7 AM), whether it\'s required (must, always), and a count (8 cups, 30 minutes). If your sentence is complex, try the "Analyze with AI" button below.',
+    'llmInput.hint': 'Adding these makes it more accurate — when (daily, weekdays, Mon/Wed/Fri), what time (7 AM, quarter past 8), whether it\'s required (must, required), and a count (8 cups, 30 minutes). If your sentence is complex, try the "Analyze with AI" button below.',
     'llmInput.errorBody': "AI parsing is temporarily unavailable. It may take a while to come back, so we'd recommend adding it manually for now.",
     'llmInput.retry': 'Retry',
     'llmInput.analyzing': 'Analyzing...',
@@ -679,9 +682,10 @@ const TRANSLATIONS = {
     'login.kakao': 'Continue with Kakao',
     'onboarding.headlineLine1': "Let's make it feel",
     'onboarding.headlineLine2': 'like yours.',
-    'onboarding.subhead': 'You can always change the theme color and font later in Settings.',
+    'onboarding.subhead': 'You can always change the theme color, font, and language later in Settings.',
     'onboarding.themeColor': 'Theme Color',
     'onboarding.font': 'Font',
+    'onboarding.language': 'Language',
     'onboarding.start': 'Get Started',
     'nav.preset': 'Set',
     'nav.favorites': 'Favorites',
@@ -727,11 +731,17 @@ type LanguageContextValue = {
   t: (key: TranslationKey) => string;
 };
 
+// 훅(useTranslation) 없이도, 특정 언어를 지정해서 문구를 바로 조회할 때 쓴다 — 온보딩 화면처럼
+// "확정 전 미리보기"가 필요해서 전역 언어 상태를 아직 안 바꾼 채로 그 언어의 문구를 보여줘야 할 때
+export function translate(language: Language, key: TranslationKey): string {
+  return TRANSLATIONS[language][key] ?? TRANSLATIONS[DEFAULT_LANGUAGE][key];
+}
+
 function contextValueFor(language: Language, setLanguage: (lang: Language) => void): LanguageContextValue {
   return {
     language,
     setLanguage,
-    t: (key) => TRANSLATIONS[language][key] ?? TRANSLATIONS[DEFAULT_LANGUAGE][key],
+    t: (key) => translate(language, key),
   };
 }
 

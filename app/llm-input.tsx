@@ -47,7 +47,7 @@ export default function LlmInputScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   // 오늘 탭과 같은 쿼리 키를 써서 캐시를 공유한다
   const llmQuotaQueryKey = ['llm-quota', userId] as const;
@@ -82,7 +82,7 @@ export default function LlmInputScreen() {
     setLoadingMode(forceLlm ? 'ai' : 'auto');
     setErrorState('none');
     try {
-      const result = await parseRoutine(trimmed, forceLlm);
+      const result = await parseRoutine(trimmed, forceLlm, language);
       if (result.source === 'llm' && result.quotaRemaining !== undefined) {
         queryClient.setQueryData(llmQuotaQueryKey, (prev?: LlmQuota | null) =>
           prev ? { ...prev, remaining: result.quotaRemaining!, used: prev.limit - result.quotaRemaining! } : prev
@@ -257,6 +257,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     backgroundColor: accent,
     borderRadius: cardRadius,
     paddingVertical: 14,
+    paddingHorizontal: 24,
     alignItems: 'center',
   },
   primaryButtonDisabled: {

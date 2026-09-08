@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, ScrollView, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import ReorderableList, {
   reorderItems,
@@ -11,6 +11,7 @@ import ReorderableList, {
 } from 'react-native-reorderable-list';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
@@ -187,6 +188,17 @@ export default function MyRoutinesScreen() {
   const skippedTodayQueryKey = ['today-skips', userId, todayDateStr] as const;
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 루틴 삭제 확인창 — 네이티브 Alert 대신 앱 테마색을 쓰는 커스텀 확인창(CategoryVideoGrid의
+  // 영상/카테고리 삭제 확인창과 같은 스타일). 모음집이 같이 비게 되는 경우엔 "모음집도 삭제"
+  // 버튼이 추가로 붙는다(extraLabel/onExtra)
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    title: string;
+    message: string;
+    primaryLabel: string;
+    onPrimary: () => void;
+    extraLabel?: string;
+    onExtra?: () => void;
+  } | null>(null);
   const [groupMode, setGroupMode] = useState<'repeat' | 'preset'>('repeat');
   const [filter, setFilter] = useState<FilterValue>('all');
   // "1회성" 필터를 골랐을 때만 쓰는 하위 구분 — 오늘 이후 vs 날짜 지난 것
@@ -343,11 +355,20 @@ export default function MyRoutinesScreen() {
         language === 'ko'
           ? `"${routine.title}"을(를) 지우면 "${preset.name}" 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
           : `Deleting "${routine.title}" will leave "${preset.name}" with no routines left. You can restore it within 2 weeks from "Routine Recovery".`;
-      Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
-        { text: t('settings.cancel'), style: 'cancel' },
-        { text: t('myRoutines.deleteRoutineOnly'), onPress: () => performDelete(routine, remaining) },
-        { text: t('myRoutines.deletePresetToo'), style: 'destructive', onPress: () => performDelete(routine, remaining, [preset.id]) },
-      ]);
+      setDeleteConfirm({
+        title: t('myRoutines.deleteRoutineTitle'),
+        message,
+        primaryLabel: t('myRoutines.deleteRoutineOnly'),
+        onPrimary: () => {
+          setDeleteConfirm(null);
+          performDelete(routine, remaining);
+        },
+        extraLabel: t('myRoutines.deletePresetToo'),
+        onExtra: () => {
+          setDeleteConfirm(null);
+          performDelete(routine, remaining, [preset.id]);
+        },
+      });
       return;
     }
 
@@ -355,10 +376,15 @@ export default function MyRoutinesScreen() {
       language === 'ko'
         ? `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
         : `All occurrences of "${routine.title}" will be deleted. You can restore it within 2 weeks from "Routine Recovery".`;
-    Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
-      { text: t('settings.cancel'), style: 'cancel' },
-      { text: t('myRoutines.delete'), style: 'destructive', onPress: () => performDelete(routine, remaining) },
-    ]);
+    setDeleteConfirm({
+      title: t('myRoutines.deleteRoutineTitle'),
+      message,
+      primaryLabel: t('myRoutines.delete'),
+      onPrimary: () => {
+        setDeleteConfirm(null);
+        performDelete(routine, remaining);
+      },
+    });
   }
 
   function toggleSelectMode() {
@@ -405,15 +431,20 @@ export default function MyRoutinesScreen() {
         language === 'ko'
           ? `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. ${names} 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
           : `All occurrences of ${count} routines will be deleted. ${names} will have no routines left. You can restore within 2 weeks from "Routine Recovery".`;
-      Alert.alert(t('myRoutines.deleteSelectedTitle'), message, [
-        { text: t('settings.cancel'), style: 'cancel' },
-        { text: t('myRoutines.deleteRoutineOnly'), onPress: () => performBulkDelete(ids, remaining) },
-        {
-          text: t('myRoutines.deletePresetToo'),
-          style: 'destructive',
-          onPress: () => performBulkDelete(ids, remaining, emptied.map((p) => p.id)),
+      setDeleteConfirm({
+        title: t('myRoutines.deleteSelectedTitle'),
+        message,
+        primaryLabel: t('myRoutines.deleteRoutineOnly'),
+        onPrimary: () => {
+          setDeleteConfirm(null);
+          performBulkDelete(ids, remaining);
         },
-      ]);
+        extraLabel: t('myRoutines.deletePresetToo'),
+        onExtra: () => {
+          setDeleteConfirm(null);
+          performBulkDelete(ids, remaining, emptied.map((p) => p.id));
+        },
+      });
       return;
     }
 
@@ -421,10 +452,15 @@ export default function MyRoutinesScreen() {
       language === 'ko'
         ? `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
         : `All occurrences of ${count} routines will be deleted. You can restore within 2 weeks from "Routine Recovery".`;
-    Alert.alert(t('myRoutines.deleteSelectedTitle'), message, [
-      { text: t('settings.cancel'), style: 'cancel' },
-      { text: t('myRoutines.delete'), style: 'destructive', onPress: () => performBulkDelete(ids, remaining) },
-    ]);
+    setDeleteConfirm({
+      title: t('myRoutines.deleteSelectedTitle'),
+      message,
+      primaryLabel: t('myRoutines.delete'),
+      onPrimary: () => {
+        setDeleteConfirm(null);
+        performBulkDelete(ids, remaining);
+      },
+    });
   }
 
   return (
@@ -603,6 +639,31 @@ export default function MyRoutinesScreen() {
           )}
         />
       )}
+
+      <Modal visible={!!deleteConfirm} transparent animationType="fade" onRequestClose={() => setDeleteConfirm(null)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setDeleteConfirm(null)} />
+          {deleteConfirm && (
+            <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+              <Text style={styles.confirmTitle}>{deleteConfirm.title}</Text>
+              <Text style={styles.confirmDesc}>{deleteConfirm.message}</Text>
+              <View style={styles.confirmButtonRow}>
+                <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setDeleteConfirm(null)}>
+                  <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable style={styles.confirmDeleteButton} onPress={deleteConfirm.onPrimary}>
+                  <Text style={styles.confirmDeleteText}>{deleteConfirm.primaryLabel}</Text>
+                </AnimatedPressable>
+              </View>
+              {deleteConfirm.extraLabel && deleteConfirm.onExtra && (
+                <AnimatedPressable style={styles.confirmExtraButton} onPress={deleteConfirm.onExtra}>
+                  <Text style={styles.confirmExtraButtonText}>{deleteConfirm.extraLabel}</Text>
+                </AnimatedPressable>
+              )}
+            </ShadowCard>
+          )}
+        </RNView>
+      </Modal>
     </View>
   );
 }
@@ -879,6 +940,77 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 12,
     color: accent,
     fontWeight: '600',
+  },
+  // 루틴/모음집 삭제 확인창 — CategoryVideoGrid의 삭제 확인창과 동일한 스타일(테마색 사용,
+  // 경고 아이콘 없음)
+  confirmBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  confirmCardOuter: {
+    width: '100%',
+  },
+  confirmCard: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  confirmDesc: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  confirmButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  confirmCancelButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  confirmDeleteButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  confirmDeleteText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  // "모음집도 삭제"처럼 흔치 않은 추가 선택지는 기본 버튼 아래에 덜 강조된 텍스트 버튼으로 둔다
+  confirmExtraButton: {
+    marginTop: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  confirmExtraButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: accent,
+    textDecorationLine: 'underline',
   },
   });
 }

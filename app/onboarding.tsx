@@ -4,46 +4,71 @@ import { Dimensions, StyleSheet } from 'react-native';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 
-// 그룹 4개(헤드라인/테마색/폰트/버튼)를 화면 높이 기준 고정 비율 위치에 절대 배치한다.
+// 그룹 5개(헤드라인/테마색/폰트/언어/버튼)를 화면 높이 기준 고정 비율 위치에 절대 배치한다.
 // (여백을 남는 공간 분배(space-between) 방식으로 했더니 실제 콘텐츠 높이에 따라 간격이
 // 거의 0이 되어 화면 중간에 뭉쳐 보이는 문제가 있어서, 콘텐츠 길이와 무관하게 항상
 // 일정한 위치에 오도록 절대 위치 방식으로 변경)
-// 구간을 너무 넓히면(예: 15~85%) 그룹 자체는 작은데 사이 간격만 커져서 "듬성듬성 떠있는
-// 섬" 처럼 보였음 — 구간은 25~78% 정도로 완만하게 두고, 대신 그룹 내부(스와치 크기,
-// 줄간격, 버튼 패딩 등)를 키워서 콘텐츠 자체의 시각적 무게를 늘리는 방향으로 해결
+// 요소들이 전반적으로 커서 촌스러워 보인다는 피드백으로 폰트/스와치/버튼 크기를 전체적으로
+// 줄이고, 그만큼 화면이 허전해지지 않도록 시작~끝 구간은 오히려 더 넓게 잡음(위아래로 더
+// 길게 펼쳐서 여백으로 보이게). 헤드라인 바로 아래 보조설명이 영어에서 2줄로 늘어나도
+// 테마색 섹션과 안 겹치도록, 헤드라인→테마색 사이 간격만 다른 구간보다 넉넉하게 둠
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+// 테마색 박스는 2줄(제목+스와치)이라 폰트/언어 박스(1줄, 구조 동일)보다 실제 높이가 크다 —
+// 이 셋을 그냥 화면 비율로 균등하게 나누면 실제 콘텐츠 높이 차이 때문에 박스 사이 여백이
+// 서로 다르게 보이는 문제가 있어서(테마색↔폰트 사이는 좁고 폰트↔언어 사이는 넓어 보이는 등),
+// 아래 두 상수(대략의 실제 높이)로 테마색→폰트→언어→버튼 사이 간격을 계산해서 셋 다 똑같이 맞춘다
+const THEME_CONTENT_HEIGHT = 100;
+const ROW_CONTENT_HEIGHT = 72;
+const HEADLINE_TOP = SCREEN_HEIGHT * 0.2;
+const THEME_TOP = SCREEN_HEIGHT * 0.37 - 5;
+const BUTTON_TOP = SCREEN_HEIGHT * 0.8;
+const GAP = (BUTTON_TOP - THEME_TOP - THEME_CONTENT_HEIGHT - ROW_CONTENT_HEIGHT * 2) / 3;
+const FONT_TOP = THEME_TOP + THEME_CONTENT_HEIGHT + GAP - 4;
+const LANGUAGE_TOP = FONT_TOP + ROW_CONTENT_HEIGHT + GAP;
+
 const GROUP_TOP = {
-  headline: SCREEN_HEIGHT * 0.22,
-  theme: SCREEN_HEIGHT * 0.42,
-  font: SCREEN_HEIGHT * 0.62,
-  button: SCREEN_HEIGHT * 0.82,
+  headline: HEADLINE_TOP,
+  theme: THEME_TOP - 3,
+  font: FONT_TOP - 3,
+  language: LANGUAGE_TOP - 3,
+  button: BUTTON_TOP + 10,
 };
 
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { ACCENT_PRESETS, ACCENT_LABEL_KEYS, useAccentColorSetting } from '@/lib/accent-color';
-import { useFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
-import { useTranslation } from '@/lib/language';
+import { getFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
+import { translate, useTranslation, type Language, type TranslationKey } from '@/lib/language';
 import { useOnboarding } from '@/lib/onboarding';
 
-// 최초 진입 시 주색/폰트를 고르게 하는 온보딩 화면. "시작하기"를 눌러야 최초 1회 본 것으로
+const LANGUAGE_OPTIONS: { id: Language; labelKey: 'settings.languageKorean' | 'settings.languageEnglish' }[] = [
+  { id: 'ko', labelKey: 'settings.languageKorean' },
+  { id: 'en', labelKey: 'settings.languageEnglish' },
+];
+
+// 최초 진입 시 주색/폰트/언어를 고르게 하는 온보딩 화면. "시작하기"를 눌러야 최초 1회 본 것으로
 // 기록되고(app/_layout.tsx가 이 플래그로 재진입 여부 판단), 중간에 앱을 나가면 다음에 다시 뜬다.
 // 선택은 로컬 상태로만 미리보기하고, "시작하기"를 눌러야만 실제(전역/저장소)로 반영한다
-// — 안 그러면 스와치를 눌러보기만 하고 확정 없이 나가도 그 색/폰트가 저장돼버림
+// — 안 그러면 스와치를 눌러보기만 하고 확정 없이 나가도 그 색/폰트/언어가 저장돼버림.
+// 언어는 이 화면 자체의 문구(헤드라인/섹션 제목 등)도 실시간 미리보기 대상이라, 전역
+// useTranslation()의 t 대신 로컬로 고른 언어를 직접 넣어 조회하는 자체 t를 쓴다
 export default function OnboardingScreen() {
   const router = useRouter();
   const { accentColor: defaultAccent, setAccentColor: persistAccentColor } = useAccentColorSetting();
   const { presetId: defaultFontPresetId, setPresetId: persistFontPresetId } = useKoreanFontSetting();
-  const fontPresets = useFontPresets();
-  const { markSeen } = useOnboarding();
-  const { t } = useTranslation();
+  const { language: defaultLanguage, setLanguage: persistLanguage } = useTranslation();
   const [accent, setAccent] = useState(defaultAccent);
   const [fontPresetId, setFontPresetId] = useState(defaultFontPresetId);
+  const [previewLanguage, setPreviewLanguage] = useState<Language>(defaultLanguage);
+  const fontPresets = useMemo(() => getFontPresets(previewLanguage), [previewLanguage]);
+  const { markSeen } = useOnboarding();
+  const t = useMemo(() => (key: TranslationKey) => translate(previewLanguage, key), [previewLanguage]);
   const styles = useMemo(() => createStyles(accent), [accent]);
 
   async function handleStart() {
     persistAccentColor(accent);
     persistFontPresetId(fontPresetId);
+    persistLanguage(previewLanguage);
     await markSeen();
     router.replace('/(tabs)');
   }
@@ -98,6 +123,22 @@ export default function OnboardingScreen() {
         </View>
       </View>
 
+      <View style={[styles.absoluteGroup, { top: GROUP_TOP.language }]}>
+        <Text style={styles.sectionTitle}>{t('onboarding.language')}</Text>
+        <View style={styles.fontOptionRow}>
+          {LANGUAGE_OPTIONS.map((option) => (
+            <AnimatedPressable
+              key={option.id}
+              style={[styles.fontOptionButton, option.id === previewLanguage && styles.fontOptionButtonActive]}
+              onPress={() => setPreviewLanguage(option.id)}>
+              <Text style={[styles.fontOptionText, option.id === previewLanguage && styles.fontOptionTextActive]}>
+                {t(option.labelKey)}
+              </Text>
+            </AnimatedPressable>
+          ))}
+        </View>
+      </View>
+
       <AnimatedPressable
         style={[styles.startButton, styles.absoluteGroup, { top: GROUP_TOP.button }]}
         onPress={handleStart}>
@@ -118,34 +159,34 @@ function createStyles(accent: string) {
       right: 24,
     },
     headline: {
-      fontSize: 26,
+      fontSize: 23,
       fontWeight: '700',
-      lineHeight: 36,
-      marginBottom: 12,
+      lineHeight: 30,
+      marginBottom: 9,
     },
     subhead: {
-      fontSize: 14,
-      lineHeight: 20,
+      fontSize: 13,
+      lineHeight: 18,
       opacity: 0.55,
     },
     sectionTitle: {
-      fontSize: 16,
+      fontSize: 14,
       fontWeight: '700',
-      marginBottom: 16,
+      marginBottom: 12,
     },
     accentSwatchRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
     },
     accentSwatchItem: {
-      width: 68,
+      width: 60,
       alignItems: 'center',
       gap: 1,
     },
     accentSwatchRing: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
+      width: 47,
+      height: 47,
+      borderRadius: 24,
       alignItems: 'center',
       justifyContent: 'center',
       borderWidth: 2,
@@ -156,39 +197,39 @@ function createStyles(accent: string) {
       backgroundColor: '#fff',
     },
     accentSwatch: {
-      width: 46,
-      height: 46,
-      borderRadius: 23,
+      width: 37,
+      height: 37,
+      borderRadius: 19,
     },
     accentSwatchLabelBox: {
-      height: 30,
+      height: 26,
       justifyContent: 'center',
       backgroundColor: 'transparent',
     },
     accentSwatchLabel: {
-      fontSize: 12,
-      lineHeight: 15,
+      fontSize: 11,
+      lineHeight: 13,
       opacity: 0.6,
       textAlign: 'center',
     },
     fontOptionRow: {
       flexDirection: 'row',
-      gap: 14,
+      gap: 12,
     },
     fontOptionButton: {
       borderWidth: 1,
       borderColor: border,
       borderRadius: cardRadius,
-      paddingHorizontal: 22,
-      paddingVertical: 16,
+      paddingHorizontal: 24,
+      paddingVertical: 12,
     },
     fontOptionButtonActive: {
       borderColor: accent,
       backgroundColor: accent,
     },
     fontOptionText: {
-      fontSize: 16,
-      lineHeight: 22,
+      fontSize: 14,
+      lineHeight: 19,
       textAlignVertical: 'center',
     },
     fontOptionTextActive: {
@@ -197,12 +238,12 @@ function createStyles(accent: string) {
     startButton: {
       backgroundColor: accent,
       borderRadius: cardRadius,
-      paddingVertical: 18,
+      paddingVertical: 16,
       alignItems: 'center',
     },
     startButtonText: {
       color: '#fff',
-      fontSize: 17,
+      fontSize: 16,
       fontWeight: '700',
     },
   });

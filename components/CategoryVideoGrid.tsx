@@ -76,6 +76,11 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
 
   // 영상 삭제 확인창 — 네이티브 Alert 대신 이 화면 디자인에 맞춘 커스텀 확인창을 쓴다
   const [deleteTarget, setDeleteTarget] = useState<{ video: Video; linkedCount: number } | null>(null);
+  // 카테고리 삭제 확인창도 같은 이유로 커스텀 Modal을 쓴다 — 네이티브 Alert는 이 화면 색/폰트를
+  // 못 따라가고, 뒤로가기(안드로이드 하드웨어 백키/제스처)를 눌렀을 때 화면 자체가 나가버릴 수
+  // 있는데 Modal의 onRequestClose로 감싸면 "안내창만 닫힘"이 보장된다
+  const [categoryDeleteTarget, setCategoryDeleteTarget] = useState<Category | null>(null);
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<DeletedCategory | null>(null);
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [deletedCategories, setDeletedCategories] = useState<DeletedCategory[]>([]);
@@ -209,67 +214,40 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     }
   }
 
+  // 확인창을 커스텀 Modal로 띄우기만 하고, 실제 삭제는 그 Modal의 "삭제" 버튼(performDeleteCategory)에서 처리
   function handleDeleteCategory() {
     if (!selectedCategory) return;
-    const cat = selectedCategory;
+    setCategoryDeleteTarget(selectedCategory);
+  }
 
+  async function performDeleteCategory(cat: Category) {
+    setCategoryDeleteTarget(null);
     if (cat.user_id === null) {
       // 기본 카테고리는 공용 행이라 진짜로 못 지우고, 나에게서만 숨긴다 — 그 안의 내 영상은 즉시 완전히 삭제(복구 불가)
       if (!userId) return;
-      const catName = categoryDisplayName(cat.name, t);
-      const message =
-        language === 'ko'
-          ? `"${catName}" 카테고리를 삭제하면 내가 추가한 영상이 지금 바로 사라지고 되돌릴 수 없어요. 카테고리 자체와 저희가 기본 제공하는 영상은 "삭제된 카테고리"의 "기본 카테고리 생성"으로 나중에 다시 채울 수 있어요. 그래도 삭제할까요?`
-          : `Deleting "${catName}" will remove any videos you added right away, and this can't be undone. You can recreate the category itself and our default videos later from "Deleted categories" → "Recreate default categories". Delete anyway?`;
-      Alert.alert(
-        language === 'ko' ? '⚠️ 추가한 영상은 복구되지 않아요' : "⚠️ Added videos can't be recovered",
-        message,
-        [
-          { text: t('settings.cancel'), style: 'cancel' },
-          {
-            text: t('myRoutines.delete'),
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await hideDefaultCategory(userId, cat.id);
-                setCategories((prev) => {
-                  const next = prev.filter((c) => c.id !== cat.id);
-                  setSelectedId(next[0]?.id ?? null);
-                  return next;
-                });
-              } catch {
-                Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
-              }
-            },
-          },
-        ]
-      );
+      try {
+        await hideDefaultCategory(userId, cat.id);
+        setCategories((prev) => {
+          const next = prev.filter((c) => c.id !== cat.id);
+          setSelectedId(next[0]?.id ?? null);
+          return next;
+        });
+      } catch {
+        Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
+      }
       return;
     }
 
-    const message =
-      language === 'ko'
-        ? `"${cat.name}" 카테고리와 그 안의 영상은 3일간 보관돼요. 3일 안에는 "삭제된 카테고리"에서 복구할 수 있어요.`
-        : `"${categoryDisplayName(cat.name, t)}" and the videos inside will be kept for 3 days. You can restore it from "Deleted categories" within that time.`;
-    Alert.alert(t('categoryVideoGrid.deleteCategoryConfirmTitle'), message, [
-      { text: t('settings.cancel'), style: 'cancel' },
-      {
-        text: t('myRoutines.delete'),
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await softDeleteCategory(cat.id);
-            setCategories((prev) => {
-              const next = prev.filter((c) => c.id !== cat.id);
-              setSelectedId(next[0]?.id ?? null);
-              return next;
-            });
-          } catch {
-            Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
-          }
-        },
-      },
-    ]);
+    try {
+      await softDeleteCategory(cat.id);
+      setCategories((prev) => {
+        const next = prev.filter((c) => c.id !== cat.id);
+        setSelectedId(next[0]?.id ?? null);
+        return next;
+      });
+    } catch {
+      Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
+    }
   }
 
   async function openTrash() {
@@ -315,24 +293,20 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   }
 
   function handleHardDeleteCategory(cat: DeletedCategory) {
-    Alert.alert(t('categoryVideoGrid.hardDeleteConfirmTitle'), t('categoryVideoGrid.hardDeleteConfirmDesc'), [
-      { text: t('settings.cancel'), style: 'cancel' },
-      {
-        text: t('categoryVideoGrid.hardDelete'),
-        style: 'destructive',
-        onPress: async () => {
-          setTrashBusyId(cat.id);
-          try {
-            await hardDeleteCategory(cat.id);
-            setDeletedCategories((prev) => prev.filter((c) => c.id !== cat.id));
-          } catch {
-            Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.hardDeleteFailedDesc'));
-          } finally {
-            setTrashBusyId(null);
-          }
-        },
-      },
-    ]);
+    setHardDeleteTarget(cat);
+  }
+
+  async function performHardDeleteCategory(cat: DeletedCategory) {
+    setHardDeleteTarget(null);
+    setTrashBusyId(cat.id);
+    try {
+      await hardDeleteCategory(cat.id);
+      setDeletedCategories((prev) => prev.filter((c) => c.id !== cat.id));
+    } catch {
+      Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.hardDeleteFailedDesc'));
+    } finally {
+      setTrashBusyId(null);
+    }
   }
 
   return (
@@ -592,6 +566,71 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
                   style={styles.confirmDeleteButton}
                   onPress={() => performDeleteVideo(deleteTarget.video)}>
                   <Text style={styles.confirmDeleteText}>{t('myRoutines.delete')}</Text>
+                </AnimatedPressable>
+              </View>
+            </ShadowCard>
+          )}
+        </RNView>
+      </Modal>
+
+      {/* 카테고리 삭제 확인 — 위 영상 삭제 확인창과 완전히 같은 스타일(제목+설명+버튼, 테마색만
+          사용)로 통일. 경고 아이콘/배지 없이 문구로만 안내한다 */}
+      <Modal
+        visible={!!categoryDeleteTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCategoryDeleteTarget(null)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setCategoryDeleteTarget(null)} />
+          {categoryDeleteTarget && (
+            <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+              <Text style={styles.confirmTitle}>
+                {categoryDeleteTarget.user_id === null
+                  ? t('categoryVideoGrid.deleteDefaultCategoryWarningTitle')
+                  : t('categoryVideoGrid.deleteCategoryConfirmTitle')}
+              </Text>
+              <Text style={styles.confirmDesc}>
+                {categoryDeleteTarget.user_id === null
+                  ? language === 'ko'
+                    ? `"${categoryDisplayName(categoryDeleteTarget.name, t)}" 카테고리를 삭제하면 내가 추가한 영상이 지금 바로 사라지고 되돌릴 수 없어요. 카테고리 자체와 저희가 기본 제공하는 영상은 "삭제된 카테고리"의 "기본 카테고리 생성"으로 나중에 다시 채울 수 있어요.`
+                    : `Deleting "${categoryDisplayName(categoryDeleteTarget.name, t)}" will remove any videos you added right away, and this can't be undone. You can recreate the category itself and our default videos later from "Deleted categories" → "Recreate default categories".`
+                  : language === 'ko'
+                    ? `"${categoryDeleteTarget.name}" 카테고리와 그 안의 영상은 3일간 보관돼요. 3일 안에는 "삭제된 카테고리"에서 복구할 수 있어요.`
+                    : `"${categoryDisplayName(categoryDeleteTarget.name, t)}" and the videos inside will be kept for 3 days. You can restore it from "Deleted categories" within that time.`}
+              </Text>
+              <View style={styles.confirmButtonRow}>
+                <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setCategoryDeleteTarget(null)}>
+                  <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable style={styles.confirmDeleteButton} onPress={() => performDeleteCategory(categoryDeleteTarget)}>
+                  <Text style={styles.confirmDeleteText}>{t('myRoutines.delete')}</Text>
+                </AnimatedPressable>
+              </View>
+            </ShadowCard>
+          )}
+        </RNView>
+      </Modal>
+
+      {/* "삭제된 카테고리" 목록에서 3일을 기다리지 않고 바로 완전삭제할 때의 확인 — 위와 동일한
+          스타일. 이 Modal이 showTrashModal 위에 별도로 뜨므로, 뒤로가기를 누르면 이 확인창만
+          먼저 닫히고 "삭제된 카테고리" 목록은 그대로 남는다 */}
+      <Modal
+        visible={!!hardDeleteTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHardDeleteTarget(null)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setHardDeleteTarget(null)} />
+          {hardDeleteTarget && (
+            <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+              <Text style={styles.confirmTitle}>{t('categoryVideoGrid.hardDeleteConfirmTitle')}</Text>
+              <Text style={styles.confirmDesc}>{t('categoryVideoGrid.hardDeleteConfirmDesc')}</Text>
+              <View style={styles.confirmButtonRow}>
+                <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setHardDeleteTarget(null)}>
+                  <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable style={styles.confirmDeleteButton} onPress={() => performHardDeleteCategory(hardDeleteTarget)}>
+                  <Text style={styles.confirmDeleteText}>{t('categoryVideoGrid.hardDelete')}</Text>
                 </AnimatedPressable>
               </View>
             </ShadowCard>
@@ -920,6 +959,7 @@ function createStyles(accent: string) {
     fontSize: 16,
     fontWeight: '700',
     marginBottom: 6,
+    textAlign: 'center',
   },
   confirmDesc: {
     fontSize: 13,
