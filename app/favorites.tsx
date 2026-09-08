@@ -1,25 +1,27 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { deleteFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
-import { fetchSlots, SLOT_LABELS, type Slot } from '@/lib/routines';
+import { fetchSlots, SLOT_LABEL_KEYS, type Slot } from '@/lib/routines';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
-function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
+function favoriteSummary(favorite: Favorite, slots: Slot[], t: (key: TranslationKey) => string): string {
   if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
     return `${favorite.scheduled_time_start.slice(0, 5)}-${favorite.scheduled_time_end.slice(0, 5)}`;
   }
   const slot = slots.find((s) => s.id === favorite.slot_id);
-  return slot ? SLOT_LABELS[slot.slot_type] : '';
+  return slot ? t(SLOT_LABEL_KEYS[slot.slot_type]) : '';
 }
 
 export default function FavoritesScreen() {
@@ -29,6 +31,7 @@ export default function FavoritesScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   // 즐겨찾기/모음집 폼 등 여러 화면이 fetchSlots(userId)를 똑같이 부르므로, 쿼리 키를
   // 'slots'로 통일해서 어느 화면에서 먼저 받아오든 서로 캐시를 공유하게 한다
@@ -61,7 +64,7 @@ export default function FavoritesScreen() {
         old ? old.filter((f) => f.id !== favorite.id) : old
       );
     },
-    onError: () => setErrorMessage('삭제에 실패했어요.'),
+    onError: () => setErrorMessage(t('favorites.errorDelete')),
   });
 
   async function handleDelete(favorite: Favorite) {
@@ -88,21 +91,19 @@ export default function FavoritesScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Pressable style={styles.addButton} onPress={() => router.push('/favorite-form')}>
-        <Text style={styles.addButtonText}>+ 즐겨찾기 추가</Text>
-      </Pressable>
+      <AnimatedPressable style={styles.addButton} onPress={() => router.push('/favorite-form')}>
+        <Text style={styles.addButtonText}>{t('favorites.addFavorite')}</Text>
+      </AnimatedPressable>
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      {favorites.length === 0 && (
-        <Text style={styles.emptyText}>자주 쓰는 루틴을 즐겨찾기로 저장해두면, 루틴 추가나 모음집 만들 때 바로 불러올 수 있어요.</Text>
-      )}
+      {favorites.length === 0 && <Text style={styles.emptyText}>{t('favorites.empty')}</Text>}
 
       {checkFavorites.length > 0 && (
         <>
           <View style={styles.sectionLabelRow}>
             <Ionicons name="checkmark-circle-outline" size={13} color={textMuted} />
-            <Text style={styles.sectionLabel}>체크형</Text>
+            <Text style={styles.sectionLabel}>{t('favorites.sectionCheck')}</Text>
           </View>
           {checkFavorites.map((favorite) => (
             <FavoriteRow
@@ -121,7 +122,7 @@ export default function FavoritesScreen() {
         <>
           <View style={styles.sectionLabelRow}>
             <Ionicons name="stats-chart-outline" size={13} color={textMuted} />
-            <Text style={styles.sectionLabel}>트래킹형</Text>
+            <Text style={styles.sectionLabel}>{t('favorites.sectionTracking')}</Text>
           </View>
           {trackingFavorites.map((favorite) => (
             <FavoriteRow
@@ -154,26 +155,27 @@ function FavoriteRow({
 }) {
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   return (
     <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
       <View style={styles.cardInfo}>
         <Text style={styles.cardTitle}>
           {favorite.title}
-          {favorite.is_required ? ' · 필수' : ''}
+          {favorite.is_required ? t('myRoutines.requiredSuffix') : ''}
         </Text>
         <Text style={styles.cardMeta}>
-          {favoriteSummary(favorite, slots)}
+          {favoriteSummary(favorite, slots, t)}
           {favorite.block_type === 'tracking' ? ` · ${favorite.tracking_unit}` : ''}
         </Text>
       </View>
       <View style={styles.cardActions}>
-        <Pressable style={styles.editButton} onPress={onEdit}>
-          <Text style={styles.editButtonText}>수정</Text>
-        </Pressable>
-        <Pressable style={styles.deleteButton} disabled={busy} onPress={onDelete}>
-          <Text style={styles.deleteButtonText}>삭제</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.editButton} onPress={onEdit}>
+          <Text style={styles.editButtonText}>{t('presets.edit')}</Text>
+        </AnimatedPressable>
+        <AnimatedPressable style={styles.deleteButton} disabled={busy} onPress={onDelete}>
+          <Text style={styles.deleteButtonText}>{t('myRoutines.delete')}</Text>
+        </AnimatedPressable>
       </View>
     </ShadowCard>
   );
@@ -227,7 +229,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     opacity: 0.6,
   },
   cardOuter: {
-    marginBottom: 10,
+    marginBottom: 12,
   },
   card: {
     flexDirection: 'row',

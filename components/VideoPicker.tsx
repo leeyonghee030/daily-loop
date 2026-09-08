@@ -1,10 +1,12 @@
 import { useMemo } from 'react';
-import { Modal, Pressable, StyleSheet, View as RNView } from 'react-native';
+import { Modal, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { CategoryVideoGrid } from '@/components/CategoryVideoGrid';
 import { Text, View } from '@/components/Themed';
 import { useAccentColor } from '@/lib/accent-color';
+import { useTranslation } from '@/lib/language';
 import type { Video } from '@/lib/videos';
 
 export function VideoPicker({
@@ -17,6 +19,7 @@ export function VideoPicker({
   onSelect: (video: Video) => void;
 }) {
   const accent = useAccentColor();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -25,11 +28,11 @@ export function VideoPicker({
           <View style={styles.headerRow}>
             <View style={styles.titleRow}>
               <Ionicons name="film-outline" size={16} color={accent} />
-              <Text style={styles.title}>영상 연결</Text>
+              <Text style={styles.title}>{t('videoPicker.title')}</Text>
             </View>
-            <Pressable onPress={onClose}>
-              <Text style={styles.closeText}>닫기</Text>
-            </Pressable>
+            <AnimatedPressable onPress={onClose}>
+              <Text style={styles.closeText}>{t('today.close')}</Text>
+            </AnimatedPressable>
           </View>
 
           <CategoryVideoGrid

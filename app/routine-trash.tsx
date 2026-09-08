@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import {
   fetchDeletedPresets,
   hardDeletePreset,
@@ -20,22 +22,22 @@ import {
   fetchDeletedRoutines,
   restoreRoutine,
   restoreRoutinesByPreset,
-  SLOT_LABELS,
+  SLOT_LABEL_KEYS,
   type Routine,
 } from '@/lib/routines';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 type TrashData = { routines: Routine[]; presets: RoutinePreset[] };
 
-function timeLabel(routine: Routine): string {
+function timeLabel(routine: Routine, t: (key: TranslationKey) => string): string {
   if (routine.is_instant && routine.scheduled_time_start) {
     return routine.scheduled_time_start.slice(0, 5);
   }
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
   }
-  if (routine.slots) return SLOT_LABELS[routine.slots.slot_type];
-  return '시간 미지정';
+  if (routine.slots) return t(SLOT_LABEL_KEYS[routine.slots.slot_type]);
+  return t('myRoutines.noScheduledTime');
 }
 
 function daysUntilPurge(deletedAt: string): number {
@@ -51,6 +53,7 @@ export default function RoutineTrashScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const trashQueryKey = ['deleted-routines', userId] as const;
 
@@ -87,7 +90,7 @@ export default function RoutineTrashScreen() {
         };
       });
     },
-    onError: () => setErrorMessage('복구에 실패했어요.'),
+    onError: () => setErrorMessage(t('routineTrash.errorRestore')),
   });
 
   const restoreRoutineMutation = useMutation({
@@ -98,7 +101,7 @@ export default function RoutineTrashScreen() {
         return { ...old, routines: old.routines.filter((r) => r.id !== routine.id) };
       });
     },
-    onError: () => setErrorMessage('복구에 실패했어요.'),
+    onError: () => setErrorMessage(t('routineTrash.errorRestore')),
   });
 
   const deleteSelectedMutation = useMutation({
@@ -114,7 +117,7 @@ export default function RoutineTrashScreen() {
       setSelectMode(false);
       trashQuery.refetch();
     },
-    onError: () => setErrorMessage('정리에 실패했어요.'),
+    onError: () => setErrorMessage(t('routineTrash.errorCleanup')),
   });
 
   const deletedPresetIds = useMemo(() => new Set(deletedPresets.map((p) => p.id)), [deletedPresets]);
@@ -201,13 +204,25 @@ export default function RoutineTrashScreen() {
     const presetIds = Array.from(selectedPresetIds);
     const routineIds = Array.from(selectedRoutineIds);
     const parts: string[] = [];
-    if (presetIds.length > 0) parts.push(`모음집 ${presetIds.length}개는 완전히 삭제돼요(연결된 루틴·기록은 안 지워져요)`);
-    if (routineIds.length > 0) parts.push(`루틴 ${routineIds.length}개는 이 목록에서만 정리돼요(완료기록은 계속 안전하게 보관돼요)`);
+    if (presetIds.length > 0) {
+      parts.push(
+        language === 'ko'
+          ? `모음집 ${presetIds.length}개는 완전히 삭제돼요(연결된 루틴·기록은 안 지워져요)`
+          : `${presetIds.length} set(s) will be permanently deleted (linked routines and records won't be)`
+      );
+    }
+    if (routineIds.length > 0) {
+      parts.push(
+        language === 'ko'
+          ? `루틴 ${routineIds.length}개는 이 목록에서만 정리돼요(완료기록은 계속 안전하게 보관돼요)`
+          : `${routineIds.length} routine(s) will just be cleared from this list (completion records stay safely stored)`
+      );
+    }
 
-    Alert.alert('정리할까요?', parts.join('. ') + '.', [
-      { text: '취소', style: 'cancel' },
+    Alert.alert(t('routineTrash.cleanupConfirmTitle'), parts.join('. ') + '.', [
+      { text: t('settings.cancel'), style: 'cancel' },
       {
-        text: '정리하기',
+        text: t('routineTrash.cleanupConfirmDo'),
         onPress: async () => {
           setErrorMessage(null);
           try {
@@ -235,118 +250,128 @@ export default function RoutineTrashScreen() {
       <View style={styles.toolbarRow}>
         {selectMode ? (
           <>
-            <Text style={styles.selectedCountText}>{totalSelectedCount}개 선택됨</Text>
-            <Pressable style={styles.toolbarButton} onPress={toggleSelectAll}>
+            <Text style={styles.selectedCountText}>
+              {totalSelectedCount}
+              {t('myRoutines.selectedCountSuffix')}
+            </Text>
+            <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectAll}>
               <Text style={styles.toolbarButtonText}>
-                {totalSelectedCount === totalSelectableCount ? '전체 해제' : '전체 선택'}
+                {totalSelectedCount === totalSelectableCount ? t('myRoutines.deselectAll') : t('myRoutines.selectAll')}
               </Text>
-            </Pressable>
-            <Pressable
+            </AnimatedPressable>
+            <AnimatedPressable
               style={styles.toolbarButton}
               disabled={totalSelectedCount === 0}
               onPress={handleDeleteSelected}>
-              <Text style={styles.toolbarButtonText}>정리</Text>
-            </Pressable>
-            <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
-              <Text style={styles.toolbarButtonText}>취소</Text>
-            </Pressable>
+              <Text style={styles.toolbarButtonText}>{t('routineTrash.cleanup')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectMode}>
+              <Text style={styles.toolbarButtonText}>{t('settings.cancel')}</Text>
+            </AnimatedPressable>
           </>
         ) : (
           !isEmpty && (
-            <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
-              <Text style={styles.toolbarButtonText}>선택 정리</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectMode}>
+              <Text style={styles.toolbarButtonText}>{t('routineTrash.selectCleanup')}</Text>
+            </AnimatedPressable>
           )
         )}
       </View>
 
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <Text style={styles.desc}>
-          삭제된 루틴은 여기서 언제든 복구할 수 있어요. 완료 기록도 계속 안전하게 보관되니 걱정 마세요.{'\n\n'}
-          모음집(루틴 묶음)은 2주 안에 복구하지 않으면 자동으로 삭제돼요. 2주를 기다리지 않고 바로 삭제하고
-          싶다면 "선택 정리"를 눌러주세요(연결된 루틴은 지워지지 않아요).
+          {t('routineTrash.descLine1')}
+          {'\n\n'}
+          {t('routineTrash.descLine2')}
         </Text>
 
         {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-        {isEmpty && <Text style={styles.emptyText}>삭제된 항목이 없어요.</Text>}
+        {isEmpty && <Text style={styles.emptyText}>{t('routineTrash.empty')}</Text>}
 
         {deletedPresets.map((preset) => {
           const routines = groupedByPreset.get(preset.id) ?? [];
           const isSelected = selectedPresetIds.has(preset.id);
           return (
-            <ShadowCard
+            <AnimatedPressable
               key={preset.id}
-              style={styles.cardOuter}
-              contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
-              <Pressable
-                style={styles.presetCard}
-                disabled={!selectMode}
-                onPress={() => togglePresetSelected(preset.id)}>
-                <View style={styles.cardHeaderRow}>
-                  {selectMode && (
-                    <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
-                      {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+              disabled={!selectMode}
+              onPress={() => togglePresetSelected(preset.id)}>
+              <ShadowCard
+                style={styles.cardOuter}
+                contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
+                <View style={styles.presetCard}>
+                  <View style={styles.cardHeaderRow}>
+                    {selectMode && (
+                      <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
+                        {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+                      </View>
+                    )}
+                    <View style={styles.cardHeaderText}>
+                      <View style={styles.presetTitleRow}>
+                        <Ionicons name="albums-outline" size={13} color={textMuted} />
+                        <Text style={styles.presetTitle}>{preset.name}</Text>
+                      </View>
+                      <Text style={styles.presetMeta}>
+                        {language === 'ko'
+                          ? `루틴 ${routines.length}개 · ${daysUntilPurge(preset.deleted_at!)}일 후 완전 삭제`
+                          : `${routines.length} routine(s) · permanently deleted in ${daysUntilPurge(preset.deleted_at!)} day(s)`}
+                      </Text>
                     </View>
-                  )}
-                  <View style={styles.cardHeaderText}>
-                    <View style={styles.presetTitleRow}>
-                      <Ionicons name="albums-outline" size={13} color={textMuted} />
-                      <Text style={styles.presetTitle}>{preset.name}</Text>
-                    </View>
-                    <Text style={styles.presetMeta}>
-                      루틴 {routines.length}개 · {daysUntilPurge(preset.deleted_at!)}일 후 완전 삭제
-                    </Text>
                   </View>
+                  {routines.map((routine) => (
+                    <Text key={routine.id} style={styles.presetRoutineTitle} numberOfLines={1}>
+                      · {routine.title}
+                    </Text>
+                  ))}
+                  {!selectMode && (
+                    <AnimatedPressable
+                      style={styles.restoreButton}
+                      disabled={busyKey === preset.id}
+                      onPress={() => handleRestorePreset(preset)}>
+                      <Text style={styles.restoreButtonText}>{t('routineTrash.restorePreset')}</Text>
+                    </AnimatedPressable>
+                  )}
                 </View>
-                {routines.map((routine) => (
-                  <Text key={routine.id} style={styles.presetRoutineTitle} numberOfLines={1}>
-                    · {routine.title}
-                  </Text>
-                ))}
-                {!selectMode && (
-                  <Pressable
-                    style={styles.restoreButton}
-                    disabled={busyKey === preset.id}
-                    onPress={() => handleRestorePreset(preset)}>
-                    <Text style={styles.restoreButtonText}>모음집 복구</Text>
-                  </Pressable>
-                )}
-              </Pressable>
-            </ShadowCard>
+              </ShadowCard>
+            </AnimatedPressable>
           );
         })}
 
         {individualRoutines.map((routine) => {
           const isSelected = selectedRoutineIds.has(routine.id);
           return (
-            <ShadowCard
+            <AnimatedPressable
               key={routine.id}
-              style={styles.cardOuter}
-              contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
-              <Pressable style={styles.row} disabled={!selectMode} onPress={() => toggleRoutineSelected(routine.id)}>
-                {selectMode && (
-                  <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
-                    {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+              disabled={!selectMode}
+              onPress={() => toggleRoutineSelected(routine.id)}>
+              <ShadowCard
+                style={styles.cardOuter}
+                contentStyle={selectMode && isSelected ? styles.cardSelected : undefined}>
+                <View style={styles.row}>
+                  {selectMode && (
+                    <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
+                      {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+                    </View>
+                  )}
+                  <View style={styles.rowInfo}>
+                    <Text style={styles.rowTitle} numberOfLines={1}>
+                      {routine.title}
+                      {routine.preset?.name ? ` · ${routine.preset.name}` : ''}
+                    </Text>
+                    <Text style={styles.rowMeta}>{timeLabel(routine, t)}</Text>
                   </View>
-                )}
-                <View style={styles.rowInfo}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {routine.title}
-                    {routine.preset?.name ? ` · ${routine.preset.name}` : ''}
-                  </Text>
-                  <Text style={styles.rowMeta}>{timeLabel(routine)}</Text>
+                  {!selectMode && (
+                    <AnimatedPressable
+                      style={styles.restoreButtonSmall}
+                      disabled={busyKey === routine.id}
+                      onPress={() => handleRestoreRoutine(routine)}>
+                      <Text style={styles.restoreButtonSmallText}>{t('categoryVideoGrid.restore')}</Text>
+                    </AnimatedPressable>
+                  )}
                 </View>
-                {!selectMode && (
-                  <Pressable
-                    style={styles.restoreButtonSmall}
-                    disabled={busyKey === routine.id}
-                    onPress={() => handleRestoreRoutine(routine)}>
-                    <Text style={styles.restoreButtonSmallText}>복구</Text>
-                  </Pressable>
-                )}
-              </Pressable>
-            </ShadowCard>
+              </ShadowCard>
+            </AnimatedPressable>
           );
         })}
       </ScrollView>

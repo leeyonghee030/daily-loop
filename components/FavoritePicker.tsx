@@ -1,16 +1,18 @@
 import { useRouter } from 'expo-router';
 import { useMemo, type ReactNode } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, View as RNView } from 'react-native';
+import { Modal, ScrollView, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
 import { border } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import type { Favorite } from '@/lib/favorites';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
-import { SLOT_LABELS, type Slot } from '@/lib/routines';
+import { useTranslation, type TranslationKey } from '@/lib/language';
+import { SLOT_LABEL_KEYS, type Slot } from '@/lib/routines';
 
-function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
+function favoriteSummary(favorite: Favorite, slots: Slot[], t: (key: TranslationKey) => string): string {
   if (favorite.is_instant && favorite.scheduled_time_start) {
     return favorite.scheduled_time_start.slice(0, 5);
   }
@@ -18,7 +20,7 @@ function favoriteSummary(favorite: Favorite, slots: Slot[]): string {
     return `${favorite.scheduled_time_start.slice(0, 5)}-${favorite.scheduled_time_end.slice(0, 5)}`;
   }
   const slot = slots.find((s) => s.id === favorite.slot_id);
-  return slot ? SLOT_LABELS[slot.slot_type] : '';
+  return slot ? t(SLOT_LABEL_KEYS[slot.slot_type]) : '';
 }
 
 export function FavoritePicker({
@@ -37,6 +39,7 @@ export function FavoritePicker({
   const router = useRouter();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   return (
@@ -46,25 +49,23 @@ export function FavoritePicker({
           <View style={styles.headerRow}>
             <View style={styles.titleRow}>
               <Ionicons name="star-outline" size={16} color={accent} />
-              <Text style={styles.title}>즐겨찾기</Text>
+              <Text style={styles.title}>{t('favoritePicker.title')}</Text>
             </View>
-            <Pressable onPress={onClose}>
-              <Text style={styles.closeText}>닫기</Text>
-            </Pressable>
+            <AnimatedPressable onPress={onClose}>
+              <Text style={styles.closeText}>{t('today.close')}</Text>
+            </AnimatedPressable>
           </View>
 
           <ScrollView style={styles.list}>
-            {favorites.length === 0 && (
-              <Text style={styles.emptyText}>저장된 즐겨찾기가 없어요. 아래 "즐겨찾기 관리"에서 만들어보세요.</Text>
-            )}
+            {favorites.length === 0 && <Text style={styles.emptyText}>{t('favoritePicker.empty')}</Text>}
             {favorites.map((favorite) => (
               <View key={favorite.id} style={styles.row}>
                 <View style={styles.rowInfo}>
                   <Text style={styles.rowTitle}>{favorite.title}</Text>
                   <Text style={styles.rowMeta}>
-                    {favoriteSummary(favorite, slots)}
+                    {favoriteSummary(favorite, slots, t)}
                     {favorite.block_type === 'tracking' ? ` · ${favorite.tracking_unit}` : ''}
-                    {favorite.is_required ? ' · 필수' : ''}
+                    {favorite.is_required ? t('myRoutines.requiredSuffix') : ''}
                   </Text>
                 </View>
                 <View style={styles.rowActions}>{renderActions(favorite)}</View>
@@ -72,14 +73,14 @@ export function FavoritePicker({
             ))}
           </ScrollView>
 
-          <Pressable
+          <AnimatedPressable
             style={styles.manageButton}
             onPress={() => {
               onClose();
               router.push('/favorites');
             }}>
-            <Text style={styles.manageButtonText}>즐겨찾기 관리</Text>
-          </Pressable>
+            <Text style={styles.manageButtonText}>{t('favoritePicker.manage')}</Text>
+          </AnimatedPressable>
         </View>
       </RNView>
     </Modal>

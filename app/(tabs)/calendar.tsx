@@ -2,10 +2,11 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { Dimensions, Modal, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -23,6 +24,7 @@ import {
 } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import {
   createMemo,
@@ -45,7 +47,7 @@ import {
   fetchMonthData,
   fetchWeekData,
   toggleCheckCompletion,
-  SLOT_LABELS,
+  SLOT_LABEL_KEYS,
   type DayStatus,
   type MonthData,
 } from '@/lib/routines';
@@ -56,17 +58,25 @@ const STATUS_COLORS: Record<DayStatus, string> = {
   missed_required: statusMissed,
 };
 
-const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+const WEEKDAY_KEYS = [
+  'calendar.weekdaySun',
+  'calendar.weekdayMon',
+  'calendar.weekdayTue',
+  'calendar.weekdayWed',
+  'calendar.weekdayThu',
+  'calendar.weekdayFri',
+  'calendar.weekdaySat',
+] as const;
 const WEEK_COLUMN_WIDTH = 86; // weekColumn 스타일의 width(80) + marginRight(6)
 
-function timeLabel(routine: MonthData['routines'][number]): string {
+function timeLabel(routine: MonthData['routines'][number], t: (key: TranslationKey) => string): string {
   if (routine.is_instant && routine.scheduled_time_start) {
     return routine.scheduled_time_start.slice(0, 5);
   }
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
   }
-  if (routine.slots) return SLOT_LABELS[routine.slots.slot_type];
+  if (routine.slots) return t(SLOT_LABEL_KEYS[routine.slots.slot_type]);
   return '';
 }
 
@@ -102,6 +112,7 @@ export default function CalendarScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const today = new Date();
@@ -322,7 +333,7 @@ export default function CalendarScreen() {
       queryClient.setQueryData(['week-data', userId, weekStart], (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.invalidateQueries({ queryKey: ['stats', userId] });
     } catch {
-      setErrorMessage('체크 처리에 실패했어요.');
+      setErrorMessage(t('calendar.errorCheck'));
     }
   }
 
@@ -351,7 +362,7 @@ export default function CalendarScreen() {
       setEditingMemoId(null);
       syncSlotAlarms(userId).catch(() => {});
     } catch {
-      setErrorMessage('메모 저장에 실패했어요.');
+      setErrorMessage(t('calendar.errorSaveMemo'));
     }
   }
 
@@ -366,7 +377,7 @@ export default function CalendarScreen() {
       }
       if (userId) syncSlotAlarms(userId).catch(() => {});
     } catch {
-      setErrorMessage('메모 삭제에 실패했어요.');
+      setErrorMessage(t('calendar.errorDeleteMemo'));
     }
   }
 
@@ -390,7 +401,7 @@ export default function CalendarScreen() {
       const isDisabled = state === 'disabled';
 
       return (
-        <Pressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
+        <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
           <View style={styles.diaryIconSlot}>
             {monthDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
           </View>
@@ -422,7 +433,7 @@ export default function CalendarScreen() {
               ))}
             </View>
           )}
-        </Pressable>
+        </AnimatedPressable>
       );
     },
     [monthQuery.data, monthMemosByDate, monthDiaryDates, selectedDate, theme, todayStr, accent, styles]
@@ -446,12 +457,12 @@ export default function CalendarScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.viewModeTabs}>
-        <Pressable
+        <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'week' && styles.viewModeTabActive]}
           onPress={() => setViewMode('week')}>
-          <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>주</Text>
-        </Pressable>
-        <Pressable
+          <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>{t('calendar.week')}</Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'month' && styles.viewModeTabActive]}
           onPress={() => {
             // 월간뷰로 들어갈 때마다 예전에 보던 달이 아니라 항상 지금 달부터 보여준다
@@ -463,8 +474,8 @@ export default function CalendarScreen() {
             setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
             setViewMode('month');
           }}>
-          <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>월</Text>
-        </Pressable>
+          <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>{t('calendar.month')}</Text>
+        </AnimatedPressable>
       </View>
 
       {viewMode === 'week' && (
@@ -474,11 +485,11 @@ export default function CalendarScreen() {
               <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
               <View style={styles.streakHeroNumRow}>
                 <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-                <Text style={styles.streakHeroUnit}>일 연속 · 역대 최고</Text>
+                <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
               </View>
             </>
           ) : (
-            <Text style={styles.streakBadgeEmptyText}>아직 최고 기록이 없어요</Text>
+            <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
           )}
         </ShadowCard>
       )}
@@ -508,15 +519,15 @@ export default function CalendarScreen() {
       {viewMode === 'week' && (
         <View style={styles.weekContainer}>
           <View style={styles.weekHeader}>
-            <Pressable onPress={() => shiftWeek(-7)} hitSlop={8}>
+            <AnimatedPressable onPress={() => shiftWeek(-7)} hitSlop={8}>
               <Text style={styles.weekArrow}>‹</Text>
-            </Pressable>
+            </AnimatedPressable>
             <Text style={styles.weekRangeText}>
               {weekStartLabel} - {weekEndLabel}
             </Text>
-            <Pressable onPress={() => shiftWeek(7)} hitSlop={8}>
+            <AnimatedPressable onPress={() => shiftWeek(7)} hitSlop={8}>
               <Text style={styles.weekArrow}>›</Text>
-            </Pressable>
+            </AnimatedPressable>
           </View>
 
           <ScrollView
@@ -537,7 +548,7 @@ export default function CalendarScreen() {
               // 지금은 index와 같지만, 혼동 없게 날짜에서 직접 계산)
               const dow = new Date(`${dateStr}T00:00:00`).getDay();
                 return (
-                  <Pressable
+                  <AnimatedPressable
                     key={dateStr}
                     style={[styles.weekColumn, dateStr === todayStr && styles.weekColumnToday]}
                     onPress={() => setSelectedDate(dateStr)}>
@@ -545,7 +556,7 @@ export default function CalendarScreen() {
                       <View style={styles.diaryIconSlot}>
                         {weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
                       </View>
-                      <Text style={styles.weekRowWeekday}>{WEEKDAY_LABELS[dow]}</Text>
+                      <Text style={styles.weekRowWeekday}>{t(WEEKDAY_KEYS[dow])}</Text>
                       <Text style={styles.weekRowDay}>{dayNum}</Text>
                       {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
                       {(weekMemosByDate[dateStr] ?? []).length > 0 && (
@@ -574,7 +585,7 @@ export default function CalendarScreen() {
                         ))
                       )}
                     </ScrollView>
-                  </Pressable>
+                  </AnimatedPressable>
                 );
               })}
           </ScrollView>
@@ -584,15 +595,15 @@ export default function CalendarScreen() {
       <View style={styles.legend}>
         <View style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.done }]} />
-          <Text style={styles.legendText}>다 완료</Text>
+          <Text style={styles.legendText}>{t('calendar.legendDone')}</Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.partial }]} />
-          <Text style={styles.legendText}>일부 완료</Text>
+          <Text style={styles.legendText}>{t('calendar.legendPartial')}</Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.missed_required }]} />
-          <Text style={styles.legendText}>필수 놓침</Text>
+          <Text style={styles.legendText}>{t('calendar.legendMissed')}</Text>
         </View>
       </View>
 
@@ -602,14 +613,14 @@ export default function CalendarScreen() {
         transparent
         onRequestClose={() => setSelectedDate(null)}>
         <View style={styles.modalContainer}>
-          <Pressable
+          <AnimatedPressable
             style={[StyleSheet.absoluteFill, styles.modalBackdrop]}
             onPress={() => setSelectedDate(null)}
           />
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{selectedDate}</Text>
-              <Pressable
+              <AnimatedPressable
                 style={styles.diaryButton}
                 onPress={() => {
                   const date = selectedDate;
@@ -617,18 +628,18 @@ export default function CalendarScreen() {
                   if (date) router.push({ pathname: '/diary-form', params: { date } });
                 }}>
                 <Ionicons name="book-outline" size={13} color={accent} />
-                <Text style={styles.diaryButtonText}>일기 보기</Text>
-              </Pressable>
+                <Text style={styles.diaryButtonText}>{t('calendar.viewDiary')}</Text>
+              </AnimatedPressable>
             </View>
             {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
             <ScrollView style={styles.detailList} keyboardShouldPersistTaps="handled">
               <View style={styles.sectionLabelRow}>
                 <Ionicons name="bookmark-outline" size={13} color={Colors[theme].text} style={{ opacity: 0.7 }} />
-                <Text style={styles.sectionLabel}>메모</Text>
+                <Text style={styles.sectionLabel}>{t('calendar.memoSection')}</Text>
               </View>
               {selectedMemos.length === 0 ? (
-                <Text style={styles.memoEmptyText}>메모 없음</Text>
+                <Text style={styles.memoEmptyText}>{t('calendar.noMemo')}</Text>
               ) : (
                 selectedMemos.map((memo) => (
                   <View
@@ -639,12 +650,12 @@ export default function CalendarScreen() {
                     ]}>
                     <Text style={styles.memoCardText}>{memo.content}</Text>
                     <View style={styles.memoCardActions}>
-                      <Pressable onPress={() => startEditMemo(memo)} hitSlop={6}>
-                        <Text style={styles.memoActionText}>수정</Text>
-                      </Pressable>
-                      <Pressable onPress={() => handleDeleteMemo(memo.id)} hitSlop={6}>
-                        <Text style={styles.memoActionText}>삭제</Text>
-                      </Pressable>
+                      <AnimatedPressable onPress={() => startEditMemo(memo)} hitSlop={6}>
+                        <Text style={styles.memoActionText}>{t('calendar.memoEdit')}</Text>
+                      </AnimatedPressable>
+                      <AnimatedPressable onPress={() => handleDeleteMemo(memo.id)} hitSlop={6}>
+                        <Text style={styles.memoActionText}>{t('calendar.memoDelete')}</Text>
+                      </AnimatedPressable>
                     </View>
                   </View>
                 ))
@@ -652,7 +663,7 @@ export default function CalendarScreen() {
 
               <View style={styles.memoColorPicker}>
                 {MEMO_COLOR_ORDER.map((c) => (
-                  <Pressable
+                  <AnimatedPressable
                     key={c}
                     onPress={() => setMemoColor(c)}
                     style={[
@@ -666,30 +677,32 @@ export default function CalendarScreen() {
               <View style={styles.memoAddRow}>
                 <TextInput
                   style={[styles.memoInput, { color: Colors[theme].text }]}
-                  placeholder="메모 입력 (예: 내일 시험치기)"
+                  placeholder={t('calendar.memoPlaceholder')}
                   placeholderTextColor="#999"
                   value={memoText}
                   onChangeText={setMemoText}
                   onSubmitEditing={handleSubmitMemo}
                 />
-                <Pressable style={styles.memoAddButton} onPress={handleSubmitMemo}>
-                  <Text style={styles.memoAddButtonText}>{editingMemoId ? '수정완료' : '추가'}</Text>
-                </Pressable>
+                <AnimatedPressable style={styles.memoAddButton} onPress={handleSubmitMemo}>
+                  <Text style={styles.memoAddButtonText}>
+                    {editingMemoId ? t('calendar.memoEditComplete') : t('calendar.memoAdd')}
+                  </Text>
+                </AnimatedPressable>
               </View>
               {editingMemoId && (
-                <Pressable
+                <AnimatedPressable
                   onPress={() => {
                     setEditingMemoId(null);
                     setMemoText('');
                     setMemoColor('yellow');
                   }}>
-                  <Text style={styles.memoCancelEdit}>수정 취소</Text>
-                </Pressable>
+                  <Text style={styles.memoCancelEdit}>{t('calendar.memoCancelEdit')}</Text>
+                </AnimatedPressable>
               )}
 
-              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>오늘의 루틴</Text>
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>{t('calendar.todayRoutines')}</Text>
               {detail.length === 0 ? (
-                <Text style={styles.emptyText}>이 날은 예정된 루틴이 없어요</Text>
+                <Text style={styles.emptyText}>{t('calendar.noRoutinesThisDay')}</Text>
               ) : (
                 detail.map(({ routine, completion }) => {
                   const isToday = selectedDate === todayStr;
@@ -707,7 +720,7 @@ export default function CalendarScreen() {
                           {routine.title}
                           {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
                         </Text>
-                        <Text style={styles.detailTime}>{timeLabel(routine)}</Text>
+                        <Text style={styles.detailTime}>{timeLabel(routine, t)}</Text>
                       </View>
                       {routine.block_type === 'tracking' && completion?.tracking_value !== null && (
                         <Text style={styles.detailValue}>
@@ -718,20 +731,20 @@ export default function CalendarScreen() {
                   );
 
                   return isCheckToggleable ? (
-                    <Pressable
+                    <AnimatedPressable
                       key={routine.id}
                       onPress={() => handleToggleToday(routine.id, completion?.id ?? null)}>
                       {row}
-                    </Pressable>
+                    </AnimatedPressable>
                   ) : (
                     <View key={routine.id}>{row}</View>
                   );
                 })
               )}
             </ScrollView>
-            <Pressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
-              <Text style={styles.closeButtonText}>닫기</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
+              <Text style={styles.closeButtonText}>{t('today.close')}</Text>
+            </AnimatedPressable>
           </View>
         </View>
       </Modal>
@@ -743,7 +756,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   return StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 39,
+    paddingTop: 24,
   },
   viewModeTabs: {
     flexDirection: 'row',

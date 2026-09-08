@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import ReorderableList, {
   reorderItems,
@@ -10,10 +10,12 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import { deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import {
@@ -24,13 +26,14 @@ import {
   softDeleteRoutines,
   unskipRoutine,
   updateSortOrder,
-  SLOT_LABELS,
+  SLOT_LABEL_KEYS,
   type RepeatType,
   type Routine,
 } from '@/lib/routines';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
 type FilterValue = RepeatType | 'all';
+type OnceSubFilter = 'active' | 'past';
 
 const PRESET_CHIP_GAP = 8;
 const PRESET_CHIPS_PER_ROW = 4;
@@ -59,38 +62,31 @@ function layoutPresetRows(items: RoutinePreset[]): RoutinePreset[][] {
   return rows;
 }
 
-const FILTERS: { value: FilterValue; label: string }[] = [
-  { value: 'all', label: '전체' },
-  { value: 'daily', label: '매일' },
-  { value: 'weekday', label: '평일' },
-  { value: 'weekend', label: '주말' },
-  { value: 'custom', label: '특정 요일' },
-  { value: 'once', label: '1회성' },
-];
+type TFunc = (key: TranslationKey) => string;
 
-const REPEAT_LABELS: Record<RepeatType, string> = {
-  daily: '매일',
-  weekday: '평일',
-  weekend: '주말',
-  custom: '특정 요일',
-  once: '1회성',
+const REPEAT_LABEL_KEYS: Record<RepeatType, TranslationKey> = {
+  daily: 'myRoutines.repeatDaily',
+  weekday: 'myRoutines.repeatWeekday',
+  weekend: 'myRoutines.repeatWeekend',
+  custom: 'myRoutines.repeatCustom',
+  once: 'myRoutines.repeatOnce',
 };
 
-function timeLabel(routine: Routine): string {
+function timeLabel(routine: Routine, t: TFunc): string {
   if (routine.is_instant && routine.scheduled_time_start) {
     return routine.scheduled_time_start.slice(0, 5);
   }
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     return `${routine.scheduled_time_start.slice(0, 5)}-${routine.scheduled_time_end.slice(0, 5)}`;
   }
-  if (routine.slots) return SLOT_LABELS[routine.slots.slot_type];
-  return '시간 미지정';
+  if (routine.slots) return t(SLOT_LABEL_KEYS[routine.slots.slot_type]);
+  return t('myRoutines.noScheduledTime');
 }
 
-function metaLabel(routine: Routine): string {
-  const parts = [REPEAT_LABELS[routine.repeat_type], timeLabel(routine)];
+function metaLabel(routine: Routine, t: TFunc): string {
+  const parts = [t(REPEAT_LABEL_KEYS[routine.repeat_type]), timeLabel(routine, t)];
   if (routine.preset?.name) parts.push(routine.preset.name);
-  if (routine.is_paused) parts.push('일시정지');
+  if (routine.is_paused) parts.push(t('myRoutines.paused'));
   return parts.join(' · ');
 }
 
@@ -117,40 +113,41 @@ function RoutineRow({
   const drag = useReorderableDrag();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   return (
     <View style={styles.row}>
       {selectMode ? (
-        <Pressable style={styles.checkbox} onPress={onToggleSelect} hitSlop={8}>
+        <AnimatedPressable style={styles.checkbox} onPress={onToggleSelect} hitSlop={8}>
           <View style={[styles.checkboxBox, isSelected && styles.checkboxBoxChecked]}>
             {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
           </View>
-        </Pressable>
+        </AnimatedPressable>
       ) : (
-        <Pressable onLongPress={drag} delayLongPress={150} style={styles.dragHandle} hitSlop={8}>
+        <AnimatedPressable onLongPress={drag} delayLongPress={150} style={styles.dragHandle} hitSlop={8}>
           <Text style={styles.dragHandleText}>≡</Text>
-        </Pressable>
+        </AnimatedPressable>
       )}
-      <Pressable style={styles.rowMain} onPress={selectMode ? onToggleSelect : onEdit}>
+      <AnimatedPressable style={styles.rowMain} onPress={selectMode ? onToggleSelect : onEdit}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {routine.title}
-          {routine.is_required ? ' · 필수' : ''}
+          {routine.is_required ? t('myRoutines.requiredSuffix') : ''}
         </Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
-          {metaLabel(routine)}
-          {isSkippedToday ? ' · 오늘 제외됨' : ''}
+          {metaLabel(routine, t)}
+          {isSkippedToday ? t('myRoutines.skippedTodaySuffix') : ''}
         </Text>
-      </Pressable>
+      </AnimatedPressable>
       {!selectMode && isSkippedToday && (
-        <Pressable style={styles.unskipButton} onPress={onUnskip} hitSlop={8}>
-          <Text style={styles.unskipButtonText}>오늘 목록에 추가</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.unskipButton} onPress={onUnskip} hitSlop={8}>
+          <Text style={styles.unskipButtonText}>{t('myRoutines.addToToday')}</Text>
+        </AnimatedPressable>
       )}
       {!selectMode && (
-        <Pressable style={styles.deleteButton} onPress={onDelete} hitSlop={8}>
-          <Text style={styles.deleteButtonText}>삭제</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.deleteButton} onPress={onDelete} hitSlop={8}>
+          <Text style={styles.deleteButtonText}>{t('myRoutines.delete')}</Text>
+        </AnimatedPressable>
       )}
     </View>
   );
@@ -163,7 +160,26 @@ export default function MyRoutinesScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  const FILTERS = useMemo<{ value: FilterValue; label: string }[]>(
+    () => [
+      { value: 'all', label: t('myRoutines.filterAll') },
+      { value: 'daily', label: t('myRoutines.filterDaily') },
+      { value: 'weekday', label: t('myRoutines.filterWeekday') },
+      { value: 'weekend', label: t('myRoutines.filterWeekend') },
+      { value: 'custom', label: t('myRoutines.filterCustom') },
+      { value: 'once', label: t('myRoutines.filterOnce') },
+    ],
+    [t]
+  );
+  const ONCE_SUB_FILTERS = useMemo<{ value: OnceSubFilter; label: string }[]>(
+    () => [
+      { value: 'active', label: t('myRoutines.onceActive') },
+      { value: 'past', label: t('myRoutines.oncePast') },
+    ],
+    [t]
+  );
   const routinesQueryKey = ['all-routines', userId] as const;
   // presets 탭 화면과 정확히 같은 쿼리 키를 써서 캐시를 공유한다
   const presetsQueryKey = ['presets', userId] as const;
@@ -173,6 +189,8 @@ export default function MyRoutinesScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [groupMode, setGroupMode] = useState<'repeat' | 'preset'>('repeat');
   const [filter, setFilter] = useState<FilterValue>('all');
+  // "1회성" 필터를 골랐을 때만 쓰는 하위 구분 — 오늘 이후 vs 날짜 지난 것
+  const [onceSubFilter, setOnceSubFilter] = useState<OnceSubFilter>('active');
   const [presetFilter, setPresetFilter] = useState<string | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -225,7 +243,7 @@ export default function MyRoutinesScreen() {
       });
       queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
     } catch {
-      setErrorMessage('되돌리기에 실패했어요.');
+      setErrorMessage(t('myRoutines.errorUnskip'));
     }
   }
 
@@ -238,21 +256,36 @@ export default function MyRoutinesScreen() {
   }
 
   useEffect(() => {
-    if (routinesQuery.isError || presetsQuery.isError) setErrorMessage('루틴을 불러오지 못했어요.');
+    if (routinesQuery.isError || presetsQuery.isError) setErrorMessage(t('myRoutines.errorLoad'));
   }, [routinesQuery.isError, presetsQuery.isError]);
+
+  // 1회성 루틴은 지정한 날짜가 지나면 다시 활성화될 일이 없어서, "전체"/모음집 등
+  // 다른 카테고리에서는 안 보이게 숨긴다. 완료기록은 그대로 남아있어야 하므로 삭제는 절대 안 하고,
+  // "지난 1회성" 필터에서만 따로 모아 보여준다(사용자가 필요하면 거기서 직접 삭제)
+  function isPastOnce(r: Routine): boolean {
+    return r.repeat_type === 'once' && !!r.scheduled_date && r.scheduled_date < todayDateStr;
+  }
 
   const filtered = routines.filter((r) => {
     if (groupMode === 'repeat') {
-      return filter === 'all' || r.repeat_type === filter;
+      if (filter === 'all') return !isPastOnce(r);
+      if (filter === 'once') return r.repeat_type === 'once' && (onceSubFilter === 'past' ? isPastOnce(r) : !isPastOnce(r));
+      return r.repeat_type === filter;
     }
     // 모음집 탭에서는 특정 모음집을 고르기 전까지는 아무것도 안 보여준다 —
     // "반복 주기" 탭에서 보이던 목록이 그대로 남아있으면 헷갈려서
-    return presetFilter !== null && r.preset_id === presetFilter;
+    return presetFilter !== null && r.preset_id === presetFilter && !isPastOnce(r);
   });
+
+  function selectFilter(value: FilterValue) {
+    setFilter(value);
+    setOnceSubFilter('active');
+  }
 
   function switchGroupMode(mode: 'repeat' | 'preset') {
     setGroupMode(mode);
     setFilter('all');
+    setOnceSubFilter('active');
     setPresetFilter(null);
   }
 
@@ -296,7 +329,7 @@ export default function MyRoutinesScreen() {
       setRoutines(remaining);
       await deletePresetsById(presetIdsToDelete);
     } catch {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('myRoutines.errorDelete'));
     }
   }
 
@@ -306,21 +339,25 @@ export default function MyRoutinesScreen() {
 
     if (emptied.length > 0) {
       const preset = emptied[0];
-      Alert.alert(
-        '루틴을 삭제할까요?',
-        `"${routine.title}"을(를) 지우면 "${preset.name}" 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '루틴만 삭제', onPress: () => performDelete(routine, remaining) },
-          { text: '모음집도 삭제', style: 'destructive', onPress: () => performDelete(routine, remaining, [preset.id]) },
-        ]
-      );
+      const message =
+        language === 'ko'
+          ? `"${routine.title}"을(를) 지우면 "${preset.name}" 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+          : `Deleting "${routine.title}" will leave "${preset.name}" with no routines left. You can restore it within 2 weeks from "Routine Recovery".`;
+      Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
+        { text: t('settings.cancel'), style: 'cancel' },
+        { text: t('myRoutines.deleteRoutineOnly'), onPress: () => performDelete(routine, remaining) },
+        { text: t('myRoutines.deletePresetToo'), style: 'destructive', onPress: () => performDelete(routine, remaining, [preset.id]) },
+      ]);
       return;
     }
 
-    Alert.alert('루틴을 삭제할까요?', `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`, [
-      { text: '취소', style: 'cancel' },
-      { text: '삭제', style: 'destructive', onPress: () => performDelete(routine, remaining) },
+    const message =
+      language === 'ko'
+        ? `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+        : `All occurrences of "${routine.title}" will be deleted. You can restore it within 2 weeks from "Routine Recovery".`;
+    Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
+      { text: t('settings.cancel'), style: 'cancel' },
+      { text: t('myRoutines.delete'), style: 'destructive', onPress: () => performDelete(routine, remaining) },
     ]);
   }
 
@@ -350,7 +387,7 @@ export default function MyRoutinesScreen() {
       setSelectMode(false);
       await deletePresetsById(presetIdsToDelete);
     } catch {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('myRoutines.errorDelete'));
     }
   }
 
@@ -364,25 +401,29 @@ export default function MyRoutinesScreen() {
 
     if (emptied.length > 0) {
       const names = emptied.map((p) => `"${p.name}"`).join(', ');
-      Alert.alert(
-        '선택한 루틴을 삭제할까요?',
-        `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. ${names} 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '루틴만 삭제', onPress: () => performBulkDelete(ids, remaining) },
-          {
-            text: '모음집도 삭제',
-            style: 'destructive',
-            onPress: () => performBulkDelete(ids, remaining, emptied.map((p) => p.id)),
-          },
-        ]
-      );
+      const message =
+        language === 'ko'
+          ? `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. ${names} 모음집에 남은 루틴이 없어져요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+          : `All occurrences of ${count} routines will be deleted. ${names} will have no routines left. You can restore within 2 weeks from "Routine Recovery".`;
+      Alert.alert(t('myRoutines.deleteSelectedTitle'), message, [
+        { text: t('settings.cancel'), style: 'cancel' },
+        { text: t('myRoutines.deleteRoutineOnly'), onPress: () => performBulkDelete(ids, remaining) },
+        {
+          text: t('myRoutines.deletePresetToo'),
+          style: 'destructive',
+          onPress: () => performBulkDelete(ids, remaining, emptied.map((p) => p.id)),
+        },
+      ]);
       return;
     }
 
-    Alert.alert('선택한 루틴을 삭제할까요?', `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`, [
-      { text: '취소', style: 'cancel' },
-      { text: '삭제', style: 'destructive', onPress: () => performBulkDelete(ids, remaining) },
+    const message =
+      language === 'ko'
+        ? `${count}개 루틴에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+        : `All occurrences of ${count} routines will be deleted. You can restore within 2 weeks from "Routine Recovery".`;
+    Alert.alert(t('myRoutines.deleteSelectedTitle'), message, [
+      { text: t('settings.cancel'), style: 'cancel' },
+      { text: t('myRoutines.delete'), style: 'destructive', onPress: () => performBulkDelete(ids, remaining) },
     ]);
   }
 
@@ -392,60 +433,80 @@ export default function MyRoutinesScreen() {
         <View style={styles.headerRow}>
           <View style={styles.headerTextColumn}>
             {showSubtitle ? (
-              <Pressable onPress={() => setShowSubtitle(false)}>
-                <Text style={styles.subtitle}>전체 루틴을 보고 수정할 수 있어요</Text>
-              </Pressable>
+              <AnimatedPressable onPress={() => setShowSubtitle(false)}>
+                <Text style={styles.subtitle}>{t('myRoutines.subtitle')}</Text>
+              </AnimatedPressable>
             ) : (
-              <Pressable style={styles.subtitleCollapsed} onPress={() => setShowSubtitle(true)} hitSlop={8}>
+              <AnimatedPressable style={styles.subtitleCollapsed} onPress={() => setShowSubtitle(true)} hitSlop={8}>
                 <Text style={styles.subtitleIcon}>ⓘ</Text>
-              </Pressable>
+              </AnimatedPressable>
             )}
           </View>
-          <Pressable style={styles.addButton} onPress={() => router.push('/routine-trash')}>
+          <AnimatedPressable style={styles.addButton} onPress={() => router.push('/routine-trash')}>
             <Ionicons name="refresh-outline" size={13} color="#fff" />
-            <Text style={styles.addButtonText}>루틴 복구</Text>
-          </Pressable>
+            <Text style={styles.addButtonText}>{t('myRoutines.routineTrash')}</Text>
+          </AnimatedPressable>
         </View>
       </View>
 
       <View style={styles.groupModeTabs}>
-        <Pressable
+        <AnimatedPressable
           style={[styles.groupModeTab, groupMode === 'repeat' && styles.groupModeTabActive]}
           onPress={() => switchGroupMode('repeat')}>
           <Text style={[styles.groupModeTabText, groupMode === 'repeat' && styles.groupModeTabTextActive]}>
-            반복 주기
+            {t('myRoutines.groupRepeat')}
           </Text>
-        </Pressable>
-        <Pressable
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.groupModeTab, groupMode === 'preset' && styles.groupModeTabActive]}
           onPress={() => switchGroupMode('preset')}>
           <Text style={[styles.groupModeTabText, groupMode === 'preset' && styles.groupModeTabTextActive]}>
-            모음집
+            {t('myRoutines.groupPreset')}
           </Text>
-        </Pressable>
+        </AnimatedPressable>
       </View>
 
       {groupMode === 'repeat' ? (
-        <FlatList
-          key="repeat-filter"
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterRow}
-          contentContainerStyle={styles.filterRowContent}
-          data={FILTERS}
-          keyExtractor={(item) => item.value}
-          renderItem={({ item }) => (
-            <Pressable
-              style={[styles.filterChip, filter === item.value && styles.filterChipActive]}
-              onPress={() => setFilter(item.value)}>
-              <Text style={[styles.filterChipText, filter === item.value && styles.filterChipTextActive]}>
-                {item.label}
-              </Text>
-            </Pressable>
+        <>
+          <FlatList
+            key="repeat-filter"
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.filterRow}
+            contentContainerStyle={styles.filterRowContent}
+            data={FILTERS}
+            keyExtractor={(item) => item.value}
+            renderItem={({ item }) => (
+              <AnimatedPressable
+                style={[styles.filterChip, filter === item.value && styles.filterChipActive]}
+                onPress={() => selectFilter(item.value)}>
+                <Text style={[styles.filterChipText, filter === item.value && styles.filterChipTextActive]}>
+                  {item.label}
+                </Text>
+              </AnimatedPressable>
+            )}
+          />
+          {filter === 'once' && (
+            <View style={styles.onceSubFilterRow}>
+              {ONCE_SUB_FILTERS.map((item) => (
+                <AnimatedPressable
+                  key={item.value}
+                  style={[styles.onceSubFilterChip, onceSubFilter === item.value && styles.onceSubFilterChipActive]}
+                  onPress={() => setOnceSubFilter(item.value)}>
+                  <Text
+                    style={[
+                      styles.onceSubFilterChipText,
+                      onceSubFilter === item.value && styles.onceSubFilterChipTextActive,
+                    ]}>
+                    {item.label}
+                  </Text>
+                </AnimatedPressable>
+              ))}
+            </View>
           )}
-        />
+        </>
       ) : presets.length === 0 ? (
-        <Text style={styles.noPresetsText}>아직 만든 모음집이 없어요.</Text>
+        <Text style={styles.noPresetsText}>{t('myRoutines.noPresets')}</Text>
       ) : (
         // 항상 정확히 3줄 — 처음 12개는 4개씩 순서대로, 그 이후는 줄마다 한 개씩 돌아가며 추가.
         // 3줄 전체가 하나의 가로 스크롤로 묶여서, 넘치면 오른쪽으로 당겨서 본다.
@@ -454,17 +515,19 @@ export default function MyRoutinesScreen() {
           showsHorizontalScrollIndicator
           style={styles.presetFilterScroll}>
           <View>
-            {layoutPresetRows(presets).map((row, rowIndex) => (
+            {layoutPresetRows(presets)
+              .filter((row) => row.length > 0)
+              .map((row, rowIndex) => (
               <View key={rowIndex} style={styles.presetFilterRow}>
                 {row.map((item) => (
-                  <Pressable
+                  <AnimatedPressable
                     key={item.id}
                     style={[styles.filterChip, presetFilter === item.id && styles.filterChipActive]}
                     onPress={() => setPresetFilter((prev) => (prev === item.id ? null : item.id))}>
                     <Text style={[styles.filterChipText, presetFilter === item.id && styles.filterChipTextActive]}>
                       {truncatePresetName(item.name)}
                     </Text>
-                  </Pressable>
+                  </AnimatedPressable>
                 ))}
               </View>
             ))}
@@ -475,33 +538,36 @@ export default function MyRoutinesScreen() {
       <View style={styles.toolbarRow}>
         {selectMode ? (
           <>
-            <Text style={styles.selectedCountText}>{selectedIds.size}개 선택됨</Text>
-            <Pressable style={styles.toolbarButton} onPress={toggleSelectAll}>
+            <Text style={styles.selectedCountText}>
+              {selectedIds.size}
+              {t('myRoutines.selectedCountSuffix')}
+            </Text>
+            <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectAll}>
               <Text style={styles.toolbarButtonText}>
-                {selectedIds.size === filtered.length ? '전체 해제' : '전체 선택'}
+                {selectedIds.size === filtered.length ? t('myRoutines.deselectAll') : t('myRoutines.selectAll')}
               </Text>
-            </Pressable>
-            <Pressable
+            </AnimatedPressable>
+            <AnimatedPressable
               style={styles.toolbarButton}
               disabled={selectedIds.size === 0}
               onPress={handleBulkDeleteSelected}>
-              <Text style={styles.toolbarButtonDangerText}>삭제</Text>
-            </Pressable>
-            <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
-              <Text style={styles.toolbarButtonText}>취소</Text>
-            </Pressable>
+              <Text style={styles.toolbarButtonDangerText}>{t('myRoutines.delete')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectMode}>
+              <Text style={styles.toolbarButtonText}>{t('settings.cancel')}</Text>
+            </AnimatedPressable>
           </>
         ) : (
-          <Pressable style={styles.toolbarButton} onPress={toggleSelectMode}>
-            <Text style={styles.toolbarButtonText}>선택 삭제</Text>
-          </Pressable>
+          <AnimatedPressable style={styles.toolbarButton} onPress={toggleSelectMode}>
+            <Text style={styles.toolbarButtonText}>{t('myRoutines.bulkDelete')}</Text>
+          </AnimatedPressable>
         )}
       </View>
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
       {!selectMode && filtered.length > 1 && (
-        <Text style={styles.dragHint}>≡ 를 길게 눌러 드래그하면 순서를 바꿀 수 있어요</Text>
+        <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>
       )}
 
       {isLoading ? (
@@ -512,8 +578,8 @@ export default function MyRoutinesScreen() {
         <View style={styles.centered}>
           <Text style={styles.emptyText}>
             {groupMode === 'preset' && presetFilter === null
-              ? '위에서 모음집을 골라주세요'
-              : '해당하는 루틴이 없어요'}
+              ? t('myRoutines.emptyChoosePreset')
+              : t('myRoutines.emptyNoMatch')}
           </Text>
         </View>
       ) : (
@@ -545,7 +611,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   return StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 16,
+    paddingTop: 20,
   },
   centered: {
     flex: 1,
@@ -636,7 +702,9 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   presetFilterScroll: {
     flexGrow: 0,
-    marginBottom: 12,
+    // 마지막 줄(presetFilterRow)에도 이미 자체 marginBottom(PRESET_CHIP_GAP)이 있어서, 여기까지
+    // 12를 더 주면 "선택 삭제" 버튼과 간격이 너무 벌어짐 — 둘을 합쳐 12가 되도록 줄임
+    marginBottom: 4,
   },
   presetFilterRow: {
     flexDirection: 'row',
@@ -660,6 +728,31 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontWeight: '600',
   },
   filterChipTextActive: {
+    color: '#fff',
+  },
+  onceSubFilterRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  onceSubFilterChip: {
+    borderWidth: 1,
+    borderColor: border,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  onceSubFilterChipActive: {
+    backgroundColor: accent,
+    borderColor: accent,
+  },
+  onceSubFilterChipText: {
+    color: '#666',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  onceSubFilterChipTextActive: {
     color: '#fff',
   },
   toolbarRow: {

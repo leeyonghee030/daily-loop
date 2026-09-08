@@ -1,14 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, ScrollView, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, fontDisplay, fontMono, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import {
   emojiForStreak,
@@ -84,6 +86,7 @@ export default function StatsScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   // 오늘 탭이 화면을 연 뒤 백그라운드로 이 같은 쿼리 키(['stats', userId])를 미리 받아두므로
@@ -152,10 +155,10 @@ export default function StatsScreen() {
   if (summaryQuery.isError) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.emptyText}>통계를 불러오지 못했어요.</Text>
-        <Pressable onPress={() => summaryQuery.refetch()} style={styles.retryButton}>
-          <Text style={[styles.retryButtonText, { color: accent }]}>다시 시도</Text>
-        </Pressable>
+        <Text style={styles.emptyText}>{t('stats.errorLoad')}</Text>
+        <AnimatedPressable onPress={() => summaryQuery.refetch()} style={styles.retryButton}>
+          <Text style={[styles.retryButtonText, { color: accent }]}>{t('stats.retry')}</Text>
+        </AnimatedPressable>
       </View>
     );
   }
@@ -178,7 +181,7 @@ export default function StatsScreen() {
   if (!hasAnyData) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.emptyText}>아직 기록이 없어요, 루틴을 먼저 체크해보세요</Text>
+        <Text style={styles.emptyText}>{t('stats.emptyNoRecords')}</Text>
       </View>
     );
   }
@@ -191,30 +194,32 @@ export default function StatsScreen() {
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <Text style={styles.cardTitle}>{item.routine.title}</Text>
-          <Pressable onPress={() => handleToggleHide(item, true)} hitSlop={8}>
-            <Text style={styles.hideLink}>숨기기</Text>
-          </Pressable>
+          <AnimatedPressable onPress={() => handleToggleHide(item, true)} hitSlop={8}>
+            <Text style={styles.hideLink}>{t('stats.hide')}</Text>
+          </AnimatedPressable>
         </View>
 
         <View style={styles.streakChipRow}>
           <View style={styles.streakChip}>
-            <Text style={styles.streakChipLabel}>현재 스트릭</Text>
+            <Text style={styles.streakChipLabel}>{t('stats.currentStreak')}</Text>
             <Text style={styles.streakChipValue}>
               {currentEmoji ? `${currentEmoji} ` : ''}
-              {item.currentStreak}일
+              {item.currentStreak}
+              {t('today.daySuffix')}
             </Text>
           </View>
           <View style={styles.streakChip}>
-            <Text style={styles.streakChipLabel}>최고 스트릭</Text>
+            <Text style={styles.streakChipLabel}>{t('stats.bestStreak')}</Text>
             <Text style={styles.streakChipValue}>
               {bestEmoji ? `${bestEmoji} ` : ''}
-              {item.bestStreak}일
+              {item.bestStreak}
+              {t('today.daySuffix')}
             </Text>
           </View>
         </View>
 
         <View style={styles.rateRow}>
-          <Text style={styles.cardLabel}>전체 기간 수행률</Text>
+          <Text style={styles.cardLabel}>{t('stats.allTimeRate')}</Text>
           <Text style={styles.cardValue}>
             {formatRate(item.completedCount, item.scheduledCount)} ({item.completedCount}/{item.scheduledCount})
           </Text>
@@ -241,23 +246,25 @@ export default function StatsScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.periodTabs}>
-        <Pressable
+        <AnimatedPressable
           style={[styles.periodTab, period === 'weekly' && styles.periodTabActive]}
           onPress={() => setPeriod('weekly')}>
-          <Text style={[styles.periodTabText, period === 'weekly' && styles.periodTabTextActive]}>주간</Text>
-        </Pressable>
-        <Pressable
+          <Text style={[styles.periodTabText, period === 'weekly' && styles.periodTabTextActive]}>{t('stats.weekly')}</Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.periodTab, period === 'monthly' && styles.periodTabActive]}
           onPress={() => setPeriod('monthly')}>
-          <Text style={[styles.periodTabText, period === 'monthly' && styles.periodTabTextActive]}>월별</Text>
-        </Pressable>
+          <Text style={[styles.periodTabText, period === 'monthly' && styles.periodTabTextActive]}>{t('stats.monthly')}</Text>
+        </AnimatedPressable>
       </View>
 
       <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
         <View style={styles.summaryTextCol}>
-          <Text style={styles.summaryLabel}>{period === 'weekly' ? '최근 7일 수행률' : '최근 30일 수행률'}</Text>
+          <Text style={styles.summaryLabel}>
+            {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
+          </Text>
           <Text style={styles.summaryHeadline}>
-            {categorySummary.completed}/{categorySummary.scheduled} 완료
+            {categorySummary.completed}/{categorySummary.scheduled} {t('stats.completedSuffix')}
           </Text>
         </View>
         <CompletionRing
@@ -268,30 +275,30 @@ export default function StatsScreen() {
       </ShadowCard>
 
       <View style={styles.categoryTabs}>
-        <Pressable
+        <AnimatedPressable
           style={[styles.categoryTab, dayCategory === 'all' && styles.categoryTabActive]}
           onPress={() => setDayCategory('all')}>
-          <Text style={[styles.categoryTabText, dayCategory === 'all' && styles.categoryTabTextActive]}>전체</Text>
-        </Pressable>
-        <Pressable
+          <Text style={[styles.categoryTabText, dayCategory === 'all' && styles.categoryTabTextActive]}>
+            {t('stats.categoryAll')}
+          </Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.categoryTab, dayCategory === 'weekday' && styles.categoryTabActive]}
           onPress={() => setDayCategory('weekday')}>
           <Text style={[styles.categoryTabText, dayCategory === 'weekday' && styles.categoryTabTextActive]}>
-            평일
+            {t('stats.categoryWeekday')}
           </Text>
-        </Pressable>
-        <Pressable
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.categoryTab, dayCategory === 'weekend' && styles.categoryTabActive]}
           onPress={() => setDayCategory('weekend')}>
           <Text style={[styles.categoryTabText, dayCategory === 'weekend' && styles.categoryTabTextActive]}>
-            주말
+            {t('stats.categoryWeekend')}
           </Text>
-        </Pressable>
+        </AnimatedPressable>
       </View>
 
-      {showSummaryNote && (
-        <Text style={styles.summaryNote}>삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요</Text>
-      )}
+      {showSummaryNote && <Text style={styles.summaryNote}>{t('stats.summaryNote')}</Text>}
 
       <FlatList
         style={styles.list}
@@ -301,12 +308,14 @@ export default function StatsScreen() {
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
           summary.routines.length > 0 ? (
-            <Text style={styles.emptyText}>이 카테고리에 해당하는 루틴이 없어요</Text>
+            <Text style={styles.emptyText}>{t('stats.emptyCategoryNoRoutines')}</Text>
           ) : summary.hiddenRoutines.length > 0 ? (
-            <Text style={styles.emptyText}>표시할 통계가 없어요 (전부 숨김 상태)</Text>
+            <Text style={styles.emptyText}>{t('stats.emptyAllHidden')}</Text>
           ) : (
             <Text style={styles.emptyText}>
-              진행 중인 루틴이 없어요{'\n'}삭제된 루틴의 기록도 삭제 전 날짜까지는 위 수행률에 포함돼 있어요
+              {t('stats.emptyNoActiveRoutines')}
+              {'\n'}
+              {t('stats.summaryNote')}
             </Text>
           )
         }
@@ -314,19 +323,21 @@ export default function StatsScreen() {
 
       {filteredHiddenRoutines.length > 0 && (
         <View style={styles.hiddenSection}>
-          <Pressable onPress={() => setShowHidden((v) => !v)}>
+          <AnimatedPressable onPress={() => setShowHidden((v) => !v)}>
             <Text style={styles.hiddenToggle}>
-              {showHidden ? '숨긴 항목 접기 ▲' : `숨긴 항목 ${filteredHiddenRoutines.length}개 보기 ▼`}
+              {showHidden
+                ? t('stats.hiddenCollapse')
+                : `${t('stats.hiddenExpandPrefix')}${filteredHiddenRoutines.length}${t('stats.hiddenExpandSuffix')}`}
             </Text>
-          </Pressable>
+          </AnimatedPressable>
           {showHidden && (
             <ScrollView style={styles.hiddenList}>
               {filteredHiddenRoutines.map((item) => (
                 <View key={item.routine.id} style={styles.hiddenRow}>
                   <Text style={styles.hiddenRowTitle}>{item.routine.title}</Text>
-                  <Pressable onPress={() => handleToggleHide(item, false)} hitSlop={8}>
-                    <Text style={styles.unhideLink}>다시 보이기</Text>
-                  </Pressable>
+                  <AnimatedPressable onPress={() => handleToggleHide(item, false)} hitSlop={8}>
+                    <Text style={styles.unhideLink}>{t('stats.unhide')}</Text>
+                  </AnimatedPressable>
                 </View>
               ))}
             </ScrollView>

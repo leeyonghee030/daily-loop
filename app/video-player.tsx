@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Linking, StyleSheet, useWindowDimensions } from 'react-native';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
 import { cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
+import { useTranslation } from '@/lib/language';
 import { extractYoutubeId, fetchVideoById } from '@/lib/videos';
 
 export default function VideoPlayerScreen() {
@@ -14,6 +16,7 @@ export default function VideoPlayerScreen() {
   const [loadFailed, setLoadFailed] = useState(false);
   const { width } = useWindowDimensions();
   const accent = useAccentColor();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
 
   // routine-form의 video 조회와 같은 쿼리 키를 써서 캐시를 공유한다
@@ -51,16 +54,16 @@ export default function VideoPlayerScreen() {
         />
       ) : (
         <View style={[styles.player, { height: playerHeight }, styles.centered]}>
-          <Text style={styles.errorText}>영상을 불러올 수 없어요</Text>
+          <Text style={styles.errorText}>{t('videoPlayer.loadFailed')}</Text>
         </View>
       )}
 
       <View style={styles.info}>
         <Text style={styles.title}>{video.title}</Text>
-        <Pressable style={styles.channelRow} onPress={() => Linking.openURL(video.channel_url)}>
+        <AnimatedPressable style={styles.channelRow} onPress={() => Linking.openURL(video.channel_url)}>
           <Text style={styles.channelName}>{video.channel_name}</Text>
-          <Text style={styles.channelLink}>채널 방문 ›</Text>
-        </Pressable>
+          <Text style={styles.channelLink}>{t('videoPlayer.visitChannel')}</Text>
+        </AnimatedPressable>
       </View>
     </View>
   );

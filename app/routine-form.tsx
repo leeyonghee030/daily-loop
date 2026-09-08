@@ -4,9 +4,10 @@ import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Image, Keyboard, Platform, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
@@ -15,6 +16,7 @@ import { clearPersistedLlmText } from '@/app/llm-input';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import { createFavorite, fetchFavorites, type Favorite } from '@/lib/favorites';
 import { fetchVideoById, type Video } from '@/lib/videos';
@@ -25,23 +27,39 @@ import {
   softDeleteRoutine,
   updateRoutine,
   uploadRoutinePhoto,
-  SLOT_LABELS,
+  SLOT_LABEL_KEYS,
   type BlockType,
   type RepeatType,
   type RoutineInput,
   type Slot,
 } from '@/lib/routines';
 
-const REPEAT_OPTIONS: { value: RepeatType; label: string }[] = [
-  { value: 'daily', label: '매일' },
-  { value: 'weekday', label: '평일' },
-  { value: 'weekend', label: '주말' },
-  { value: 'custom', label: '특정 요일' },
-  { value: 'once', label: '1회성' },
+type TFunc = (key: TranslationKey) => string;
+
+const REPEAT_OPTION_KEYS: { value: RepeatType; key: TranslationKey }[] = [
+  { value: 'daily', key: 'myRoutines.repeatDaily' },
+  { value: 'weekday', key: 'myRoutines.repeatWeekday' },
+  { value: 'weekend', key: 'myRoutines.repeatWeekend' },
+  { value: 'custom', key: 'myRoutines.repeatCustom' },
+  { value: 'once', key: 'myRoutines.repeatOnce' },
 ];
 
-const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
-const TRACKING_UNIT_PRESETS = ['잔', '개', '분', '페이지', 'km'];
+const DAY_LABEL_KEYS: TranslationKey[] = [
+  'calendar.weekdaySun',
+  'calendar.weekdayMon',
+  'calendar.weekdayTue',
+  'calendar.weekdayWed',
+  'calendar.weekdayThu',
+  'calendar.weekdayFri',
+  'calendar.weekdaySat',
+];
+const TRACKING_UNIT_KEYS: TranslationKey[] = [
+  'trackingUnit.cup',
+  'trackingUnit.count',
+  'trackingUnit.minute',
+  'trackingUnit.page',
+  'trackingUnit.km',
+];
 
 function timeToDate(time: string | null): Date {
   const date = new Date();
@@ -61,16 +79,18 @@ function dateToTimeString(date: Date): string {
 }
 
 // 시작~끝 옆에 "1시간" 처럼 간단히 보여줄 소요 시간 텍스트
-function formatDuration(startTime: Date, endTime: Date): string {
+function formatDuration(startTime: Date, endTime: Date, t: TFunc): string {
   let diffMin = Math.round((endTime.getTime() - startTime.getTime()) / 60000);
   // 시계로는 24:00을 고를 수 없어 자정 종료는 00:00으로 저장되므로, 그 경우 24:00에 끝나는 걸로 취급
   if (diffMin <= 0) diffMin += 24 * 60;
   if (diffMin <= 0) return '';
   const h = Math.floor(diffMin / 60);
   const m = diffMin % 60;
-  if (h === 0) return `${m}분`;
-  if (m === 0) return `${h}시간`;
-  return `${h}시간 ${m}분`;
+  const hourUnit = t('common.hourShort');
+  const minuteUnit = t('common.minuteShort');
+  if (h === 0) return `${m}${minuteUnit}`;
+  if (m === 0) return `${h}${hourUnit}`;
+  return `${h}${hourUnit} ${m}${minuteUnit}`;
 }
 
 // 신규 루틴 기본 시각은 분 단위를 없애고 다음 정각으로 올림 (예: 5시47분 → 6시, 6시1분 → 7시, 6시 정각이면 그대로)
@@ -93,7 +113,14 @@ function formatLocalDate(date: Date): string {
 export default function RoutineFormScreen() {
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  const REPEAT_OPTIONS = useMemo(
+    () => REPEAT_OPTION_KEYS.map((opt) => ({ value: opt.value, label: t(opt.key) })),
+    [t]
+  );
+  const DAY_LABELS = useMemo(() => DAY_LABEL_KEYS.map((key) => t(key)), [t]);
+  const TRACKING_UNIT_PRESETS = useMemo(() => TRACKING_UNIT_KEYS.map((key) => t(key)), [t]);
   const params = useLocalSearchParams<{
     id?: string;
     // LLM 미리보기에서 넘어온 프리필 값 (app/llm-input.tsx)
@@ -174,7 +201,7 @@ export default function RoutineFormScreen() {
   }, [slotsQuery.data]);
 
   useEffect(() => {
-    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+    if (slotsQuery.isError) setErrorMessage(t('favoriteForm.errorLoadSlots'));
   }, [slotsQuery.isError]);
 
   const favoritesQuery = useQuery({
@@ -185,7 +212,7 @@ export default function RoutineFormScreen() {
   const favorites = favoritesQuery.data ?? [];
 
   useEffect(() => {
-    if (favoritesQuery.isError) setErrorMessage('즐겨찾기를 불러오지 못했어요.');
+    if (favoritesQuery.isError) setErrorMessage(t('presetForm.errorLoadFavorites'));
   }, [favoritesQuery.isError]);
 
   const routineQuery = useQuery({
@@ -235,7 +262,7 @@ export default function RoutineFormScreen() {
   }, [routineQuery.data]);
 
   useEffect(() => {
-    if (routineQuery.isError) setErrorMessage('루틴 정보를 불러오지 못했어요.');
+    if (routineQuery.isError) setErrorMessage(t('routineForm.errorLoadRoutine'));
   }, [routineQuery.isError]);
 
   // LLM 미리보기에서 넘어온 프리필 값을 폼에 한 번만 반영 (신규 추가일 때만)
@@ -326,7 +353,7 @@ export default function RoutineFormScreen() {
       setShowFavoritePicker(false);
       router.back();
     } catch (err) {
-      setErrorMessage('즐겨찾기 추가에 실패했어요.');
+      setErrorMessage(t('routineForm.errorFavoriteApply'));
     } finally {
       setIsApplyingFavorite(false);
     }
@@ -335,19 +362,19 @@ export default function RoutineFormScreen() {
   async function handleSave() {
     if (!userId) return;
     if (!title.trim()) {
-      setErrorMessage('제목을 입력해주세요.');
+      setErrorMessage(t('favoriteForm.errorTitleRequired'));
       return;
     }
     if (repeatType === 'custom' && repeatDays.length === 0) {
-      setErrorMessage('반복할 요일을 하나 이상 선택해주세요.');
+      setErrorMessage(t('presetForm.errorDaysRequired'));
       return;
     }
     if (blockType === 'tracking' && !trackingUnit.trim()) {
-      setErrorMessage('트래킹 단위를 입력해주세요.');
+      setErrorMessage(t('favoriteForm.errorTrackingUnitRequired'));
       return;
     }
     if (timeMode === 'slot' && !slotId) {
-      setErrorMessage('슬롯을 선택해주세요.');
+      setErrorMessage(t('favoriteForm.errorSlotRequired'));
       return;
     }
 
@@ -416,14 +443,14 @@ export default function RoutineFormScreen() {
       // 말로 루틴 추가 경로로 왔을 땐 저장 후 그 입력 화면(/llm-input)이 아니라 오늘 탭으로 바로 나간다
       const exit = () => (cameFromLlm ? router.dismissTo('/(tabs)') : router.back());
       if (photoUploadFailed) {
-        Alert.alert('저장은 됐어요', '다만 사진 업로드는 실패했어요. 나중에 다시 첨부해주세요.', [
-          { text: '확인', onPress: exit },
+        Alert.alert(t('routineForm.photoUploadFailedTitle'), t('routineForm.photoUploadFailedDesc'), [
+          { text: t('common.confirm'), onPress: exit },
         ]);
       } else {
         exit();
       }
     } catch (err) {
-      setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
+      setErrorMessage(t('presetForm.errorSave'));
     } finally {
       setIsSaving(false);
     }
@@ -436,20 +463,20 @@ export default function RoutineFormScreen() {
       await softDeleteRoutine(id);
       router.back();
     } catch (err) {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('myRoutines.errorDelete'));
       setIsSaving(false);
     }
   }
 
   function handleDelete() {
-    Alert.alert(
-      '루틴을 삭제할까요?',
-      `"${title}"에 해당하는 모든 예정(반복 전체)이 삭제돼요. 지금까지 체크·기록한 내역은 남아있어요.`,
-      [
-        { text: '취소', style: 'cancel' },
-        { text: '삭제', style: 'destructive', onPress: performDelete },
-      ]
-    );
+    const message =
+      language === 'ko'
+        ? `"${title}"에 해당하는 모든 예정(반복 전체)이 삭제돼요. 지금까지 체크·기록한 내역은 남아있어요.`
+        : `All occurrences of "${title}" (the whole repeat) will be deleted. Everything you've already checked or recorded stays intact.`;
+    Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
+      { text: t('settings.cancel'), style: 'cancel' },
+      { text: t('myRoutines.delete'), style: 'destructive', onPress: performDelete },
+    ]);
   }
 
   // 시작 시각이 바뀌면 끝 시각을 항상 시작 시각 +1시간으로 맞춰준다 —
@@ -511,7 +538,7 @@ export default function RoutineFormScreen() {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('사진 접근 권한이 꺼져있어요', '기기 설정에서 사진 접근 권한을 허용해주세요.');
+        Alert.alert(t('routineForm.photoPermissionTitle'), t('routineForm.photoPermissionDesc'));
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -543,29 +570,27 @@ export default function RoutineFormScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {!isEditing && (
         <>
-          <Pressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
+          <AnimatedPressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
             <Ionicons name="star-outline" size={14} color={accent} />
-            <Text style={styles.favoriteButtonText}>즐겨찾기에서 불러오기</Text>
-          </Pressable>
-          <Text style={styles.favoriteHint}>
-            저장해둔 루틴 템플릿을 불러와서 바로 추가하거나, 수정해서 추가할 수 있어요.
-          </Text>
+            <Text style={styles.favoriteButtonText}>{t('routineForm.loadFromFavorite')}</Text>
+          </AnimatedPressable>
+          <Text style={styles.favoriteHint}>{t('routineForm.favoriteHintLoad')}</Text>
         </>
       )}
 
-      <Text style={styles.label}>제목</Text>
+      <Text style={styles.label}>{t('favoriteForm.titleLabel')}</Text>
       <TextInput
         style={styles.input}
         value={title}
         onChangeText={setTitle}
-        placeholder="예: 아침 물 마시기"
+        placeholder={t('routineForm.titlePlaceholder')}
       />
 
-      <Text style={styles.label}>타입</Text>
+      <Text style={styles.label}>{t('favoriteForm.typeLabel')}</Text>
       <View style={styles.chipRow}>
-        <Chip label="체크" selected={blockType === 'check'} onPress={() => setBlockType('check')} />
+        <Chip label={t('common.check')} selected={blockType === 'check'} onPress={() => setBlockType('check')} />
         <Chip
-          label="트래킹(숫자)"
+          label={t('common.tracking')}
           selected={blockType === 'tracking'}
           onPress={() => setBlockType('tracking')}
         />
@@ -573,7 +598,7 @@ export default function RoutineFormScreen() {
 
       {blockType === 'tracking' && (
         <>
-          <Text style={styles.label}>단위</Text>
+          <Text style={styles.label}>{t('favoriteForm.unitLabel')}</Text>
           <View style={styles.chipRow}>
             {TRACKING_UNIT_PRESETS.map((unit) => (
               <Chip
@@ -588,12 +613,12 @@ export default function RoutineFormScreen() {
             style={styles.input}
             value={trackingUnit}
             onChangeText={setTrackingUnit}
-            placeholder="직접 입력 (예: 회)"
+            placeholder={t('presetForm.trackingUnitPlaceholder')}
           />
         </>
       )}
 
-      <Text style={styles.label}>반복</Text>
+      <Text style={styles.label}>{t('presetForm.repeatLabel')}</Text>
       <View style={styles.chipRow}>
         {REPEAT_OPTIONS.map((opt) => (
           <Chip
@@ -620,9 +645,9 @@ export default function RoutineFormScreen() {
 
       {repeatType === 'once' && (
         <>
-          <Pressable style={styles.timeButton} onPress={() => setShowDatePicker(true)}>
+          <AnimatedPressable style={styles.timeButton} onPress={() => setShowDatePicker(true)}>
             <Text>{formatLocalDate(scheduledDate)}</Text>
-          </Pressable>
+          </AnimatedPressable>
           {showDatePicker && (
             <DateTimePicker
               value={scheduledDate}
@@ -633,56 +658,54 @@ export default function RoutineFormScreen() {
         </>
       )}
 
-      <Text style={styles.label}>시간</Text>
+      <Text style={styles.label}>{t('favoriteForm.timeLabel')}</Text>
       <View style={styles.chipRow}>
-        <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
-        <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
-        <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
+        <Chip label={t('common.exactTime')} selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label={t('common.instantTime')} selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
+        <Chip label={t('common.slot')} selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
       </View>
-      {timeMode === 'instant' && (
-        <Text style={styles.favoriteHint}>"8시 기상"처럼 시간을 차지하지 않고 그 시간에 체크만 해요.</Text>
-      )}
+      {timeMode === 'instant' && <Text style={styles.favoriteHint}>{t('routineForm.instantHint')}</Text>}
 
       {timeMode === 'exact' ? (
         <>
           <View style={styles.chipRow}>
-            <Pressable
+            <AnimatedPressable
               style={styles.timeButton}
               onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
               <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
-            </Pressable>
+            </AnimatedPressable>
             <Text>~</Text>
-            <Pressable
+            <AnimatedPressable
               style={styles.timeButton}
               onPress={() => openTimePicker(endTime, () => setShowEndPicker(true))}>
               <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
-            </Pressable>
-            {formatDuration(startTime, endTime) !== '' && (
-              <Text style={styles.durationText}>{formatDuration(startTime, endTime)}</Text>
+            </AnimatedPressable>
+            {formatDuration(startTime, endTime, t) !== '' && (
+              <Text style={styles.durationText}>{formatDuration(startTime, endTime, t)}</Text>
             )}
           </View>
           <View style={styles.chipRow}>
-            <Chip label="-30분" selected={false} onPress={() => addMinutesToEnd(-30)} />
-            <Chip label="+30분" selected={false} onPress={() => addMinutesToEnd(30)} />
-            <Chip label="+1시간" selected={false} onPress={() => addMinutesToEnd(60)} />
-            <Chip label="+2시간" selected={false} onPress={() => addMinutesToEnd(120)} />
-            <Chip label="초기화" selected={false} onPress={resetQuickAdded} />
+            <Chip label={t('routineForm.minus30')} selected={false} onPress={() => addMinutesToEnd(-30)} />
+            <Chip label={t('routineForm.plus30')} selected={false} onPress={() => addMinutesToEnd(30)} />
+            <Chip label={t('routineForm.plus1h')} selected={false} onPress={() => addMinutesToEnd(60)} />
+            <Chip label={t('routineForm.plus2h')} selected={false} onPress={() => addMinutesToEnd(120)} />
+            <Chip label={t('routineForm.reset')} selected={false} onPress={resetQuickAdded} />
           </View>
         </>
       ) : timeMode === 'instant' ? (
         <View style={styles.chipRow}>
-          <Pressable
+          <AnimatedPressable
             style={styles.timeButton}
             onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
             <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
-          </Pressable>
+          </AnimatedPressable>
         </View>
       ) : (
         <View style={styles.chipRow}>
           {slots.map((slot) => (
             <Chip
               key={slot.id}
-              label={SLOT_LABELS[slot.slot_type]}
+              label={t(SLOT_LABEL_KEYS[slot.slot_type])}
               selected={slotId === slot.id}
               onPress={() => setSlotId(slot.id)}
             />
@@ -711,7 +734,7 @@ export default function RoutineFormScreen() {
               minuteInterval={15}
               onChange={handleSpinnerTimeChange}
             />
-            <Pressable
+            <AnimatedPressable
               style={styles.spinnerDoneButton}
               onPress={() => {
                 const picked = pickerDraftRef.current;
@@ -720,8 +743,8 @@ export default function RoutineFormScreen() {
                 setPickerOpenValue(null);
                 setShowStartPicker(false);
               }}>
-              <Text style={styles.spinnerDoneText}>완료</Text>
-            </Pressable>
+              <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         ))}
       {showEndPicker &&
@@ -742,7 +765,7 @@ export default function RoutineFormScreen() {
               minuteInterval={15}
               onChange={handleSpinnerTimeChange}
             />
-            <Pressable
+            <AnimatedPressable
               style={styles.spinnerDoneButton}
               onPress={() => {
                 const picked = pickerDraftRef.current;
@@ -751,67 +774,67 @@ export default function RoutineFormScreen() {
                 setPickerOpenValue(null);
                 setShowEndPicker(false);
               }}>
-              <Text style={styles.spinnerDoneText}>완료</Text>
-            </Pressable>
+              <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         ))}
 
       <View style={styles.switchRow}>
-        <Text style={styles.label}>필수</Text>
+        <Text style={styles.label}>{t('common.required')}</Text>
         <Switch value={isRequired} onValueChange={setIsRequired} />
       </View>
 
-      <Text style={styles.label}>영상 연결</Text>
+      <Text style={styles.label}>{t('routineForm.videoConnectLabel')}</Text>
       {selectedVideo ? (
-        <Pressable style={styles.selectedVideoRow} onPress={() => setShowVideoPicker(true)}>
+        <AnimatedPressable style={styles.selectedVideoRow} onPress={() => setShowVideoPicker(true)}>
           <Image source={{ uri: selectedVideo.thumbnail_url }} style={styles.selectedVideoThumb} />
           <Text style={styles.selectedVideoTitle} numberOfLines={2}>
             {selectedVideo.title}
           </Text>
-          <Pressable onPress={() => setSelectedVideo(null)}>
+          <AnimatedPressable onPress={() => setSelectedVideo(null)}>
             <Text style={styles.removeVideoText}>✕</Text>
-          </Pressable>
-        </Pressable>
+          </AnimatedPressable>
+        </AnimatedPressable>
       ) : (
-        <Pressable style={styles.videoConnectButton} onPress={() => setShowVideoPicker(true)}>
+        <AnimatedPressable style={styles.videoConnectButton} onPress={() => setShowVideoPicker(true)}>
           <Ionicons name="film-outline" size={14} color={accent} />
-          <Text style={styles.videoConnectButtonText}>영상 선택하기</Text>
-        </Pressable>
+          <Text style={styles.videoConnectButtonText}>{t('routineForm.selectVideo')}</Text>
+        </AnimatedPressable>
       )}
 
-      <Text style={styles.label}>메모</Text>
+      <Text style={styles.label}>{t('routineForm.memoLabel')}</Text>
       <TextInput
         style={[styles.input, styles.memoInput]}
         value={memo}
         onChangeText={setMemo}
-        placeholder="이 루틴에 대해 간단히 적어두세요 (선택)"
+        placeholder={t('routineForm.memoPlaceholder')}
         multiline
       />
 
-      <Text style={styles.label}>사진</Text>
+      <Text style={styles.label}>{t('routineForm.photoLabel')}</Text>
       {newPhotoUri || photoUrl ? (
         <View style={styles.selectedVideoRow}>
           <Image source={{ uri: newPhotoUri ?? photoUrl! }} style={styles.selectedPhotoThumb} />
-          <Text style={styles.selectedVideoTitle}>사진 1장 첨부됨</Text>
-          <Pressable onPress={removePhoto}>
+          <Text style={styles.selectedVideoTitle}>{t('routineForm.photoAttached')}</Text>
+          <AnimatedPressable onPress={removePhoto}>
             <Text style={styles.removeVideoText}>✕</Text>
-          </Pressable>
+          </AnimatedPressable>
         </View>
       ) : (
-        <Pressable style={styles.videoConnectButton} onPress={pickPhoto} disabled={isPickingPhoto}>
+        <AnimatedPressable style={styles.videoConnectButton} onPress={pickPhoto} disabled={isPickingPhoto}>
           {isPickingPhoto ? (
             <ActivityIndicator color={accent} />
           ) : (
             <>
               <Ionicons name="camera-outline" size={14} color={accent} />
-              <Text style={styles.videoConnectButtonText}>사진 추가하기</Text>
+              <Text style={styles.videoConnectButtonText}>{t('routineForm.addPhoto')}</Text>
             </>
           )}
-        </Pressable>
+        </AnimatedPressable>
       )}
 
       <View style={styles.switchRow}>
-        <Text style={styles.label}>공휴일 제외</Text>
+        <Text style={styles.label}>{t('presetForm.skipHolidays')}</Text>
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
@@ -819,10 +842,10 @@ export default function RoutineFormScreen() {
       {repeatType !== 'once' && (
         <View style={styles.switchRow}>
           <View style={styles.switchRowLabelColumn}>
-            <Text style={styles.label}>즐겨찾기에 추가</Text>
-            <Text style={styles.favoriteHint}>켜두면 이 내용을 템플릿으로 저장해서 다음에 또 빠르게 추가할 수 있어요.</Text>
+            <Text style={styles.label}>{t('routineForm.addToFavoritesLabel')}</Text>
+            <Text style={styles.favoriteHint}>{t('routineForm.addToFavoritesHint')}</Text>
           </View>
-          <Pressable
+          <AnimatedPressable
             style={[styles.starButton, saveAsFavorite && styles.starButtonActive]}
             onPress={() => setSaveAsFavorite((prev) => !prev)}>
             <Ionicons
@@ -830,24 +853,24 @@ export default function RoutineFormScreen() {
               size={18}
               color={saveAsFavorite ? accent : textMuted}
             />
-          </Pressable>
+          </AnimatedPressable>
         </View>
       )}
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+      <AnimatedPressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
         {isSaving ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.saveButtonText}>{isEditing ? '수정 완료' : '추가'}</Text>
+          <Text style={styles.saveButtonText}>{isEditing ? t('presetForm.saveEdit') : t('common.add')}</Text>
         )}
-      </Pressable>
+      </AnimatedPressable>
 
       {isEditing && (
-        <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-          <Text style={styles.deleteButtonText}>루틴삭제</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
+          <Text style={styles.deleteButtonText}>{t('routineForm.deleteRoutineButton')}</Text>
+        </AnimatedPressable>
       )}
 
       <FavoritePicker
@@ -857,18 +880,18 @@ export default function RoutineFormScreen() {
         slots={slots}
         renderActions={(favorite) => (
           <>
-            <Pressable
+            <AnimatedPressable
               style={styles.favoriteActionButton}
               disabled={isApplyingFavorite}
               onPress={() => applyFavoriteInstantly(favorite)}>
-              <Text style={styles.favoriteActionText}>바로 추가</Text>
-            </Pressable>
-            <Pressable
+              <Text style={styles.favoriteActionText}>{t('routineForm.applyNow')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable
               style={[styles.favoriteActionButton, styles.favoriteActionButtonOutline]}
               disabled={isApplyingFavorite}
               onPress={() => applyFavoriteToForm(favorite)}>
-              <Text style={[styles.favoriteActionText, styles.favoriteActionTextOutline]}>수정해서 추가</Text>
-            </Pressable>
+              <Text style={[styles.favoriteActionText, styles.favoriteActionTextOutline]}>{t('routineForm.applyToFormEdit')}</Text>
+            </AnimatedPressable>
           </>
         )}
       />

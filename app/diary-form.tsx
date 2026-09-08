@@ -8,7 +8,6 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -18,16 +17,24 @@ import {
 // 내용이 짧아 화면을 안 채울 때도 드래그 제스처가 스크롤로 인식되도록 확보하는 여백 높이
 const SCROLL_SPACER_HEIGHT = Math.round(Dimensions.get('window').height * 0.8);
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
+import { useTranslation, type Language } from '@/lib/language';
 import { deleteDiary, fetchDiary, saveDiary } from '@/lib/diary';
 
-function formatDateLabel(dateStr: string): string {
+const EN_MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function formatDateLabel(dateStr: string, language: Language, titleSuffix: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
-  return `${y}년 ${m}월 ${d}일 일기`;
+  if (language === 'en') return `${titleSuffix} — ${EN_MONTH_NAMES[m - 1]} ${d}, ${y}`;
+  return `${y}년 ${m}월 ${d}일 ${titleSuffix}`;
 }
 
 export default function DiaryFormScreen() {
@@ -37,6 +44,7 @@ export default function DiaryFormScreen() {
   const userId = session?.user.id;
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const [isSaving, setIsSaving] = useState(false);
@@ -59,7 +67,7 @@ export default function DiaryFormScreen() {
   }, [diaryQuery.data]);
 
   useEffect(() => {
-    if (diaryQuery.isError) setErrorMessage('일기를 불러오지 못했어요.');
+    if (diaryQuery.isError) setErrorMessage(t('diary.errorLoad'));
   }, [diaryQuery.isError]);
 
   async function handleSave() {
@@ -70,16 +78,16 @@ export default function DiaryFormScreen() {
       await saveDiary(userId, date, content, diaryId);
       router.back();
     } catch (err) {
-      setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
+      setErrorMessage(t('diary.errorSave'));
       setIsSaving(false);
     }
   }
 
   function handleDelete() {
-    Alert.alert('일기를 삭제할까요?', '삭제하면 되돌릴 수 없어요.', [
-      { text: '취소', style: 'cancel' },
+    Alert.alert(t('diary.deleteConfirmTitle'), t('diary.deleteConfirmDesc'), [
+      { text: t('settings.cancel'), style: 'cancel' },
       {
-        text: '삭제',
+        text: t('myRoutines.delete'),
         style: 'destructive',
         onPress: async () => {
           if (!diaryId) return;
@@ -88,7 +96,7 @@ export default function DiaryFormScreen() {
             await deleteDiary(diaryId);
             router.back();
           } catch (err) {
-            setErrorMessage('삭제에 실패했어요.');
+            setErrorMessage(t('diary.errorDelete'));
             setIsSaving(false);
           }
         },
@@ -114,27 +122,27 @@ export default function DiaryFormScreen() {
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={Keyboard.dismiss}>
-          <Text style={styles.title}>{formatDateLabel(date)}</Text>
+          <Text style={styles.title}>{formatDateLabel(date, language, t('diary.titleSuffix'))}</Text>
 
           <TextInput
             style={styles.textArea}
             value={content}
             onChangeText={setContent}
-            placeholder="오늘 하루 어땠나요?"
+            placeholder={t('diary.placeholder')}
             multiline
             textAlignVertical="top"
           />
 
           {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-          <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
-            {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>저장</Text>}
-          </Pressable>
+          <AnimatedPressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+            {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{t('today.save')}</Text>}
+          </AnimatedPressable>
 
           {diaryId && (
-            <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-              <Text style={styles.deleteButtonText}>일기 삭제</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
+              <Text style={styles.deleteButtonText}>{t('diary.deleteButton')}</Text>
+            </AnimatedPressable>
           )}
 
           <View style={{ height: SCROLL_SPACER_HEIGHT }} />

@@ -2,21 +2,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
+import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted, withAlpha } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useTranslation } from '@/lib/language';
 import { requestNotificationPermissions, syncReminderAlarm, syncSlotAlarms } from '@/lib/notifications';
-import { fetchSlots, updateSlot, SLOT_LABELS, type Slot, type SlotType } from '@/lib/routines';
+import { fetchSlots, updateSlot, SLOT_LABEL_KEYS, type Slot, type SlotType } from '@/lib/routines';
 
 const SLOT_ORDER: SlotType[] = ['morning', 'lunch', 'evening', 'before_sleep'];
-const NOTICE_SEEN_KEY = 'settings_notice_seen';
-const SLOT_HINT_SEEN_KEY = 'settings_slot_hint_seen';
-const MEMO_HINT_SEEN_KEY = 'settings_memo_hint_seen';
+// 슬롯별 안내문 자동 펼침을 걷어내면서 상단 공용 안내문의 노출 조건이 바뀌었으므로,
+// 예전에 이미 "봤음" 처리된 기기에서도 한 번 더 자동으로 보여주기 위해 키 버전을 올림
+const NOTICE_SEEN_KEY = 'settings_notice_seen_v3';
 
 function timeToDate(time: string): Date {
   const date = new Date();
@@ -36,6 +38,7 @@ export default function SlotSettingsScreen() {
   const userId = session?.user.id;
   const queryClient = useQueryClient();
   const accent = useAccentColor();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
   // 즐겨찾기/모음집 폼 등과 같은 쿼리 키('slots')를 써서 캐시를 공유한다
   const slotsQueryKey = ['slots', userId] as const;
@@ -43,9 +46,9 @@ export default function SlotSettingsScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pickerFor, setPickerFor] = useState<{ slotId: string; field: 'start' | 'end' } | null>(null);
   const [showNotice, setShowNotice] = useState(false);
-  // 체크형/정확한 시간 설명은 슬롯별로 접었다 펼 수 있음 — 여기 들어있는 슬롯 id만 펼쳐진 상태
+  // 체크형/정확한 시간 설명은 슬롯별로 접었다 펼 수 있음 — 여기 들어있는 슬롯 id만 펼쳐진 상태.
+  // 최초 진입 시 자동으로 펼치지 않음(맨 위 공용 안내문만 자동으로 펼침) — 슬롯 카드마다 다 펼쳐지면 지저분해 보여서
   const [expandedHintSlotIds, setExpandedHintSlotIds] = useState<Set<string>>(new Set());
-  const hasInitializedHintsRef = useRef(false);
   const [showMemoHint, setShowMemoHint] = useState(false);
   // iOS 스피너가 열려있는 동안 고르고 있는 값 — routine-form.tsx와 동일한 패턴
   const pickerDraftRef = useRef<Date | null>(null);
@@ -63,7 +66,7 @@ export default function SlotSettingsScreen() {
   const isLoading = slotsQuery.isLoading;
 
   useEffect(() => {
-    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+    if (slotsQuery.isError) setErrorMessage(t('slotSettings.errorLoad'));
   }, [slotsQuery.isError]);
 
   // 이 안내는 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 아이콘만 보이다가 누르면 펼쳐짐
@@ -72,27 +75,6 @@ export default function SlotSettingsScreen() {
       if (seen === 'true') return;
       setShowNotice(true);
       AsyncStorage.setItem(NOTICE_SEEN_KEY, 'true');
-    });
-  }, []);
-
-  // 체크형/정확한 시간 설명도 같은 방식 — 슬롯 목록이 처음 도착했을 때 딱 한 번만 전부 펼쳐서
-  // 보여주고, 그다음부터는 슬롯마다 ⓘ 아이콘만 남아있다가 눌러야 펼쳐짐
-  useEffect(() => {
-    if (hasInitializedHintsRef.current || !slotsQuery.data) return;
-    hasInitializedHintsRef.current = true;
-    AsyncStorage.getItem(SLOT_HINT_SEEN_KEY).then((seen) => {
-      if (seen === 'true') return;
-      setExpandedHintSlotIds(new Set(slotsQuery.data!.map((s) => s.id)));
-      AsyncStorage.setItem(SLOT_HINT_SEEN_KEY, 'true');
-    });
-  }, [slotsQuery.data]);
-
-  // 메모 알림 설명도 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부터는 ⓘ 아이콘으로 접힘
-  useEffect(() => {
-    AsyncStorage.getItem(MEMO_HINT_SEEN_KEY).then((seen) => {
-      if (seen === 'true') return;
-      setShowMemoHint(true);
-      AsyncStorage.setItem(MEMO_HINT_SEEN_KEY, 'true');
     });
   }, []);
 
@@ -125,7 +107,7 @@ export default function SlotSettingsScreen() {
       });
       await resync();
     } catch (err) {
-      setErrorMessage('저장에 실패했어요.');
+      setErrorMessage(t('slotSettings.errorSave'));
     }
   }
 
@@ -133,7 +115,7 @@ export default function SlotSettingsScreen() {
     if (value) {
       const granted = await requestNotificationPermissions();
       if (!granted) {
-        Alert.alert('알림 권한이 꺼져있어요', '기기 설정에서 알림 권한을 허용해주세요.');
+        Alert.alert(t('slotSettings.notifyPermissionTitle'), t('slotSettings.notifyPermissionDesc'));
         return;
       }
     }
@@ -211,21 +193,14 @@ export default function SlotSettingsScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {showNotice ? (
-        <Pressable onPress={() => setShowNotice(false)}>
-          <Text style={styles.sectionDesc}>
-            슬롯 알림을 켜면 그 시간대 시작 시각에 매일 알림이 와요. "자기전" 슬롯 알림을 켜두면, 그 시각까지 필수
-            루틴을 다 못했을 때만 리마인더 알림도 같이 와요. "메모 알림"은 아침 루틴 알림과 별개로 켜고 끌 수 있고,
-            둘 다 켜져 있는 날은 아침 시각에 알림 하나로 합쳐서 와요.
-          </Text>
-          <Text style={styles.sectionNote}>
-            ⓘ 아침·메모 알림은 앱을 열 때마다 다음 발송 시각을 다시 계산해요. 며칠 연속 앱을 안 열면 그 사이엔 안 올 수
-            있으니, 알림이 안 온다면 앱을 한 번 열어주세요.
-          </Text>
-        </Pressable>
+        <AnimatedPressable onPress={() => setShowNotice(false)}>
+          <Text style={styles.sectionDesc}>{t('slotSettings.noticeDesc')}</Text>
+          <Text style={styles.sectionNote}>{t('slotSettings.noticeNote')}</Text>
+        </AnimatedPressable>
       ) : (
-        <Pressable style={styles.noticeCollapsed} onPress={() => setShowNotice(true)} hitSlop={8}>
+        <AnimatedPressable style={styles.noticeCollapsed} onPress={() => setShowNotice(true)} hitSlop={8}>
           <Text style={styles.noticeIcon}>ⓘ</Text>
-        </Pressable>
+        </AnimatedPressable>
       )}
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
@@ -233,7 +208,7 @@ export default function SlotSettingsScreen() {
       {slots.map((slot) => (
         <ShadowCard key={slot.id} style={styles.slotCardOuter} contentStyle={styles.slotCard}>
           <View style={styles.slotHeaderRow}>
-            <Text style={styles.slotLabel}>{SLOT_LABELS[slot.slot_type]}</Text>
+            <Text style={styles.slotLabel}>{t(SLOT_LABEL_KEYS[slot.slot_type])}</Text>
             <Switch
               value={slot.notify_enabled}
               onValueChange={(v) => handleToggleNotify(slot, v)}
@@ -243,36 +218,36 @@ export default function SlotSettingsScreen() {
           </View>
           <View style={styles.timeRow}>
             {slot.is_instant ? (
-              <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
+              <AnimatedPressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
                 <Text>{slot.start_time.slice(0, 5)}</Text>
-              </Pressable>
+              </AnimatedPressable>
             ) : (
               <>
-                <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
+                <AnimatedPressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'start')}>
                   <Text>{slot.start_time.slice(0, 5)}</Text>
-                </Pressable>
+                </AnimatedPressable>
                 <Text>~</Text>
-                <Pressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'end')}>
+                <AnimatedPressable style={styles.timeButton} onPress={() => openTimePicker(slot, 'end')}>
                   <Text>{slot.end_time.slice(0, 5)}</Text>
-                </Pressable>
+                </AnimatedPressable>
               </>
             )}
-            <Pressable
+            <AnimatedPressable
               style={styles.modeToggleButton}
               onPress={() => handleSetTimeMode(slot, !slot.is_instant)}>
-              <Text style={styles.modeToggleButtonText}>{slot.is_instant ? '체크형' : '정확한 시간'}</Text>
-            </Pressable>
-            <Pressable style={styles.hintToggle} onPress={() => toggleHint(slot.id)} hitSlop={8}>
+              <Text style={styles.modeToggleButtonText}>
+                {slot.is_instant ? t('slotSettings.modeCheck') : t('slotSettings.modeExact')}
+              </Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.hintToggle} onPress={() => toggleHint(slot.id)} hitSlop={8}>
               <Text style={styles.hintToggleIcon}>ⓘ</Text>
-            </Pressable>
+            </AnimatedPressable>
           </View>
           {expandedHintSlotIds.has(slot.id) && (
             <View style={styles.timeModeHintRow}>
               <Ionicons name={slot.is_instant ? 'notifications-outline' : 'time-outline'} size={12} color={textMuted} />
               <Text style={styles.timeModeHint}>
-                {slot.is_instant
-                  ? '정확히 이 시각에 체크해요 (예: 아침 7시)'
-                  : '이 시간대 전체를 슬롯으로 써요 (예: 아침 7시~8시)'}
+                {slot.is_instant ? t('slotSettings.hintInstant') : t('slotSettings.hintExact')}
               </Text>
             </View>
           )}
@@ -298,11 +273,11 @@ export default function SlotSettingsScreen() {
                   minuteInterval={15}
                   onChange={handleSpinnerTimeChange}
                 />
-                <Pressable
+                <AnimatedPressable
                   style={styles.spinnerDoneButton}
                   onPress={() => confirmSpinnerTime(slot, pickerFor.field)}>
-                  <Text style={styles.spinnerDoneText}>완료</Text>
-                </Pressable>
+                  <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+                </AnimatedPressable>
               </View>
             ))}
           {slot.slot_type === 'morning' && (
@@ -310,10 +285,10 @@ export default function SlotSettingsScreen() {
               <View style={styles.memoNotifyHeaderRow}>
                 <View style={styles.memoNotifyLabelRow}>
                   <Ionicons name="bookmark-outline" size={12} color={textMuted} />
-                  <Text style={styles.memoNotifyLabel}>메모 알림</Text>
-                  <Pressable onPress={() => setShowMemoHint((v) => !v)} hitSlop={8}>
+                  <Text style={styles.memoNotifyLabel}>{t('slotSettings.memoNotifyLabel')}</Text>
+                  <AnimatedPressable onPress={() => setShowMemoHint((v) => !v)} hitSlop={8}>
                     <Text style={styles.hintToggleIcon}>ⓘ</Text>
-                  </Pressable>
+                  </AnimatedPressable>
                 </View>
                 <Switch
                   value={slot.memo_notify_enabled}
@@ -322,9 +297,7 @@ export default function SlotSettingsScreen() {
                   thumbColor={slot.memo_notify_enabled ? accent : '#f4f3f4'}
                 />
               </View>
-              {showMemoHint && (
-                <Text style={styles.timeModeHint}>이 시간에, 아침 루틴 알림과 별개로 켜고 꺼요.</Text>
-              )}
+              {showMemoHint && <Text style={styles.timeModeHint}>{t('slotSettings.memoNotifyHint')}</Text>}
             </View>
           )}
         </ShadowCard>
@@ -373,7 +346,7 @@ function createStyles(accent: string) {
       marginBottom: 12,
     },
     slotCardOuter: {
-      marginBottom: 10,
+      marginBottom: 12,
     },
     slotCard: {
       padding: 12,

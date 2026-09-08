@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text } from '@/components/Themed';
 import { border } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
@@ -17,9 +18,9 @@ export function Chip({
   const accent = useAccentColor();
   const styles = useMemo(() => createStyles(accent), [accent]);
   return (
-    <Pressable style={[styles.chip, selected && styles.chipSelected]} onPress={onPress}>
+    <AnimatedPressable style={[styles.chip, selected && styles.chipSelected]} onPress={onPress}>
       <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 

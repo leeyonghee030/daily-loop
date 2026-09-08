@@ -1,3 +1,4 @@
+import type { TranslationKey } from '@/lib/language';
 import { supabase } from '@/lib/supabase';
 
 export type Category = {
@@ -5,6 +6,22 @@ export type Category = {
   name: string;
   user_id: string | null;
 };
+
+// 관리자가 기본 제공하는 카테고리 6종 — 유저가 만든 커스텀 카테고리는 그대로 원문 이름을 보여주고,
+// 이 이름과 정확히 일치하는 기본 카테고리만 화면 언어에 맞춰 번역해서 보여준다
+const DEFAULT_CATEGORY_NAME_KEYS: Record<string, TranslationKey> = {
+  운동: 'videoCategory.exercise',
+  뷰티: 'videoCategory.beauty',
+  독서: 'videoCategory.reading',
+  모닝루틴: 'videoCategory.morningRoutine',
+  마인드풀니스: 'videoCategory.mindfulness',
+  '공부/자기계발': 'videoCategory.study',
+};
+
+export function categoryDisplayName(name: string, t: (key: TranslationKey) => string): string {
+  const key = DEFAULT_CATEGORY_NAME_KEYS[name];
+  return key ? t(key) : name;
+}
 
 export type Video = {
   id: string;
@@ -15,6 +32,7 @@ export type Video = {
   channel_name: string;
   channel_url: string;
   user_id: string | null;
+  sort_order: number;
 };
 
 // 기본 카테고리(내가 숨긴 건 제외) + 내가 만든 카테고리 (RLS가 기본+내 것으로 조회를 좁혀줌)
@@ -183,15 +201,38 @@ export async function purgeOldDeletedCategories(userId: string): Promise<void> {
   if (error) throw error;
 }
 
-// "내 그리드" — 내가 직접 추가했거나(개인 영상) 추천 목록에서 가져온 영상만
+// "내 그리드" — 내가 직접 추가했거나(개인 영상) 추천 목록에서 가져온 영상만.
+// sort_order(추가한 순서) 기준으로 정렬한다
 export async function fetchVideosByCategory(categoryId: number, userId: string): Promise<Video[]> {
   const { data, error } = await supabase
     .from('videos')
     .select('*')
     .eq('category_id', categoryId)
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .order('sort_order');
   if (error) throw error;
   return data ?? [];
+}
+
+// 드래그 정렬 결과 저장 — sort_order를 새 순서(0,1,2...)로 일괄 반영(routines와 동일한 패턴)
+export async function updateVideoSortOrder(orderedIds: string[]): Promise<void> {
+  await Promise.all(
+    orderedIds.map((id, index) => supabase.from('videos').update({ sort_order: index }).eq('id', id))
+  );
+}
+
+// 이 카테고리에 새로 추가되는 영상이 항상 맨 뒤(추가한 순서)에 오도록, 지금 있는 것 중 가장 큰
+// sort_order + 1을 구한다
+async function nextVideoSortOrder(categoryId: number, userId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('videos')
+    .select('sort_order')
+    .eq('category_id', categoryId)
+    .eq('user_id', userId)
+    .order('sort_order', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return (data?.[0]?.sort_order ?? -1) + 1;
 }
 
 // "추천 영상" — 관리자가 큐레이션한 공용 영상 카탈로그 (아직 내 그리드엔 없는 상태)
@@ -205,7 +246,27 @@ export async function fetchRecommendedVideosByCategory(categoryId: number): Prom
   return data ?? [];
 }
 
-export async function addRecommendedVideoToMyGrid(userId: string, video: Video, categoryId: number): Promise<Video> {
+// 같은 카테고리에 같은 영상(유튜브 URL 기준)을 이미 추가해뒀으면 중복으로 또 넣지 않고 그
+// 기존 행을 그대로 돌려준다 — alreadyAdded로 호출부가 "새로 추가" / "이미 있음"을 구분한다
+export async function addRecommendedVideoToMyGrid(
+  userId: string,
+  video: Video,
+  categoryId: number
+): Promise<{ video: Video; alreadyAdded: boolean }> {
+  // .maybeSingle()은 일치하는 행이 2개 이상이면 에러를 던지는데, 예전(중복 방지 로직이 없던
+  // 시절)에 같은 영상을 실수로 여러 번 추가해 이미 중복 행이 쌓여있는 카테고리가 있을 수 있어서
+  // — 그런 경우에도 안 터지도록 배열로 받아 첫 번째 행만 본다
+  const { data: existingRows, error: checkError } = await supabase
+    .from('videos')
+    .select()
+    .eq('user_id', userId)
+    .eq('category_id', categoryId)
+    .eq('youtube_url', video.youtube_url)
+    .limit(1);
+  if (checkError) throw checkError;
+  const existing = existingRows?.[0];
+  if (existing) return { video: existing, alreadyAdded: true };
+
   const { data, error } = await supabase
     .from('videos')
     .insert({
@@ -216,11 +277,12 @@ export async function addRecommendedVideoToMyGrid(userId: string, video: Video, 
       channel_name: video.channel_name,
       channel_url: video.channel_url,
       user_id: userId,
+      sort_order: await nextVideoSortOrder(categoryId, userId),
     })
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return { video: data, alreadyAdded: false };
 }
 
 export async function countRoutinesUsingVideo(videoId: string): Promise<number> {
@@ -267,11 +329,25 @@ export async function createUserVideo(
   userId: string,
   categoryId: number,
   youtubeUrl: string
-): Promise<Video> {
+): Promise<{ video: Video; alreadyAdded: boolean }> {
   const videoId = extractYoutubeId(youtubeUrl.trim());
   if (!videoId) throw new Error('올바른 유튜브 링크가 아니에요.');
 
   const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  // 같은 카테고리에 같은 영상을 실수로(더블탭 등) 두 번 추가하지 않도록, 추천 영상 추가와
+  // 동일하게 먼저 중복인지 확인한다. limit(1)을 쓰는 이유도 addRecommendedVideoToMyGrid와 같음
+  const { data: existingRows, error: checkError } = await supabase
+    .from('videos')
+    .select()
+    .eq('user_id', userId)
+    .eq('category_id', categoryId)
+    .eq('youtube_url', canonicalUrl)
+    .limit(1);
+  if (checkError) throw checkError;
+  const existing = existingRows?.[0];
+  if (existing) return { video: existing, alreadyAdded: true };
+
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
 
   const res = await fetch(oembedUrl);
@@ -290,9 +366,10 @@ export async function createUserVideo(
       channel_name: meta.author_name,
       channel_url: channelUrl,
       user_id: userId,
+      sort_order: await nextVideoSortOrder(categoryId, userId),
     })
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return { video: data, alreadyAdded: false };
 }

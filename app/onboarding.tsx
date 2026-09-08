@@ -1,6 +1,8 @@
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Dimensions, Pressable, StyleSheet } from 'react-native';
+import { Dimensions, StyleSheet } from 'react-native';
+
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 
 // 그룹 4개(헤드라인/테마색/폰트/버튼)를 화면 높이 기준 고정 비율 위치에 절대 배치한다.
 // (여백을 남는 공간 분배(space-between) 방식으로 했더니 실제 콘텐츠 높이에 따라 간격이
@@ -19,8 +21,9 @@ const GROUP_TOP = {
 
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
-import { ACCENT_PRESETS, useAccentColorSetting } from '@/lib/accent-color';
-import { KOREAN_FONT_PRESETS, useKoreanFontSetting } from '@/lib/korean-font';
+import { ACCENT_PRESETS, ACCENT_LABEL_KEYS, useAccentColorSetting } from '@/lib/accent-color';
+import { useFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
+import { useTranslation } from '@/lib/language';
 import { useOnboarding } from '@/lib/onboarding';
 
 // 최초 진입 시 주색/폰트를 고르게 하는 온보딩 화면. "시작하기"를 눌러야 최초 1회 본 것으로
@@ -31,7 +34,9 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const { accentColor: defaultAccent, setAccentColor: persistAccentColor } = useAccentColorSetting();
   const { presetId: defaultFontPresetId, setPresetId: persistFontPresetId } = useKoreanFontSetting();
+  const fontPresets = useFontPresets();
   const { markSeen } = useOnboarding();
+  const { t } = useTranslation();
   const [accent, setAccent] = useState(defaultAccent);
   const [fontPresetId, setFontPresetId] = useState(defaultFontPresetId);
   const styles = useMemo(() => createStyles(accent), [accent]);
@@ -46,29 +51,37 @@ export default function OnboardingScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.absoluteGroup, { top: GROUP_TOP.headline }]}>
-        <Text style={styles.headline}>나만의 느낌으로{'\n'}시작해볼까요?</Text>
-        <Text style={styles.subhead}>주색과 폰트는 설정에서 언제든 다시 바꿀 수 있어요</Text>
+        <Text style={styles.headline}>
+          {t('onboarding.headlineLine1')}
+          {'\n'}
+          {t('onboarding.headlineLine2')}
+        </Text>
+        <Text style={styles.subhead}>{t('onboarding.subhead')}</Text>
       </View>
 
       <View style={[styles.absoluteGroup, { top: GROUP_TOP.theme }]}>
-        <Text style={styles.sectionTitle}>테마 색</Text>
+        <Text style={styles.sectionTitle}>{t('onboarding.themeColor')}</Text>
         <View style={styles.accentSwatchRow}>
           {ACCENT_PRESETS.map((preset) => (
-            <Pressable key={preset.id} style={styles.accentSwatchItem} onPress={() => setAccent(preset.color)}>
+            <AnimatedPressable key={preset.id} style={styles.accentSwatchItem} onPress={() => setAccent(preset.color)}>
               <View style={[styles.accentSwatchRing, preset.color === accent && styles.accentSwatchRingSelected]}>
                 <View style={[styles.accentSwatch, { backgroundColor: preset.color }]} />
               </View>
-              <Text style={styles.accentSwatchLabel}>{preset.label}</Text>
-            </Pressable>
+              <View style={styles.accentSwatchLabelBox}>
+                <Text style={styles.accentSwatchLabel} numberOfLines={2}>
+                  {t(ACCENT_LABEL_KEYS[preset.id])}
+                </Text>
+              </View>
+            </AnimatedPressable>
           ))}
         </View>
       </View>
 
       <View style={[styles.absoluteGroup, { top: GROUP_TOP.font }]}>
-        <Text style={styles.sectionTitle}>폰트</Text>
+        <Text style={styles.sectionTitle}>{t('onboarding.font')}</Text>
         <View style={styles.fontOptionRow}>
-          {KOREAN_FONT_PRESETS.map((preset) => (
-            <Pressable
+          {fontPresets.map((preset) => (
+            <AnimatedPressable
               key={preset.id}
               style={[styles.fontOptionButton, preset.id === fontPresetId && styles.fontOptionButtonActive]}
               onPress={() => setFontPresetId(preset.id)}>
@@ -78,18 +91,18 @@ export default function OnboardingScreen() {
                   { fontFamily: preset.fontFamily },
                   preset.id === fontPresetId && styles.fontOptionTextActive,
                 ]}>
-                {preset.label}
+                {t(preset.labelKey)}
               </Text>
-            </Pressable>
+            </AnimatedPressable>
           ))}
         </View>
       </View>
 
-      <Pressable
+      <AnimatedPressable
         style={[styles.startButton, styles.absoluteGroup, { top: GROUP_TOP.button }]}
         onPress={handleStart}>
-        <Text style={styles.startButtonText}>시작하기</Text>
-      </Pressable>
+        <Text style={styles.startButtonText}>{t('onboarding.start')}</Text>
+      </AnimatedPressable>
     </View>
   );
 }
@@ -125,8 +138,9 @@ function createStyles(accent: string) {
       justifyContent: 'space-between',
     },
     accentSwatchItem: {
+      width: 68,
       alignItems: 'center',
-      gap: 8,
+      gap: 1,
     },
     accentSwatchRing: {
       width: 56,
@@ -146,9 +160,16 @@ function createStyles(accent: string) {
       height: 46,
       borderRadius: 23,
     },
+    accentSwatchLabelBox: {
+      height: 30,
+      justifyContent: 'center',
+      backgroundColor: 'transparent',
+    },
     accentSwatchLabel: {
       fontSize: 12,
+      lineHeight: 15,
       opacity: 0.6,
+      textAlign: 'center',
     },
     fontOptionRow: {
       flexDirection: 'row',

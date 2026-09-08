@@ -2,9 +2,10 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
 import { Text, View } from '@/components/Themed';
@@ -12,6 +13,7 @@ import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { fetchFavorites, type Favorite } from '@/lib/favorites';
 import {
   applyNewPresetItems,
@@ -22,30 +24,46 @@ import {
   savePreset,
   type PresetItemInput,
 } from '@/lib/presets';
-import { fetchSlots, slotTimeLabel, SLOT_LABELS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
+import { fetchSlots, slotTimeLabel, SLOT_LABEL_KEYS, type BlockType, type RepeatType, type Slot } from '@/lib/routines';
 
-const REPEAT_OPTIONS: { value: Exclude<RepeatType, 'once'>; label: string }[] = [
-  { value: 'daily', label: '매일' },
-  { value: 'weekday', label: '평일' },
-  { value: 'weekend', label: '주말' },
-  { value: 'custom', label: '특정 요일' },
+type TFunc = (key: TranslationKey) => string;
+
+const REPEAT_OPTION_KEYS: { value: Exclude<RepeatType, 'once'>; key: TranslationKey }[] = [
+  { value: 'daily', key: 'myRoutines.repeatDaily' },
+  { value: 'weekday', key: 'myRoutines.repeatWeekday' },
+  { value: 'weekend', key: 'myRoutines.repeatWeekend' },
+  { value: 'custom', key: 'myRoutines.repeatCustom' },
 ];
 
-const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
-const TRACKING_UNIT_PRESETS = ['잔', '개', '분', '페이지', 'km'];
+const DAY_LABEL_KEYS: TranslationKey[] = [
+  'calendar.weekdaySun',
+  'calendar.weekdayMon',
+  'calendar.weekdayTue',
+  'calendar.weekdayWed',
+  'calendar.weekdayThu',
+  'calendar.weekdayFri',
+  'calendar.weekdaySat',
+];
+const TRACKING_UNIT_KEYS: TranslationKey[] = [
+  'trackingUnit.cup',
+  'trackingUnit.count',
+  'trackingUnit.minute',
+  'trackingUnit.page',
+  'trackingUnit.km',
+];
 
 // isNew: 이번에 편집하는 동안 새로 추가된 항목인지 — 기존 모음집을 수정할 때, 이미 적용된
 // 항목은 그대로 두고 새로 추가된 항목만 실제 루틴으로 반영하기 위해 구분해둔다
 type ItemDraft = PresetItemInput & { key: string; collapsed: boolean; isNew: boolean };
 
-function itemSummary(item: ItemDraft, slots: Slot[]): string {
+function itemSummary(item: ItemDraft, slots: Slot[], t: TFunc): string {
   const timePart = item.is_instant
     ? item.scheduled_time_start?.slice(0, 5)
     : item.scheduled_time_start
       ? `${item.scheduled_time_start.slice(0, 5)}-${(item.scheduled_time_end ?? '').slice(0, 5)}`
-      : SLOT_LABELS[slots.find((s) => s.id === item.slot_id)?.slot_type ?? 'morning'];
+      : t(SLOT_LABEL_KEYS[slots.find((s) => s.id === item.slot_id)?.slot_type ?? 'morning']);
   const unitPart = item.block_type === 'tracking' ? ` · ${item.tracking_unit}` : '';
-  const requiredPart = item.is_required ? ' · 필수' : '';
+  const requiredPart = item.is_required ? t('myRoutines.requiredSuffix') : '';
   return `${timePart}${unitPart}${requiredPart}`;
 }
 
@@ -78,7 +96,14 @@ export default function PresetFormScreen() {
   const userId = session?.user.id;
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  const REPEAT_OPTIONS = useMemo(
+    () => REPEAT_OPTION_KEYS.map((opt) => ({ value: opt.value, label: t(opt.key) })),
+    [t]
+  );
+  const DAY_LABELS = useMemo(() => DAY_LABEL_KEYS.map((key) => t(key)), [t]);
+  const TRACKING_UNIT_PRESETS = useMemo(() => TRACKING_UNIT_KEYS.map((key) => t(key)), [t]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -129,11 +154,11 @@ export default function PresetFormScreen() {
   const [showFavoritePicker, setShowFavoritePicker] = useState(false);
 
   useEffect(() => {
-    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+    if (slotsQuery.isError) setErrorMessage(t('presetForm.errorLoadSlots'));
   }, [slotsQuery.isError]);
 
   useEffect(() => {
-    if (favoritesQuery.isError) setErrorMessage('즐겨찾기를 불러오지 못했어요.');
+    if (favoritesQuery.isError) setErrorMessage(t('presetForm.errorLoadFavorites'));
   }, [favoritesQuery.isError]);
 
   useEffect(() => {
@@ -163,7 +188,7 @@ export default function PresetFormScreen() {
   }, [presetQuery.data]);
 
   useEffect(() => {
-    if (presetQuery.isError) setErrorMessage('모음집 정보를 불러오지 못했어요.');
+    if (presetQuery.isError) setErrorMessage(t('presetForm.errorLoadPreset'));
   }, [presetQuery.isError]);
 
   function toggleRepeatDay(day: number) {
@@ -301,24 +326,24 @@ export default function PresetFormScreen() {
   async function handleSave() {
     if (!userId) return;
     if (!name.trim()) {
-      setErrorMessage('모음집 이름을 입력해주세요.');
+      setErrorMessage(t('presetForm.errorNameRequired'));
       return;
     }
     if (repeatType === 'custom' && repeatDays.length === 0) {
-      setErrorMessage('반복할 요일을 하나 이상 선택해주세요.');
+      setErrorMessage(t('presetForm.errorDaysRequired'));
       return;
     }
     if (items.length === 0) {
-      setErrorMessage('항목을 하나 이상 추가해주세요.');
+      setErrorMessage(t('presetForm.errorItemsRequired'));
       return;
     }
     for (const item of items) {
       if (!item.title.trim()) {
-        setErrorMessage('모든 항목의 제목을 입력해주세요.');
+        setErrorMessage(t('presetForm.errorItemTitleRequired'));
         return;
       }
       if (item.block_type === 'tracking' && !item.tracking_unit?.trim()) {
-        setErrorMessage('트래킹 항목은 단위를 입력해주세요.');
+        setErrorMessage(t('presetForm.errorTrackingUnitRequired'));
         return;
       }
     }
@@ -348,11 +373,11 @@ export default function PresetFormScreen() {
       // "내 루틴"에서 안 보이거나(특히 이름이 같은 항목을 중복으로 추가한 경우) 헷갈렸음
       if (!isEditing) {
         const count = await applyPreset(userId, presetId);
-        Alert.alert(
-          '모음집을 만들었어요',
-          `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`,
-          [{ text: '확인', onPress: () => router.back() }]
-        );
+        const message =
+          language === 'ko'
+            ? `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
+            : `${count} routine(s) were added to today's list. You can pause any you don't want from "Routines".`;
+        Alert.alert(t('presetForm.createdTitle'), message, [{ text: t('common.confirm'), onPress: () => router.back() }]);
       } else {
         const newItemInputs = items
           .map((item, index) => (item.isNew ? itemInputs[index] : null))
@@ -369,19 +394,21 @@ export default function PresetFormScreen() {
         setRemovedOriginalItems([]);
         if (addedCount > 0 || removedCount > 0) {
           const parts: string[] = [];
-          if (addedCount > 0) parts.push(`추가 ${addedCount}개`);
-          if (removedCount > 0) parts.push(`삭제 ${removedCount}개`);
-          Alert.alert(
-            '오늘 목록에 반영했어요',
-            `루틴 ${parts.join(' · ')}. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`,
-            [{ text: '확인', onPress: () => router.back() }]
-          );
+          if (addedCount > 0) parts.push(`${t('presetForm.addedSuffix')} ${addedCount}`);
+          if (removedCount > 0) parts.push(`${t('presetForm.removedSuffix')} ${removedCount}`);
+          const message =
+            language === 'ko'
+              ? `루틴 ${parts.join(' · ')}개. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
+              : `Routines ${parts.join(' · ')}. You can pause any you don't want from "Routines".`;
+          Alert.alert(t('presetForm.updatedTitle'), message, [
+            { text: t('common.confirm'), onPress: () => router.back() },
+          ]);
         } else {
           router.back();
         }
       }
     } catch (err) {
-      setErrorMessage('저장에 실패했어요. 다시 시도해주세요.');
+      setErrorMessage(t('presetForm.errorSave'));
     } finally {
       setIsSaving(false);
     }
@@ -394,7 +421,7 @@ export default function PresetFormScreen() {
       await deletePreset(id);
       router.back();
     } catch (err) {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('presetForm.errorDelete'));
       setIsSaving(false);
     }
   }
@@ -409,10 +436,10 @@ export default function PresetFormScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.label}>모음집 이름</Text>
-      <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="예: 평일 일정" />
+      <Text style={styles.label}>{t('presetForm.nameLabel')}</Text>
+      <TextInput style={styles.input} value={name} onChangeText={setName} placeholder={t('presetForm.namePlaceholder')} />
 
-      <Text style={styles.label}>반복</Text>
+      <Text style={styles.label}>{t('presetForm.repeatLabel')}</Text>
       <View style={styles.chipRow}>
         {REPEAT_OPTIONS.map((opt) => (
           <Chip
@@ -438,29 +465,29 @@ export default function PresetFormScreen() {
       )}
 
       <View style={styles.switchRow}>
-        <Text style={styles.label}>공휴일 제외</Text>
+        <Text style={styles.label}>{t('presetForm.skipHolidays')}</Text>
         <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
-      <Text style={styles.sectionLabel}>항목</Text>
+      <Text style={styles.sectionLabel}>{t('presetForm.itemsSection')}</Text>
 
       {items.map((item, index) => {
         const timeMode = item.is_instant ? 'instant' : item.scheduled_time_start ? 'exact' : 'slot';
 
         if (item.collapsed) {
           return (
-            <Pressable
+            <AnimatedPressable
               key={item.key}
               style={styles.collapsedItem}
               onPress={() => updateItem(index, { collapsed: false })}>
               <View style={styles.collapsedItemInfo}>
                 <Text style={styles.collapsedItemTitle}>{item.title}</Text>
-                <Text style={styles.collapsedItemMeta}>{itemSummary(item, slots)}</Text>
+                <Text style={styles.collapsedItemMeta}>{itemSummary(item, slots, t)}</Text>
               </View>
-              <Pressable onPress={() => removeItem(index)}>
-                <Text style={styles.removeItemText}>삭제</Text>
-              </Pressable>
-            </Pressable>
+              <AnimatedPressable onPress={() => removeItem(index)}>
+                <Text style={styles.removeItemText}>{t('myRoutines.delete')}</Text>
+              </AnimatedPressable>
+            </AnimatedPressable>
           );
         }
 
@@ -471,21 +498,21 @@ export default function PresetFormScreen() {
                 style={styles.itemTitleInput}
                 value={item.title}
                 onChangeText={(text) => updateItem(index, { title: text })}
-                placeholder="루틴 제목"
+                placeholder={t('presetForm.itemTitlePlaceholder')}
               />
-              <Pressable onPress={() => removeItem(index)}>
-                <Text style={styles.removeItemText}>삭제</Text>
-              </Pressable>
+              <AnimatedPressable onPress={() => removeItem(index)}>
+                <Text style={styles.removeItemText}>{t('myRoutines.delete')}</Text>
+              </AnimatedPressable>
             </View>
 
             <View style={styles.chipRow}>
               <Chip
-                label="체크"
+                label={t('common.check')}
                 selected={item.block_type === 'check'}
                 onPress={() => updateItem(index, { block_type: 'check' as BlockType, tracking_unit: null })}
               />
               <Chip
-                label="트래킹(숫자)"
+                label={t('common.tracking')}
                 selected={item.block_type === 'tracking'}
                 onPress={() => updateItem(index, { block_type: 'tracking' as BlockType })}
               />
@@ -507,51 +534,51 @@ export default function PresetFormScreen() {
                   style={styles.input}
                   value={item.tracking_unit ?? ''}
                   onChangeText={(text) => updateItem(index, { tracking_unit: text })}
-                  placeholder="직접 입력 (예: 회)"
+                  placeholder={t('presetForm.trackingUnitPlaceholder')}
                 />
               </>
             )}
 
             <View style={styles.chipRow}>
-              <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setItemTimeMode(index, 'exact')} />
-              <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setItemTimeMode(index, 'instant')} />
-              <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setItemTimeMode(index, 'slot')} />
+              <Chip label={t('common.exactTime')} selected={timeMode === 'exact'} onPress={() => setItemTimeMode(index, 'exact')} />
+              <Chip label={t('common.instantTime')} selected={timeMode === 'instant'} onPress={() => setItemTimeMode(index, 'instant')} />
+              <Chip label={t('common.slot')} selected={timeMode === 'slot'} onPress={() => setItemTimeMode(index, 'slot')} />
             </View>
 
             {timeMode === 'exact' ? (
               <View style={styles.chipRow}>
-                <Pressable
+                <AnimatedPressable
                   style={styles.timeButton}
                   onPress={() =>
                     openItemTimePicker(timeToDate(item.scheduled_time_start), { index, field: 'start' })
                   }>
                   <Text>{(item.scheduled_time_start ?? '09:00:00').slice(0, 5)}</Text>
-                </Pressable>
+                </AnimatedPressable>
                 <Text>~</Text>
-                <Pressable
+                <AnimatedPressable
                   style={styles.timeButton}
                   onPress={() =>
                     openItemTimePicker(timeToDate(item.scheduled_time_end), { index, field: 'end' })
                   }>
                   <Text>{(item.scheduled_time_end ?? '10:00:00').slice(0, 5)}</Text>
-                </Pressable>
+                </AnimatedPressable>
               </View>
             ) : timeMode === 'instant' ? (
               <View style={styles.chipRow}>
-                <Pressable
+                <AnimatedPressable
                   style={styles.timeButton}
                   onPress={() => {
                     openItemTimePicker(timeToDate(item.scheduled_time_start), { index, field: 'start' });
                   }}>
                   <Text>{(item.scheduled_time_start ?? '09:00:00').slice(0, 5)}</Text>
-                </Pressable>
+                </AnimatedPressable>
               </View>
             ) : (
               <View style={styles.chipRow}>
                 {slots.map((slot) => (
                   <Chip
                     key={slot.id}
-                    label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
+                    label={`${t(SLOT_LABEL_KEYS[slot.slot_type])} ${slotTimeLabel(slot)}`}
                     selected={item.slot_id === slot.id}
                     onPress={() => updateItem(index, { slot_id: slot.id })}
                   />
@@ -560,16 +587,16 @@ export default function PresetFormScreen() {
             )}
 
             <View style={styles.switchRow}>
-              <Text style={styles.label}>필수</Text>
+              <Text style={styles.label}>{t('common.required')}</Text>
               <Switch
                 value={item.is_required}
                 onValueChange={(value) => updateItem(index, { is_required: value })}
               />
             </View>
 
-            <Pressable style={styles.itemDoneButton} onPress={() => collapseItem(index)}>
-              <Text style={styles.itemDoneButtonText}>완료</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.itemDoneButton} onPress={() => collapseItem(index)}>
+              <Text style={styles.itemDoneButtonText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         );
       })}
@@ -603,7 +630,7 @@ export default function PresetFormScreen() {
               minuteInterval={15}
               onChange={handleSpinnerTimeChange}
             />
-            <Pressable
+            <AnimatedPressable
               style={styles.spinnerDoneButton}
               onPress={() => {
                 const picked = pickerDraftRef.current;
@@ -612,37 +639,37 @@ export default function PresetFormScreen() {
                 setPickerOpenValue(null);
                 setActiveTimePicker(null);
               }}>
-              <Text style={styles.spinnerDoneText}>완료</Text>
-            </Pressable>
+              <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         ))}
 
       <View style={styles.addItemRow}>
-        <Pressable style={[styles.addItemButton, styles.addItemButtonFlex]} onPress={addItem}>
-          <Text style={styles.addItemButtonText}>+ 항목 추가</Text>
-        </Pressable>
-        <Pressable
+        <AnimatedPressable style={[styles.addItemButton, styles.addItemButtonFlex]} onPress={addItem}>
+          <Text style={styles.addItemButtonText}>{t('presetForm.addItem')}</Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.addItemButton, styles.addItemButtonFlex]}
           onPress={() => setShowFavoritePicker(true)}>
           <Ionicons name="star-outline" size={14} color={accent} />
-          <Text style={styles.addItemButtonText}>즐겨찾기에서 추가</Text>
-        </Pressable>
+          <Text style={styles.addItemButtonText}>{t('presetForm.addFromFavorite')}</Text>
+        </AnimatedPressable>
       </View>
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+      <AnimatedPressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
         {isSaving ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.saveButtonText}>{isEditing ? '수정 완료' : '만들기'}</Text>
+          <Text style={styles.saveButtonText}>{isEditing ? t('presetForm.saveEdit') : t('presetForm.create')}</Text>
         )}
-      </Pressable>
+      </AnimatedPressable>
 
       {isEditing && (
-        <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-          <Text style={styles.deleteButtonText}>모음집 삭제</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
+          <Text style={styles.deleteButtonText}>{t('presetForm.deletePreset')}</Text>
+        </AnimatedPressable>
       )}
 
       <FavoritePicker
@@ -651,9 +678,9 @@ export default function PresetFormScreen() {
         favorites={favorites}
         slots={slots}
         renderActions={(favorite) => (
-          <Pressable style={styles.favoritePickButton} onPress={() => addItemFromFavorite(favorite)}>
-            <Text style={styles.favoritePickButtonText}>추가</Text>
-          </Pressable>
+          <AnimatedPressable style={styles.favoritePickButton} onPress={() => addItemFromFavorite(favorite)}>
+            <Text style={styles.favoritePickButtonText}>{t('common.add')}</Text>
+          </AnimatedPressable>
         )}
       />
     </ScrollView>

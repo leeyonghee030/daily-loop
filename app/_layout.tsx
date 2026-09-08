@@ -1,4 +1,5 @@
 import { CuteFont_400Regular } from '@expo-google-fonts/cute-font';
+import { Fredoka_400Regular } from '@expo-google-fonts/fredoka';
 import { Quicksand_600SemiBold, Quicksand_700Bold } from '@expo-google-fonts/quicksand';
 import { SpaceMono_400Regular, SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -17,6 +18,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { AccentColorProvider, useAccentColor } from '@/lib/accent-color';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+import { LanguageProvider, useTranslation } from '@/lib/language';
 import { KoreanFontProvider, useKoreanFont } from '@/lib/korean-font';
 import { OnboardingProvider, useOnboarding } from '@/lib/onboarding';
 import { persistOptions, queryClient } from '@/lib/query-client';
@@ -52,6 +54,7 @@ export default function RootLayout() {
     SpaceMono_400Regular,
     SpaceMono_700Bold,
     CuteFont_400Regular,
+    Fredoka_400Regular,
   });
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
@@ -73,13 +76,15 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.flex}>
       <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
         <AccentColorProvider>
-          <KoreanFontProvider>
-            <AuthProvider>
-              <OnboardingProvider>
-                <RootLayoutNav />
-              </OnboardingProvider>
-            </AuthProvider>
-          </KoreanFontProvider>
+          <LanguageProvider>
+            <KoreanFontProvider>
+              <AuthProvider>
+                <OnboardingProvider>
+                  <RootLayoutNav />
+                </OnboardingProvider>
+              </AuthProvider>
+            </KoreanFontProvider>
+          </LanguageProvider>
         </AccentColorProvider>
       </PersistQueryClientProvider>
     </GestureHandlerRootView>
@@ -89,6 +94,7 @@ export default function RootLayout() {
 function RootLayoutNav() {
   const appTheme = useAppTheme();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const { session, isLoading } = useAuth();
   const { seen: onboardingSeen } = useOnboarding();
   const segments = useSegments();
@@ -141,12 +147,12 @@ function RootLayoutNav() {
           <Stack.Screen name="my-routines" options={{ title: '' }} />
           <Stack.Screen
             name="preset-form"
-            options={{ presentation: 'modal', title: '모음집' }}
+            options={{ presentation: 'modal', title: t('nav.preset') }}
           />
-          <Stack.Screen name="favorites" options={{ title: '즐겨찾기' }} />
+          <Stack.Screen name="favorites" options={{ title: t('nav.favorites') }} />
           <Stack.Screen
             name="favorite-form"
-            options={{ presentation: 'modal', title: '즐겨찾기' }}
+            options={{ presentation: 'modal', title: t('nav.favorites') }}
           />
           <Stack.Screen
             name="diary-form"
@@ -156,11 +162,11 @@ function RootLayoutNav() {
           <Stack.Screen name="videos" options={{ title: '' }} />
           <Stack.Screen
             name="video-player"
-            options={{ title: '영상 재생', gestureEnabled: false }}
+            options={{ title: t('nav.videoPlayer'), gestureEnabled: false }}
           />
           <Stack.Screen name="settings" options={{ title: '' }} />
-          <Stack.Screen name="slot-settings" options={{ title: '슬롯시간 설정' }} />
-          <Stack.Screen name="routine-trash" options={{ title: '루틴 복구' }} />
+          <Stack.Screen name="slot-settings" options={{ title: t('settings.timeSettings') }} />
+          <Stack.Screen name="routine-trash" options={{ title: t('myRoutines.routineTrash') }} />
         </Stack>
       )}
     </ThemeProvider>

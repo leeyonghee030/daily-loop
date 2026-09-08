@@ -1,11 +1,16 @@
 import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 
+import type { TranslationKey } from '@/lib/language';
 import { supabase } from '@/lib/supabase';
 
 export type BlockType = 'check' | 'tracking';
 export type RepeatType = 'daily' | 'weekday' | 'weekend' | 'custom' | 'once';
 export type SlotType = 'morning' | 'lunch' | 'evening' | 'before_sleep';
+
+// DB에는 slot_type 정렬 기준이 없어서 행 순서가 들쭉날쭉할 수 있음 — 화면에는 항상
+// 아침→점심→저녁→자기전 순서로 보이도록 fetchSlots에서 이 순서로 정렬해서 내려준다
+const SLOT_ORDER: SlotType[] = ['morning', 'lunch', 'evening', 'before_sleep'];
 
 export type Slot = {
   id: string;
@@ -73,11 +78,20 @@ export function slotTimeLabel(slot: Slot): string {
   return `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`;
 }
 
+// 로컬 알림(lib/notifications.ts)처럼 t()를 쓸 수 없는 곳에서만 이 한국어 기본값을 그대로 쓴다 —
+// 화면(컴포넌트) 쪽은 아래 SLOT_LABEL_KEYS + t()로 언어별 라벨을 가져온다
 export const SLOT_LABELS: Record<SlotType, string> = {
   morning: '아침',
   lunch: '점심',
   evening: '저녁',
   before_sleep: '자기전',
+};
+
+export const SLOT_LABEL_KEYS: Record<SlotType, TranslationKey> = {
+  morning: 'slot.morning',
+  lunch: 'slot.lunch',
+  evening: 'slot.evening',
+  before_sleep: 'slot.beforeSleep',
 };
 
 export function formatLocalDate(date: Date): string {
@@ -419,7 +433,7 @@ export async function fetchSlots(userId: string): Promise<Slot[]> {
     .select('id, slot_type, start_time, end_time, notify_enabled, memo_notify_enabled, is_instant')
     .eq('user_id', userId);
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []).slice().sort((a, b) => SLOT_ORDER.indexOf(a.slot_type) - SLOT_ORDER.indexOf(b.slot_type));
 }
 
 export async function updateSlot(

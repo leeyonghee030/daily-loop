@@ -21,8 +21,13 @@ export const fontMonoBold = 'SpaceMono_700Bold';
 // Quicksand/Space Mono는 한글을 지원 안 해서(라틴 전용) 한글 텍스트에 쓰면 그냥 시스템 폰트로
 // 대체됨 — 사용자가 직접 적는 루틴 제목처럼 한글로 된 부분을 동글동글하게 하고 싶을 때 이 폰트를 쓴다.
 // Jua(두껍고 간판느낌) → Gowun Dodum(세로로 긴 느낌) → Hi Melody(너무 유치함) 순으로
-// 시도하다 Cute Font로 최종 정착함(2026-09) — 얇은 손글씨풍 둥근 폰트
+// 시도하다 Cute Font로 최종 정착함(2026-09) — 얇은 손글씨풍 둥근 폰트(한글+라틴 모두 지원)
 export const fontKorean = 'CuteFont_400Regular';
+
+// 앱 언어가 영어일 때 쓰는 "동글 폰트" — Cute Font는 한글에 맞춰 고른 손글씨풍이라 라틴 글자만
+// 두고 보면 어색해서, 영어 전용으로 더 무난하게 둥근 Fredoka를 따로 쓴다(2026-09).
+// SemiBold→Medium도 여전히 두꺼워 보인다는 피드백으로 한 단계 더 얇은 Regular로 낮춤
+export const fontEnglishRounded = 'Fredoka_400Regular';
 
 // 카드/버튼 모서리 — 각진 느낌은 유지하되 아이폰 카드처럼 아주 살짝만 둥글게(필/원형 요소는 기존처럼 999 또는 '50%' 유지)
 export const cardRadius = 6;

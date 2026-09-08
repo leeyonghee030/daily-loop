@@ -3,24 +3,27 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   Image,
   Modal,
-  Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   View as RNView,
 } from 'react-native';
+import Animated, { useAnimatedRef } from 'react-native-reanimated';
+import Sortable from 'react-native-sortables';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { border, cardRadius } from '@/constants/theme';
+import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useTranslation } from '@/lib/language';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
+  categoryDisplayName,
   countRoutinesUsingVideo,
   createCategory,
   createUserVideo,
@@ -35,6 +38,7 @@ import {
   renameCategory,
   restoreCategory,
   softDeleteCategory,
+  updateVideoSortOrder,
   type Category,
   type DeletedCategory,
   type HiddenDefaultCategory,
@@ -53,8 +57,10 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   const userId = session?.user.id;
   const queryClient = useQueryClient();
   const accent = useAccentColor();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
   const categoriesQueryKey = ['video-categories', userId] as const;
+  const gridScrollRef = useAnimatedRef<Animated.ScrollView>();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -67,6 +73,9 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   const [categoryNameInput, setCategoryNameInput] = useState('');
   const [categorySubmitting, setCategorySubmitting] = useState(false);
   const [categoryModalError, setCategoryModalError] = useState<string | null>(null);
+
+  // 영상 삭제 확인창 — 네이티브 Alert 대신 이 화면 디자인에 맞춘 커스텀 확인창을 쓴다
+  const [deleteTarget, setDeleteTarget] = useState<{ video: Video; linkedCount: number } | null>(null);
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [deletedCategories, setDeletedCategories] = useState<DeletedCategory[]>([]);
@@ -107,6 +116,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     queryFn: () => fetchVideosByCategory(selectedId!, userId!),
     enabled: selectedId !== null && !!userId,
   });
+  useRefetchOnFocus(videosQuery.refetch, selectedId !== null && !!userId);
   const videos = videosQuery.data ?? [];
   const isLoading = videosQuery.isLoading;
 
@@ -120,32 +130,25 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     videosQuery.refetch();
   }
 
+  // 드래그로 순서를 바꾸면 화면부터 바로 새 순서로 바꾸고(낙관적 업데이트), 서버에도 반영한다
+  function handleDragEnd(newOrder: Video[]) {
+    setVideos(newOrder);
+    updateVideoSortOrder(newOrder.map((v) => v.id)).catch(() => videosQuery.refetch());
+  }
+
   async function performDeleteVideo(video: Video) {
+    setDeleteTarget(null);
     try {
       await deleteUserVideo(video.id);
       setVideos((prev) => prev.filter((v) => v.id !== video.id));
     } catch (err) {
-      Alert.alert('삭제 실패', err instanceof Error ? err.message : '영상을 삭제하지 못했어요.');
+      Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), err instanceof Error ? err.message : t('categoryVideoGrid.deleteVideoFailedDefault'));
     }
   }
 
   async function handleDeleteVideo(video: Video) {
     const linkedCount = await countRoutinesUsingVideo(video.id).catch(() => 0);
-    if (linkedCount > 0) {
-      Alert.alert(
-        '이 영상은 루틴에 연결돼 있어요',
-        `연결된 루틴 ${linkedCount}개에서 영상 연결만 사라지고, 루틴 자체와 기록은 그대로 남아요. 그래도 삭제하시겠어요?`,
-        [
-          { text: '취소', style: 'cancel' },
-          { text: '그래도 삭제', style: 'destructive', onPress: () => performDeleteVideo(video) },
-        ]
-      );
-      return;
-    }
-    Alert.alert('이 영상을 삭제할까요?', video.title, [
-      { text: '취소', style: 'cancel' },
-      { text: '삭제', style: 'destructive', onPress: () => performDeleteVideo(video) },
-    ]);
+    setDeleteTarget({ video, linkedCount });
   }
 
   async function handleAddVideo() {
@@ -153,12 +156,16 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     setIsSubmitting(true);
     setAddError(null);
     try {
-      await createUserVideo(userId, selectedId, urlInput);
+      const { alreadyAdded } = await createUserVideo(userId, selectedId, urlInput);
+      if (alreadyAdded) {
+        setAddError(t('categoryVideoGrid.alreadyAddedError'));
+        return;
+      }
       setUrlInput('');
       setShowAddModal(false);
       loadVideos(selectedId);
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : '영상을 추가하지 못했어요.');
+      setAddError(err instanceof Error ? err.message : t('categoryVideoGrid.addVideoFailedDefault'));
     } finally {
       setIsSubmitting(false);
     }
@@ -196,7 +203,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       }
       setShowCategoryModal(false);
     } catch (err) {
-      setCategoryModalError(err instanceof Error ? err.message : '저장하지 못했어요.');
+      setCategoryModalError(err instanceof Error ? err.message : t('categoryVideoGrid.saveCategoryFailedDefault'));
     } finally {
       setCategorySubmitting(false);
     }
@@ -209,13 +216,18 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     if (cat.user_id === null) {
       // 기본 카테고리는 공용 행이라 진짜로 못 지우고, 나에게서만 숨긴다 — 그 안의 내 영상은 즉시 완전히 삭제(복구 불가)
       if (!userId) return;
+      const catName = categoryDisplayName(cat.name, t);
+      const message =
+        language === 'ko'
+          ? `"${catName}" 카테고리를 삭제하면 내가 추가한 영상이 지금 바로 사라지고 되돌릴 수 없어요. 카테고리 자체와 저희가 기본 제공하는 영상은 "삭제된 카테고리"의 "기본 카테고리 생성"으로 나중에 다시 채울 수 있어요. 그래도 삭제할까요?`
+          : `Deleting "${catName}" will remove any videos you added right away, and this can't be undone. You can recreate the category itself and our default videos later from "Deleted categories" → "Recreate default categories". Delete anyway?`;
       Alert.alert(
-        '⚠️ 추가한 영상은 복구되지 않아요',
-        `"${cat.name}" 카테고리를 삭제하면 내가 추가한 영상이 지금 바로 사라지고 되돌릴 수 없어요. 카테고리 자체와 저희가 기본 제공하는 영상은 "삭제된 카테고리"의 "기본 카테고리 생성"으로 나중에 다시 채울 수 있어요. 그래도 삭제할까요?`,
+        language === 'ko' ? '⚠️ 추가한 영상은 복구되지 않아요' : "⚠️ Added videos can't be recovered",
+        message,
         [
-          { text: '취소', style: 'cancel' },
+          { text: t('settings.cancel'), style: 'cancel' },
           {
-            text: '삭제',
+            text: t('myRoutines.delete'),
             style: 'destructive',
             onPress: async () => {
               try {
@@ -226,7 +238,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
                   return next;
                 });
               } catch {
-                Alert.alert('삭제 실패', '카테고리를 삭제하지 못했어요.');
+                Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
               }
             },
           },
@@ -235,29 +247,29 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       return;
     }
 
-    Alert.alert(
-      '이 카테고리를 삭제할까요?',
-      `"${cat.name}" 카테고리와 그 안의 영상은 3일간 보관돼요. 3일 안에는 "삭제된 카테고리"에서 복구할 수 있어요.`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await softDeleteCategory(cat.id);
-              setCategories((prev) => {
-                const next = prev.filter((c) => c.id !== cat.id);
-                setSelectedId(next[0]?.id ?? null);
-                return next;
-              });
-            } catch {
-              Alert.alert('삭제 실패', '카테고리를 삭제하지 못했어요.');
-            }
-          },
+    const message =
+      language === 'ko'
+        ? `"${cat.name}" 카테고리와 그 안의 영상은 3일간 보관돼요. 3일 안에는 "삭제된 카테고리"에서 복구할 수 있어요.`
+        : `"${categoryDisplayName(cat.name, t)}" and the videos inside will be kept for 3 days. You can restore it from "Deleted categories" within that time.`;
+    Alert.alert(t('categoryVideoGrid.deleteCategoryConfirmTitle'), message, [
+      { text: t('settings.cancel'), style: 'cancel' },
+      {
+        text: t('myRoutines.delete'),
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await softDeleteCategory(cat.id);
+            setCategories((prev) => {
+              const next = prev.filter((c) => c.id !== cat.id);
+              setSelectedId(next[0]?.id ?? null);
+              return next;
+            });
+          } catch {
+            Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.deleteCategoryFailed'));
+          }
         },
-      ]
-    );
+      },
+    ]);
   }
 
   async function openTrash() {
@@ -283,7 +295,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       setCategories(cats);
       if (selectedId === null) setSelectedId(cats[0]?.id ?? null);
     } catch {
-      Alert.alert('실패', '기본 카테고리를 다시 만들지 못했어요.');
+      Alert.alert(t('categoryVideoGrid.recreateFailedTitle'), t('categoryVideoGrid.recreateFailedDesc'));
     } finally {
       setRecreatingDefaults(false);
     }
@@ -296,17 +308,17 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       setDeletedCategories((prev) => prev.filter((c) => c.id !== cat.id));
       setCategories((prev) => [...prev, { id: cat.id, name: cat.name, user_id: cat.user_id }]);
     } catch {
-      Alert.alert('복구 실패', '복구하지 못했어요.');
+      Alert.alert(t('categoryVideoGrid.restoreFailedTitle'), t('categoryVideoGrid.restoreFailedDesc'));
     } finally {
       setTrashBusyId(null);
     }
   }
 
   function handleHardDeleteCategory(cat: DeletedCategory) {
-    Alert.alert('완전히 삭제할까요?', '3일을 기다리지 않고 지금 바로 완전히 삭제돼요. 되돌릴 수 없어요.', [
-      { text: '취소', style: 'cancel' },
+    Alert.alert(t('categoryVideoGrid.hardDeleteConfirmTitle'), t('categoryVideoGrid.hardDeleteConfirmDesc'), [
+      { text: t('settings.cancel'), style: 'cancel' },
       {
-        text: '완전 삭제',
+        text: t('categoryVideoGrid.hardDelete'),
         style: 'destructive',
         onPress: async () => {
           setTrashBusyId(cat.id);
@@ -314,7 +326,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
             await hardDeleteCategory(cat.id);
             setDeletedCategories((prev) => prev.filter((c) => c.id !== cat.id));
           } catch {
-            Alert.alert('삭제 실패', '삭제하지 못했어요.');
+            Alert.alert(t('categoryVideoGrid.deleteFailedTitle'), t('categoryVideoGrid.hardDeleteFailedDesc'));
           } finally {
             setTrashBusyId(null);
           }
@@ -331,101 +343,120 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         style={styles.tabs}
         contentContainerStyle={styles.tabsContent}>
         {categories.map((cat) => (
-          <Pressable
+          <AnimatedPressable
             key={cat.id}
             style={[styles.tab, selectedId === cat.id && styles.tabActive]}
             onPress={() => setSelectedId(cat.id)}>
-            <Text style={[styles.tabText, selectedId === cat.id && styles.tabTextActive]}>{cat.name}</Text>
-          </Pressable>
+            <Text style={[styles.tabText, selectedId === cat.id && styles.tabTextActive]}>
+              {categoryDisplayName(cat.name, t)}
+            </Text>
+          </AnimatedPressable>
         ))}
-        <Pressable style={styles.tabAdd} onPress={openCreateCategoryModal}>
-          <Text style={styles.tabAddText}>+ 카테고리</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.tabAdd} onPress={openCreateCategoryModal}>
+          <Text style={styles.tabAddText}>{t('categoryVideoGrid.addCategory')}</Text>
+        </AnimatedPressable>
       </ScrollView>
 
       <View style={styles.actionsRow}>
         {userId && selectedId !== null && (
-          <Pressable style={styles.addButton} onPress={() => setShowAddModal(true)}>
-            <Text style={styles.addButtonText}>+ 내 영상 추가</Text>
-          </Pressable>
+          <AnimatedPressable style={styles.addButton} onPress={() => setShowAddModal(true)}>
+            <Text style={styles.addButtonText}>{t('categoryVideoGrid.addMyVideo')}</Text>
+          </AnimatedPressable>
         )}
         {selectedCategory?.user_id === userId && (
-          <Pressable style={styles.categoryActionButton} onPress={openRenameCategoryModal}>
+          <AnimatedPressable style={styles.categoryActionButton} onPress={openRenameCategoryModal}>
             <Ionicons name="create-outline" size={14} color={accent} />
-            <Text style={styles.categoryActionText}>이름 수정</Text>
-          </Pressable>
+            <Text style={styles.categoryActionText}>{t('categoryVideoGrid.renameCategory')}</Text>
+          </AnimatedPressable>
         )}
         {selectedCategory && (
-          <Pressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
+          <AnimatedPressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
             <Ionicons name="trash-outline" size={14} color="#FF6B6B" />
-            <Text style={styles.categoryActionTextDanger}>삭제</Text>
-          </Pressable>
+            <Text style={styles.categoryActionTextDanger}>{t('myRoutines.delete')}</Text>
+          </AnimatedPressable>
         )}
-        <Pressable style={styles.trashLinkButton} onPress={openTrash}>
-          <Text style={styles.trashLinkText}>삭제된 카테고리</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.trashLinkButton} onPress={openTrash}>
+          <Text style={styles.trashLinkText}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
+        </AnimatedPressable>
       </View>
 
       {isLoading ? (
         <ActivityIndicator style={styles.loading} />
       ) : videos.length === 0 ? (
-        <Text style={styles.emptyText}>아직 추가한 영상이 없어요{'\n'}추천 영상에서 가져오거나 직접 추가해보세요</Text>
+        <Text style={styles.emptyText}>
+          {t('categoryVideoGrid.emptyVideosLine1')}
+          {'\n'}
+          {t('categoryVideoGrid.emptyVideosLine2')}
+        </Text>
       ) : (
-        <FlatList
-          data={videos}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          columnWrapperStyle={styles.row}
-          contentContainerStyle={styles.grid}
-          renderItem={({ item }) => (
-            <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
-              <Pressable onPress={() => onSelectVideo(item)}>
-                <View style={styles.thumbnailWrap}>
-                  <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
-                  <Pressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
-                    <Text style={styles.deleteBadgeText}>✕</Text>
-                  </Pressable>
-                </View>
-                <Text style={styles.cardTitle} numberOfLines={2}>
-                  {item.title}
-                </Text>
-                <Text style={styles.cardChannel} numberOfLines={1}>
-                  {item.channel_name}
-                </Text>
-              </Pressable>
-            </ShadowCard>
-          )}
-        />
+        <Animated.ScrollView ref={gridScrollRef} style={styles.list} contentContainerStyle={styles.grid}>
+          <Sortable.Grid
+            columns={videos.length === 1 ? 1 : 2}
+            data={videos}
+            keyExtractor={(item) => item.id}
+            rowGap={16}
+            columnGap={12}
+            scrollableRef={gridScrollRef}
+            onDragEnd={({ data }) => handleDragEnd(data)}
+            renderItem={({ item }: { item: Video }) => (
+              <AnimatedPressable style={styles.cardSlot} onPress={() => onSelectVideo(item)}>
+                <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
+                  <View style={styles.thumbnailWrap}>
+                    <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
+                    <AnimatedPressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
+                      <Text style={styles.deleteBadgeText}>✕</Text>
+                    </AnimatedPressable>
+                  </View>
+                  <View style={styles.cardTitleBox}>
+                    <Text style={styles.cardTitle} numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                  </View>
+                  <Text style={styles.cardChannel} numberOfLines={1}>
+                    {item.channel_name}
+                  </Text>
+                </ShadowCard>
+              </AnimatedPressable>
+            )}
+          />
+        </Animated.ScrollView>
       )}
 
       <Modal visible={showAddModal} animationType="slide" transparent onRequestClose={() => setShowAddModal(false)}>
         <RNView style={styles.modalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAddModal(false)} />
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowAddModal(false)} />
           <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>내 영상 추가</Text>
-            <Text style={styles.modalDesc}>유튜브 링크를 붙여넣으면 제목/채널 정보를 자동으로 가져와요. 나에게만 보여요.</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={urlInput}
-              onChangeText={setUrlInput}
-              placeholder="https://www.youtube.com/watch?v=..."
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+            <Text style={styles.modalTitle}>{t('categoryVideoGrid.addVideoModalTitle')}</Text>
+            <Text style={styles.modalDesc}>{t('categoryVideoGrid.addVideoModalDesc')}</Text>
+            <View style={styles.inputWrap}>
+              <TextInput
+                style={[styles.modalInput, styles.modalInputWithClear]}
+                value={urlInput}
+                onChangeText={setUrlInput}
+                placeholder="https://www.youtube.com/watch?v=..."
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {urlInput.length > 0 && (
+                <AnimatedPressable style={styles.inputClearButton} onPress={() => setUrlInput('')} hitSlop={8}>
+                  <Ionicons name="close-circle" size={18} color={textMuted} />
+                </AnimatedPressable>
+              )}
+            </View>
             {addError && <Text style={styles.modalError}>{addError}</Text>}
             <View style={styles.modalButtonRow}>
-              <Pressable
+              <AnimatedPressable
                 style={styles.modalCancelButton}
                 onPress={() => {
                   setShowAddModal(false);
                   setUrlInput('');
                   setAddError(null);
                 }}>
-                <Text style={styles.modalCancelText}>취소</Text>
-              </Pressable>
-              <Pressable style={styles.modalSaveButton} onPress={handleAddVideo} disabled={isSubmitting}>
-                {isSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>추가</Text>}
-              </Pressable>
+                <Text style={styles.modalCancelText}>{t('settings.cancel')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.modalSaveButton} onPress={handleAddVideo} disabled={isSubmitting}>
+                {isSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>{t('common.add')}</Text>}
+              </AnimatedPressable>
             </View>
           </View>
         </RNView>
@@ -437,23 +468,27 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         transparent
         onRequestClose={() => setShowCategoryModal(false)}>
         <RNView style={styles.modalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryModal(false)} />
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryModal(false)} />
           <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>{categoryModalMode === 'create' ? '카테고리 추가' : '카테고리 이름 수정'}</Text>
+            <Text style={styles.modalTitle}>
+              {categoryModalMode === 'create'
+                ? t('categoryVideoGrid.categoryModalTitleCreate')
+                : t('categoryVideoGrid.categoryModalTitleRename')}
+            </Text>
             <TextInput
               style={styles.modalInput}
               value={categoryNameInput}
               onChangeText={setCategoryNameInput}
-              placeholder="카테고리 이름"
+              placeholder={t('categoryVideoGrid.categoryNamePlaceholder')}
             />
             {categoryModalError && <Text style={styles.modalError}>{categoryModalError}</Text>}
             <View style={styles.modalButtonRow}>
-              <Pressable style={styles.modalCancelButton} onPress={() => setShowCategoryModal(false)}>
-                <Text style={styles.modalCancelText}>취소</Text>
-              </Pressable>
-              <Pressable style={styles.modalSaveButton} onPress={handleSubmitCategory} disabled={categorySubmitting}>
-                {categorySubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>저장</Text>}
-              </Pressable>
+              <AnimatedPressable style={styles.modalCancelButton} onPress={() => setShowCategoryModal(false)}>
+                <Text style={styles.modalCancelText}>{t('settings.cancel')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.modalSaveButton} onPress={handleSubmitCategory} disabled={categorySubmitting}>
+                {categorySubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>{t('today.save')}</Text>}
+              </AnimatedPressable>
             </View>
           </View>
         </RNView>
@@ -461,74 +496,106 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
 
       <Modal visible={showTrashModal} animationType="slide" transparent onRequestClose={() => setShowTrashModal(false)}>
         <RNView style={styles.modalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowTrashModal(false)} />
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowTrashModal(false)} />
           <View style={styles.trashModalSheet}>
-            <Text style={styles.modalTitle}>삭제된 카테고리</Text>
+            <Text style={styles.modalTitle}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
             {trashLoading ? (
               <ActivityIndicator style={styles.loading} />
             ) : (
               <ScrollView>
-                <Text style={styles.modalDesc}>
-                  내가 만든 카테고리는 삭제 후 3일 안에 여기서 복구할 수 있어요. 3일이 지나면 안의 영상까지 완전히
-                  삭제돼요.
-                </Text>
+                <Text style={styles.modalDesc}>{t('categoryVideoGrid.trashModalDesc')}</Text>
                 {deletedCategories.length === 0 ? (
-                  <Text style={styles.emptyText}>삭제된 카테고리가 없어요.</Text>
+                  <Text style={styles.emptyText}>{t('categoryVideoGrid.emptyDeletedCategories')}</Text>
                 ) : (
                   deletedCategories.map((cat) => (
                     <View key={cat.id} style={styles.trashRow}>
                       <View style={styles.trashRowInfo}>
-                        <Text style={styles.trashRowTitle}>{cat.name}</Text>
-                        <Text style={styles.trashRowMeta}>{daysUntilCategoryPurge(cat.deleted_at)}일 후 완전 삭제</Text>
+                        <Text style={styles.trashRowTitle}>{categoryDisplayName(cat.name, t)}</Text>
+                        <Text style={styles.trashRowMeta}>
+                          {language === 'ko'
+                            ? `${daysUntilCategoryPurge(cat.deleted_at)}일 후 완전 삭제`
+                            : `Permanently deleted in ${daysUntilCategoryPurge(cat.deleted_at)} day(s)`}
+                        </Text>
                       </View>
-                      <Pressable
+                      <AnimatedPressable
                         style={styles.restoreButtonSmall}
                         disabled={trashBusyId === cat.id}
                         onPress={() => handleRestoreCategory(cat)}>
-                        <Text style={styles.restoreButtonSmallText}>복구</Text>
-                      </Pressable>
-                      <Pressable
+                        <Text style={styles.restoreButtonSmallText}>{t('categoryVideoGrid.restore')}</Text>
+                      </AnimatedPressable>
+                      <AnimatedPressable
                         style={styles.trashHardDeleteButton}
                         disabled={trashBusyId === cat.id}
                         onPress={() => handleHardDeleteCategory(cat)}>
-                        <Text style={styles.trashHardDeleteText}>완전삭제</Text>
-                      </Pressable>
+                        <Text style={styles.trashHardDeleteText}>{t('categoryVideoGrid.hardDelete')}</Text>
+                      </AnimatedPressable>
                     </View>
                   ))
                 )}
 
-                <Text style={[styles.modalTitle, styles.trashSectionTitle]}>삭제한 기본 카테고리</Text>
-                <Text style={styles.modalDesc}>
-                  기본 카테고리는 3일 제한 없이 언제든 다시 만들 수 있어요. 저희가 기본 제공하는 영상은 자동으로
-                  다시 채워지지만, 내가 직접 추가했던 영상은 이미 지워진 상태라 돌아오지 않아요.
+                <Text style={[styles.modalTitle, styles.trashSectionTitle]}>
+                  {t('categoryVideoGrid.hiddenDefaultsSectionTitle')}
                 </Text>
+                <Text style={styles.modalDesc}>{t('categoryVideoGrid.hiddenDefaultsDesc')}</Text>
                 {hiddenDefaults.length === 0 ? (
-                  <Text style={styles.emptyText}>삭제한 기본 카테고리가 없어요.</Text>
+                  <Text style={styles.emptyText}>{t('categoryVideoGrid.emptyHiddenDefaults')}</Text>
                 ) : (
                   <>
                     {hiddenDefaults.map((cat) => (
                       <Text key={cat.category_id} style={styles.hiddenDefaultText}>
-                        · {cat.name}
+                        · {categoryDisplayName(cat.name, t)}
                       </Text>
                     ))}
-                    <Pressable
+                    <AnimatedPressable
                       style={styles.recreateButton}
                       disabled={recreatingDefaults}
                       onPress={handleRecreateDefaults}>
                       {recreatingDefaults ? (
                         <ActivityIndicator color="#fff" />
                       ) : (
-                        <Text style={styles.recreateButtonText}>기본 카테고리 생성</Text>
+                        <Text style={styles.recreateButtonText}>{t('categoryVideoGrid.recreateDefaults')}</Text>
                       )}
-                    </Pressable>
+                    </AnimatedPressable>
                   </>
                 )}
               </ScrollView>
             )}
-            <Pressable style={styles.modalCancelButton} onPress={() => setShowTrashModal(false)}>
-              <Text style={styles.modalCancelText}>닫기</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.modalCancelButton} onPress={() => setShowTrashModal(false)}>
+              <Text style={styles.modalCancelText}>{t('today.close')}</Text>
+            </AnimatedPressable>
           </View>
+        </RNView>
+      </Modal>
+
+      <Modal visible={!!deleteTarget} transparent animationType="fade" onRequestClose={() => setDeleteTarget(null)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setDeleteTarget(null)} />
+          {deleteTarget && (
+            <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+              <Text style={styles.confirmTitle}>
+                {deleteTarget.linkedCount > 0
+                  ? t('categoryVideoGrid.confirmDeleteVideoTitleLinked')
+                  : t('categoryVideoGrid.confirmDeleteVideoTitleSimple')}
+              </Text>
+              <Text style={styles.confirmDesc}>
+                {deleteTarget.linkedCount > 0
+                  ? language === 'ko'
+                    ? `영상을 삭제하면 연결된 루틴 ${deleteTarget.linkedCount}개에서 이 영상을 볼 수 없게 돼요. 루틴 자체와 기록은 그대로 남아요.`
+                    : `Deleting this video will remove it from ${deleteTarget.linkedCount} linked routine(s). The routines and their records stay intact.`
+                  : deleteTarget.video.title}
+              </Text>
+              <View style={styles.confirmButtonRow}>
+                <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setDeleteTarget(null)}>
+                  <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable
+                  style={styles.confirmDeleteButton}
+                  onPress={() => performDeleteVideo(deleteTarget.video)}>
+                  <Text style={styles.confirmDeleteText}>{t('myRoutines.delete')}</Text>
+                </AnimatedPressable>
+              </View>
+            </ShadowCard>
+          )}
         </RNView>
       </Modal>
     </View>
@@ -664,15 +731,19 @@ function createStyles(accent: string) {
     textAlign: 'center',
     opacity: 0.5,
   },
+  list: {
+    flex: 1,
+  },
   grid: {
     paddingBottom: 20,
   },
-  row: {
-    gap: 12,
+  // Sortable.Grid가 columns 수에 맞춰 셀 폭을 알아서 계산해준다(딱 1개면 columns=1로 줘서
+  // 꽉 채운 크기로 보이게 함) — 카드 쪽은 그 셀 폭을 그대로 채우기만 하면 된다
+  cardSlot: {
+    width: '100%',
   },
   cardOuter: {
-    flex: 1,
-    marginBottom: 16,
+    width: '100%',
   },
   card: {
     padding: 8,
@@ -702,12 +773,16 @@ function createStyles(accent: string) {
     fontSize: 12,
     fontWeight: '700',
   },
+  // Text 자체에 height를 주면 그리드 라이브러리가 셀 크기를 측정할 때 무시하는 경우가 있어서,
+  // 감싸는 View에 고정 높이를 줘서 1줄이든 2줄이든 카드 높이가 항상 같게 만든다
+  cardTitleBox: {
+    height: 34,
+    marginTop: 6,
+  },
   cardTitle: {
     fontSize: 13,
     lineHeight: 17,
-    height: 34, // 2줄 고정 — 제목이 1줄이든 2줄이든 카드 높이가 항상 같게
     fontWeight: '600',
-    marginTop: 6,
   },
   cardChannel: {
     fontSize: 12,
@@ -782,6 +857,18 @@ function createStyles(accent: string) {
     paddingVertical: 10,
     fontSize: 14,
   },
+  inputWrap: {
+    justifyContent: 'center',
+  },
+  // X 버튼에 글자가 가리지 않도록 오른쪽 여백만 더 준다(URL 입력에만 적용, 카테고리 이름 입력은 그대로)
+  modalInputWithClear: {
+    paddingRight: 36,
+  },
+  inputClearButton: {
+    position: 'absolute',
+    right: 10,
+    padding: 4,
+  },
   modalError: {
     color: '#FF6B6B',
     marginTop: 10,
@@ -814,6 +901,62 @@ function createStyles(accent: string) {
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  confirmBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  confirmCardOuter: {
+    width: '100%',
+  },
+  confirmCard: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  confirmDesc: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  confirmButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  confirmCancelButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  confirmDeleteButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  confirmDeleteText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   });
 }

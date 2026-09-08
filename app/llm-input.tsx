@@ -2,14 +2,16 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
+import { ActivityIndicator, StyleSheet, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation } from '@/lib/language';
 import { fetchLlmQuota, parseRoutine, QuotaExceededError, type LlmQuota } from '@/lib/llm';
 import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
 
@@ -45,6 +47,7 @@ export default function LlmInputScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   // 오늘 탭과 같은 쿼리 키를 써서 캐시를 공유한다
   const llmQuotaQueryKey = ['llm-quota', userId] as const;
@@ -110,17 +113,14 @@ export default function LlmInputScreen() {
       <View style={styles.container}>
         <View style={styles.centerBox}>
           <Ionicons name="sparkles-outline" size={40} color={textMuted} />
-          <Text style={styles.quotaTitle}>무료 AI 배치 횟수를 모두 사용했어요</Text>
-          <Text style={styles.quotaBody}>
-            요금제는 곧 출시돼요, 조금만 기다려주세요! "매일 아침 7시" 처럼 간단한 문장은 AI 없이도
-            계속 무료로 쓸 수 있어요.
-          </Text>
-          <Pressable style={styles.primaryButton} onPress={() => setErrorState('none')}>
-            <Text style={styles.primaryButtonText}>간단한 문장으로 다시 써보기</Text>
-          </Pressable>
-          <Pressable style={styles.secondaryButton} onPress={goManualAdd}>
-            <Text style={styles.secondaryButtonText}>직접 추가하기</Text>
-          </Pressable>
+          <Text style={styles.quotaTitle}>{t('llmInput.quotaTitle')}</Text>
+          <Text style={styles.quotaBody}>{t('llmInput.quotaBody')}</Text>
+          <AnimatedPressable style={styles.primaryButton} onPress={() => setErrorState('none')}>
+            <Text style={styles.primaryButtonText}>{t('llmInput.tryPlainAgain')}</Text>
+          </AnimatedPressable>
+          <AnimatedPressable style={styles.secondaryButton} onPress={goManualAdd}>
+            <Text style={styles.secondaryButtonText}>{t('llmInput.addManually')}</Text>
+          </AnimatedPressable>
         </View>
       </View>
     );
@@ -130,7 +130,9 @@ export default function LlmInputScreen() {
     <View style={styles.container}>
       {quota && (
         <Text style={styles.quotaCount}>
-          남은 AI 배치 {quota.remaining}/{quota.limit}회
+          {t('llmInput.remainingQuotaPrefix')}
+          {quota.remaining}/{quota.limit}
+          {t('llmInput.remainingQuotaSuffix')}
         </Text>
       )}
 
@@ -138,7 +140,7 @@ export default function LlmInputScreen() {
         style={styles.input}
         value={text}
         onChangeText={setText}
-        placeholder="예: 매일 아침 7시에 물 8잔 마시기"
+        placeholder={t('llmInput.placeholder')}
         placeholderTextColor="#aaa"
         multiline
         autoFocus
@@ -150,59 +152,53 @@ export default function LlmInputScreen() {
 
       <View style={styles.hintRow}>
         <Ionicons name="bulb-outline" size={13} color={textMuted} style={styles.hintIcon} />
-        <Text style={styles.hint}>
-          이런 걸 넣으면 더 정확해요 — 언제(매일·평일·월수금) · 몇 시(아침 7시) · 꼭 할 것(꼭·반드시) ·
-          횟수(물 8잔·30분). 문장이 복잡하면 아래 &quot;AI로 정확하게 분석&quot; 버튼을 눌러보세요.
-        </Text>
+        <Text style={styles.hint}>{t('llmInput.hint')}</Text>
       </View>
 
       {errorState === 'error' && (
         <View style={styles.errorBox}>
-          <Text style={styles.errorText}>
-            지금은 AI 배치가 잠시 쉬고 있어요. 복구까지 시간이 걸릴 수 있으니, 지금은 직접
-            추가하는 걸 추천해요.
-          </Text>
+          <Text style={styles.errorText}>{t('llmInput.errorBody')}</Text>
           <View style={styles.errorButtons}>
-            <Pressable style={styles.errorPrimaryButton} onPress={goManualAdd}>
-              <Text style={styles.errorPrimaryButtonText}>직접 추가하기</Text>
-            </Pressable>
-            <Pressable style={styles.secondaryButton} onPress={() => handleSubmit()}>
-              <Text style={styles.secondaryButtonText}>다시 시도</Text>
-            </Pressable>
+            <AnimatedPressable style={styles.errorPrimaryButton} onPress={goManualAdd}>
+              <Text style={styles.errorPrimaryButtonText}>{t('llmInput.addManually')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.secondaryButton} onPress={() => handleSubmit()}>
+              <Text style={styles.secondaryButtonText}>{t('llmInput.retry')}</Text>
+            </AnimatedPressable>
           </View>
         </View>
       )}
 
-      <Pressable
+      <AnimatedPressable
         style={[styles.primaryButton, (!text.trim() || isLoading) && styles.primaryButtonDisabled]}
         onPress={() => handleSubmit()}
         disabled={!text.trim() || isLoading}>
         {loadingMode === 'auto' ? (
           <View style={styles.loadingRow}>
             <ActivityIndicator color="#fff" />
-            <Text style={styles.primaryButtonText}>분석 중...</Text>
+            <Text style={styles.primaryButtonText}>{t('llmInput.analyzing')}</Text>
           </View>
         ) : (
-          <Text style={styles.primaryButtonText}>미리보기 만들기</Text>
+          <Text style={styles.primaryButtonText}>{t('llmInput.previewButton')}</Text>
         )}
-      </Pressable>
+      </AnimatedPressable>
 
-      <Pressable
+      <AnimatedPressable
         style={[styles.aiButton, (!text.trim() || isLoading) && styles.primaryButtonDisabled]}
         onPress={() => handleSubmit(true)}
         disabled={!text.trim() || isLoading}>
         {loadingMode === 'ai' ? (
           <View style={styles.loadingRow}>
             <ActivityIndicator color={accent} />
-            <Text style={styles.aiButtonText}>AI가 분석 중...</Text>
+            <Text style={styles.aiButtonText}>{t('llmInput.aiAnalyzing')}</Text>
           </View>
         ) : (
           <View style={styles.loadingRow}>
             <Ionicons name="sparkles-outline" size={14} color={accent} />
-            <Text style={styles.aiButtonText}>AI로 정확하게 분석</Text>
+            <Text style={styles.aiButtonText}>{t('llmInput.aiAnalyzeButton')}</Text>
           </View>
         )}
-      </Pressable>
+      </AnimatedPressable>
     </View>
   );
 }

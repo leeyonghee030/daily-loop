@@ -1,24 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet } from 'react-native';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useToast } from '@/components/Toast';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import { applyPreset, deletePreset, fetchPresets, type RoutinePreset } from '@/lib/presets';
 import { pauseRoutinesByPreset, softDeleteRoutinesByPreset } from '@/lib/routines';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 
-const REPEAT_LABELS: Record<string, string> = {
-  daily: '매일',
-  weekday: '평일',
-  weekend: '주말',
-  custom: '특정 요일',
+const REPEAT_LABEL_KEYS: Record<string, TranslationKey> = {
+  daily: 'myRoutines.repeatDaily',
+  weekday: 'myRoutines.repeatWeekday',
+  weekend: 'myRoutines.repeatWeekend',
+  custom: 'myRoutines.repeatCustom',
 };
 
 export default function PresetsScreen() {
@@ -28,6 +30,7 @@ export default function PresetsScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const presetsQueryKey = ['presets', userId] as const;
 
@@ -41,19 +44,23 @@ export default function PresetsScreen() {
   });
   useRefetchOnFocus(presetsQuery.refetch, !!userId);
   const presets = presetsQuery.data ?? [];
-  const errorMessage = presetsQuery.isError ? '모음집을 불러오지 못했어요.' : null;
+  const errorMessage = presetsQuery.isError ? t('presets.errorLoad') : null;
 
   const applyMutation = useMutation({
     mutationFn: (preset: RoutinePreset) => applyPreset(userId!, preset.id),
     onSuccess: (count, preset) => {
-      showToast(`"${preset.name}" 모음집의 루틴 ${count}개를 오늘 목록에 반영했어요.`);
+      showToast(
+        language === 'ko'
+          ? `"${preset.name}" 모음집의 루틴 ${count}개를 오늘 목록에 반영했어요.`
+          : `Applied ${count} routine(s) from "${preset.name}" to today's list.`
+      );
       queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
       // "내 루틴" 화면의 전체 루틴 목록도 방금 새로 생긴 루틴을 반영하도록 같이 갱신한다 —
       // 안 그러면 그 화면이 이미 메모리에 살아있는 상태에서 focus 재조회 타이밍을 놓쳤을 때
       // 방금 적용한 루틴이 안 보이거나 개수가 어긋나 보일 수 있음
       queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
     },
-    onError: () => showToast('적용에 실패했어요. 다시 시도해주세요.'),
+    onError: () => showToast(t('presets.applyError')),
   });
 
   const deleteMutation = useMutation({
@@ -68,7 +75,7 @@ export default function PresetsScreen() {
       queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
       queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
     },
-    onError: () => showToast('삭제에 실패했어요. 다시 시도해주세요.'),
+    onError: () => showToast(t('presets.deleteError')),
   });
 
   const bulkPauseMutation = useMutation({
@@ -76,14 +83,18 @@ export default function PresetsScreen() {
       pauseRoutinesByPreset(preset.id, paused),
     onSuccess: (_result, { preset, paused }) => {
       showToast(
-        paused
-          ? `"${preset.name}"에서 만든 루틴을 모두 일시정지했어요.`
-          : `"${preset.name}"에서 만든 루틴을 모두 다시 활성화했어요.`
+        language === 'ko'
+          ? paused
+            ? `"${preset.name}"에서 만든 루틴을 모두 일시정지했어요.`
+            : `"${preset.name}"에서 만든 루틴을 모두 다시 활성화했어요.`
+          : paused
+            ? `Paused all routines created from "${preset.name}".`
+            : `Activated all routines created from "${preset.name}".`
       );
       queryClient.invalidateQueries({ queryKey: ['today-routines', userId] });
       queryClient.invalidateQueries({ queryKey: ['all-routines', userId] });
     },
-    onError: () => showToast('처리에 실패했어요. 다시 시도해주세요.'),
+    onError: () => showToast(t('presets.pauseError')),
   });
 
   async function handleApply(preset: RoutinePreset) {
@@ -99,13 +110,17 @@ export default function PresetsScreen() {
   }
 
   function handleDelete(preset: RoutinePreset) {
+    const message =
+      language === 'ko'
+        ? `"${preset.name}" 모음집과, 여기서 만들어진 루틴이 전부 삭제돼요. "내 루틴 → 루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+        : `"${preset.name}" and all routines created from it will be deleted. You can restore them within 2 weeks from "Routines → Routine Recovery".`;
     Alert.alert(
-      '모음집을 삭제할까요?',
-      `"${preset.name}" 모음집과, 여기서 만들어진 루틴이 전부 삭제돼요. "내 루틴 → 루틴 복구"에서 2주 안에 되돌릴 수 있어요.`,
+      t('presets.deleteTitle'),
+      message,
       [
-        { text: '취소', style: 'cancel' },
+        { text: t('settings.cancel'), style: 'cancel' },
         {
-          text: '삭제',
+          text: t('myRoutines.delete'),
           style: 'destructive',
           onPress: async () => {
             setBusyId(preset.id);
@@ -145,60 +160,58 @@ export default function PresetsScreen() {
     <View style={styles.screen}>
       {toastNode}
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Pressable style={styles.addButton} onPress={() => router.push('/preset-form')}>
-          <Text style={styles.addButtonText}>+ 새 모음집 만들기</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.addButton} onPress={() => router.push('/preset-form')}>
+          <Text style={styles.addButtonText}>{t('presets.newPreset')}</Text>
+        </AnimatedPressable>
 
         {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-        {presets.length === 0 && (
-          <Text style={styles.emptyText}>아직 만든 모음집이 없어요. 평일 일정, 주말, 학원처럼 자주 쓰는 루틴 묶음을 만들어보세요.</Text>
-        )}
+        {presets.length === 0 && <Text style={styles.emptyText}>{t('presets.empty')}</Text>}
 
         {presets.map((preset) => (
           <ShadowCard key={preset.id} style={styles.cardOuter} contentStyle={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>{preset.name}</Text>
               <Text style={styles.cardMeta}>
-                {REPEAT_LABELS[preset.repeat_type]}
-                {preset.skip_holidays ? ' · 공휴일 제외' : ''}
+                {t(REPEAT_LABEL_KEYS[preset.repeat_type])}
+                {preset.skip_holidays ? t('presets.skipHolidaysSuffix') : ''}
               </Text>
             </View>
 
             <View style={styles.cardActions}>
-              <Pressable
+              <AnimatedPressable
                 style={styles.applyButton}
                 disabled={busyId === preset.id}
                 onPress={() => handleApply(preset)}>
-                <Text style={styles.applyButtonText}>오늘 목록에 적용</Text>
-              </Pressable>
-              <Pressable
+                <Text style={styles.applyButtonText}>{t('presets.applyToToday')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
                 style={styles.editButton}
                 onPress={() => router.push({ pathname: '/preset-form', params: { id: preset.id } })}>
-                <Text style={styles.editButtonText}>수정</Text>
-              </Pressable>
-              <Pressable
+                <Text style={styles.editButtonText}>{t('presets.edit')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
                 style={styles.deleteButton}
                 disabled={busyId === preset.id}
                 onPress={() => handleDelete(preset)}>
-                <Text style={styles.deleteButtonText}>삭제</Text>
-              </Pressable>
+                <Text style={styles.deleteButtonText}>{t('myRoutines.delete')}</Text>
+              </AnimatedPressable>
             </View>
 
-            <Text style={styles.bulkSectionLabel}>이 모음집으로 만든 루틴 일괄 관리</Text>
+            <Text style={styles.bulkSectionLabel}>{t('presets.bulkManageLabel')}</Text>
             <View style={styles.cardActions}>
-              <Pressable
+              <AnimatedPressable
                 style={styles.bulkButton}
                 disabled={busyId === preset.id}
                 onPress={() => handleBulkPause(preset, true)}>
-                <Text style={styles.bulkButtonText}>전체 비활성화</Text>
-              </Pressable>
-              <Pressable
+                <Text style={styles.bulkButtonText}>{t('presets.pauseAll')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
                 style={styles.bulkButton}
                 disabled={busyId === preset.id}
                 onPress={() => handleBulkPause(preset, false)}>
-                <Text style={styles.bulkButtonText}>전체 활성화</Text>
-              </Pressable>
+                <Text style={styles.bulkButtonText}>{t('presets.activateAll')}</Text>
+              </AnimatedPressable>
             </View>
           </ShadowCard>
         ))}
@@ -229,7 +242,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     borderRadius: cardRadius,
     paddingVertical: 14,
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 26,
   },
   addButtonText: {
     color: '#fff',

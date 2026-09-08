@@ -1,13 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -17,11 +16,13 @@ import {
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, dangerMuted, fontMono, textMuted, withAlpha } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import { fetchLlmQuota } from '@/lib/llm';
 import { purgeOldDeletedPresets } from '@/lib/presets';
@@ -45,7 +46,7 @@ import {
   skipRoutineToday,
   slotTimeLabel,
   toggleCheckCompletion,
-  SLOT_LABELS,
+  SLOT_LABEL_KEYS,
   type Routine,
   type RoutineCompletion,
 } from '@/lib/routines';
@@ -71,7 +72,7 @@ function formatTime(time: string): string {
   return time.slice(0, 5);
 }
 
-function timeLabel(routine: Routine): string {
+function timeLabel(routine: Routine, t: (key: TranslationKey) => string): string {
   if (routine.scheduled_time_start && routine.scheduled_time_end) {
     const start = routine.scheduled_time_start;
     // 시간 안 걸리고 그 순간에 체크만 하는 타입("8시 기상" 등)은 시작=끝을 그대로 보여주면
@@ -82,7 +83,7 @@ function timeLabel(routine: Routine): string {
     const endLabel = end <= start ? '24:00' : formatTime(end);
     return `${formatTime(start)}-${endLabel}`;
   }
-  if (routine.slots) return SLOT_LABELS[routine.slots.slot_type];
+  if (routine.slots) return t(SLOT_LABEL_KEYS[routine.slots.slot_type]);
   return '';
 }
 
@@ -181,6 +182,7 @@ function TimelineView({
   const scrollRef = useRef<ScrollView>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
   const accent = useAccentColor();
+  const { t } = useTranslation();
   const koreanFont = useKoreanFont();
   const timelineStyles = useMemo(() => createTimelineStyles(accent, koreanFont), [accent, koreanFont]);
 
@@ -290,7 +292,7 @@ function TimelineView({
   if (timed.length === 0) {
     return (
       <View style={timelineStyles.emptyContainer}>
-        <Text style={timelineStyles.emptyText}>시간 정보가 있는 루틴이 없어요</Text>
+        <Text style={timelineStyles.emptyText}>{t('today.timelineEmpty')}</Text>
       </View>
     );
   }
@@ -324,7 +326,7 @@ function TimelineView({
           const isDone = Boolean(completion);
           return (
             <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
-              <Pressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
+              <AnimatedPressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
                 {pos.showTime && index === 0 && (
                   <Text style={[timelineStyles.blockTime, pos.expanded && timelineStyles.blockTextExpanded]}>
                     {formatTime(block.start)}
@@ -340,14 +342,14 @@ function TimelineView({
                   numberOfLines={1}>
                   {routine.title}
                 </Text>
-              </Pressable>
+              </AnimatedPressable>
               {routine.block_type === 'check' ? (
-                <Pressable
+                <AnimatedPressable
                   hitSlop={8}
                   style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
                   onPress={() => onToggleCheck(routine)}>
                   {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
-                </Pressable>
+                </AnimatedPressable>
               ) : pos.showTime ? (
                 <Text
                   style={[timelineStyles.blockTrackingValue, pos.expanded && timelineStyles.blockTextExpanded]}>
@@ -369,18 +371,18 @@ function TimelineView({
             같은 시간대에 루틴이 여러 개 있으면, 나열되는 순서는 &quot;내 루틴&quot; 탭에서 드래그로 바꿀 수 있어요.
           </Text>
           <View style={timelineStyles.hintFooter}>
-            <Pressable
+            <AnimatedPressable
               style={timelineStyles.hintCheckboxRow}
               onPress={() => setDontShowSlotHintAgain((v) => !v)}
               hitSlop={6}>
               <View style={[timelineStyles.hintCheckbox, dontShowSlotHintAgain && timelineStyles.hintCheckboxChecked]}>
                 {dontShowSlotHintAgain && <Text style={timelineStyles.hintCheckmark}>✓</Text>}
               </View>
-              <Text style={timelineStyles.hintCheckboxLabel}>다시 안 보기</Text>
-            </Pressable>
-            <Pressable onPress={closeSlotHint} hitSlop={6}>
-              <Text style={timelineStyles.hintCloseText}>닫기</Text>
-            </Pressable>
+              <Text style={timelineStyles.hintCheckboxLabel}>{t('today.dontShowAgain')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable onPress={closeSlotHint} hitSlop={6}>
+              <Text style={timelineStyles.hintCloseText}>{t('today.close')}</Text>
+            </AnimatedPressable>
           </View>
         </View>
       )}
@@ -426,7 +428,7 @@ function TimelineView({
             return (
               <Fragment key={clusterId}>
                 {renderBlock(first, { top: clusterTop, height: first.height, left: '0%', width: '80%', showTime: false })}
-                <Pressable
+                <AnimatedPressable
                   style={[
                     timelineStyles.block,
                     timelineStyles.moreBlock,
@@ -434,7 +436,7 @@ function TimelineView({
                   ]}
                   onPress={() => setExpandedClusters((prev) => new Set(prev).add(clusterId))}>
                   <Text style={timelineStyles.moreBlockText}>+{hiddenCount}</Text>
-                </Pressable>
+                </AnimatedPressable>
               </Fragment>
             );
           }
@@ -592,9 +594,10 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockTextExpanded: {
     color: '#1A1A1A',
   },
+  // 커스텀 폰트("동글 폰트")는 굵은 글씨 파일이 없어서 fontWeight를 주면 RN이 시스템 폰트로
+  // 대체해버림(=사용자가 고른 폰트가 안 먹히는 원인) — 대신 색으로만 강조해서 폰트를 유지한다
   blockTitleNow: {
-    textDecorationLine: 'underline',
-    fontWeight: '700',
+    color: '#E65100',
   },
   blockRow: {
     flexDirection: 'row',
@@ -621,8 +624,8 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   blockTitle: {
     flex: 1,
-    fontSize: 16 + fontKorean.sizeAdjust,
-    lineHeight: 21 + fontKorean.sizeAdjust,
+    fontSize: 14 + fontKorean.sizeAdjust,
+    lineHeight: 19 + fontKorean.sizeAdjust,
     fontFamily: fontKorean.fontFamily,
   },
   blockTitleDone: {
@@ -652,6 +655,179 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   });
 }
 
+type ListRowProps = {
+  item: Routine;
+  isNow: boolean;
+  flat: boolean;
+  completion: RoutineCompletion | undefined;
+  streakDays: number;
+  streakEmoji: string | null;
+  isEditingTracking: boolean;
+  trackingInputValue: string;
+  styles: ReturnType<typeof createStyles>;
+  swipeRefsRef: MutableRefObject<Record<string, Swipeable | null>>;
+  swipeAutoCloseTimersRef: MutableRefObject<Record<string, ReturnType<typeof setTimeout>>>;
+  onEdit: (routine: Routine) => void;
+  onToggleCheck: (routine: Routine) => void;
+  onSkipToday: (routine: Routine) => void;
+  onCancelTracking: (routine: Routine) => void;
+  onStartEditTracking: (routine: Routine) => void;
+  onCloseEditTracking: (routineId: string) => void;
+  onSaveTracking: (routine: Routine) => void;
+  onChangeTrackingInput: (routineId: string, text: string) => void;
+  onFocusTracking: (routineId: string) => void;
+  onBlurTracking: (routineId: string) => void;
+  onPlayVideo: (videoId: string) => void;
+};
+
+// 오늘 탭 리스트의 한 행. React.memo로 감싸서, 위에서 넘어오는 props(completion/streakDays 등)가
+// 그 루틴 자신의 것과 안 바뀌었으면 리렌더링을 건너뛴다 — 체크박스 하나를 눌러도 리스트 전체
+// (스와이프/애니메이션까지 포함한 모든 행)가 매번 다시 그려지며 렉이 걸리던 문제의 핵심 수정.
+// 이 메모가 실제로 효과 있으려면 props로 받는 함수들이 부모에서 매번 새로 만들어지지 않고
+// 항상 같은 참조를 유지해야 하므로(TodayScreen의 handleToggleCheck 등 참고), 여기서 새로
+// 클로저를 만들 필요가 있는 것(onPress 래핑 등)은 이 컴포넌트 내부에서만 한다
+const ListRow = memo(function ListRow({
+  item,
+  isNow,
+  flat,
+  completion,
+  streakDays,
+  streakEmoji,
+  isEditingTracking,
+  trackingInputValue,
+  styles,
+  swipeRefsRef,
+  swipeAutoCloseTimersRef,
+  onEdit,
+  onToggleCheck,
+  onSkipToday,
+  onCancelTracking,
+  onStartEditTracking,
+  onCloseEditTracking,
+  onSaveTracking,
+  onChangeTrackingInput,
+  onFocusTracking,
+  onBlurTracking,
+  onPlayVideo,
+}: ListRowProps) {
+  const { t } = useTranslation();
+  const isDone = Boolean(completion);
+
+  return (
+    <Swipeable
+      ref={(instance) => {
+        swipeRefsRef.current[item.id] = instance;
+      }}
+      onSwipeableOpen={() => {
+        clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
+        swipeAutoCloseTimersRef.current[item.id] = setTimeout(() => {
+          swipeRefsRef.current[item.id]?.close();
+        }, 2000);
+      }}
+      onSwipeableClose={() => {
+        clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
+        delete swipeAutoCloseTimersRef.current[item.id];
+      }}
+      overshootRight={false}
+      renderRightActions={() => (
+        <View style={styles.swipeActionsRow}>
+          <AnimatedPressable style={styles.editAction} onPress={() => onEdit(item)}>
+            <Text style={styles.editActionText}>{t('today.edit')}</Text>
+          </AnimatedPressable>
+          {item.block_type === 'tracking' && isDone && !isEditingTracking && (
+            <AnimatedPressable style={styles.cancelTrackingAction} onPress={() => onCancelTracking(item)}>
+              <Text style={styles.editActionText}>{t('today.cancelRecord')}</Text>
+            </AnimatedPressable>
+          )}
+          <AnimatedPressable style={styles.deleteAction} onPress={() => onSkipToday(item)}>
+            <Text style={styles.deleteActionText}>{t('today.skipToday')}</Text>
+          </AnimatedPressable>
+        </View>
+      )}>
+      <View style={[styles.row, isNow && !flat && styles.rowHighlighted, flat && styles.rowFlat]}>
+        <View style={styles.timeColumn}>
+          <Text style={styles.time} numberOfLines={1}>
+            {timeLabel(item, t)}
+          </Text>
+          {item.slots && (
+            <Text style={styles.timeSub} numberOfLines={1}>
+              {slotTimeLabel(item.slots)}
+            </Text>
+          )}
+        </View>
+        <View style={styles.rowMain}>
+          <AnimatedPressable style={styles.titleLine} onPress={() => onEdit(item)}>
+            <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
+              {item.title}
+            </Text>
+            {streakEmoji && (
+              <Text style={styles.streakBadge}>
+                {streakEmoji} {streakDays}
+                {t('today.daySuffix')}
+              </Text>
+            )}
+          </AnimatedPressable>
+          {item.is_required && !isDone && <View style={styles.requiredBar} />}
+        </View>
+
+        {item.video_id && (
+          <AnimatedPressable style={styles.playButton} onPress={() => onPlayVideo(item.video_id!)}>
+            <Text style={styles.playButtonText}>▶</Text>
+          </AnimatedPressable>
+        )}
+
+        {item.block_type === 'check' && (
+          <View style={styles.actionSlot}>
+            <AnimatedPressable
+              style={[styles.checkbox, isDone && styles.checkboxDone]}
+              onPress={() => onToggleCheck(item)}>
+              {isDone && <Text style={styles.checkmark}>✓</Text>}
+            </AnimatedPressable>
+          </View>
+        )}
+
+        {item.block_type === 'tracking' ? (
+          isDone && !isEditingTracking ? (
+            <View style={styles.actionSlot}>
+              <AnimatedPressable onPress={() => onStartEditTracking(item)}>
+                <Text style={styles.trackingDoneBadge} numberOfLines={1}>
+                  ✓ {completion?.tracking_value} {item.tracking_unit}
+                </Text>
+              </AnimatedPressable>
+            </View>
+          ) : (
+            <>
+              <View style={styles.trackingRow}>
+                <TextInput
+                  style={styles.trackingInput}
+                  keyboardType="numeric"
+                  value={trackingInputValue}
+                  onChangeText={(text) => onChangeTrackingInput(item.id, text)}
+                  onFocus={() => onFocusTracking(item.id)}
+                  onBlur={() => onBlurTracking(item.id)}
+                  placeholder="0"
+                  autoFocus={isDone}
+                />
+                <Text style={styles.unit}>{item.tracking_unit}</Text>
+                {isDone && (
+                  <AnimatedPressable style={styles.cancelTrackingButton} onPress={() => onCloseEditTracking(item.id)}>
+                    <Text style={styles.cancelTrackingButtonText}>{t('today.close')}</Text>
+                  </AnimatedPressable>
+                )}
+              </View>
+              <View style={styles.actionSlot}>
+                <AnimatedPressable style={styles.saveButton} onPress={() => onSaveTracking(item)}>
+                  <Text style={styles.saveButtonText}>{t('today.save')}</Text>
+                </AnimatedPressable>
+              </View>
+            </>
+          )
+        ) : null}
+      </View>
+    </Swipeable>
+  );
+});
+
 export default function TodayScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -659,6 +835,7 @@ export default function TodayScreen() {
   const queryClient = useQueryClient();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -724,7 +901,7 @@ export default function TodayScreen() {
       setErrorMessage(null);
     } else if (todayQuery.isError) {
       console.error('오늘 루틴 로딩 실패:', todayQuery.error);
-      setErrorMessage('루틴을 불러오지 못했어요. 다시 시도해주세요.');
+      setErrorMessage(t('today.errorLoad'));
     }
   }, [todayQuery.isFetching, todayQuery.isError, todayQuery.error]);
 
@@ -918,7 +1095,10 @@ export default function TodayScreen() {
     },
     onError: (_err, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
-      setErrorMessage('체크 처리에 실패했어요.');
+      // 되돌린 상태가 서버의 실제 최신 상태와 다를 수 있으니(예: 다른 기기에서도 체크한 경우),
+      // 새로고침 없이도 다음 조회에서 다시 맞춰지도록 무효화해둔다
+      queryClient.invalidateQueries({ queryKey: todayQueryKey });
+      setErrorMessage(t('today.errorCheck'));
     },
   });
 
@@ -938,7 +1118,7 @@ export default function TodayScreen() {
     },
     onError: (_err, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('today.errorDelete'));
     },
   });
 
@@ -981,31 +1161,31 @@ export default function TodayScreen() {
     },
     onError: (_err, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
-      setErrorMessage('기록 저장에 실패했어요.');
+      setErrorMessage(t('today.errorSaveRecord'));
     },
   });
 
-  function handleToggleCheck(routine: Routine) {
-    const existing = completions[routine.id] ?? null;
-    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null });
-  }
+  // 체크/기록삭제/저장 핸들러들은 completions/trackingInputs를 state로 직접 참조하지 않고 ref로
+  // 최신값만 읽는다 — useCallback([])로 항상 같은 함수 참조를 유지해야, 아래 ListRow에 준
+  // React.memo가 "이 루틴은 안 바뀌었으니 다시 안 그려도 됨"이라고 판단할 수 있다(리스트/체크박스
+  // 클릭 시 관계없는 다른 행까지 전부 다시 그려지며 렉이 걸리던 문제의 원인이었음)
+  const completionsRef = useRef(completions);
+  completionsRef.current = completions;
+  const trackingInputsRef = useRef(trackingInputs);
+  trackingInputsRef.current = trackingInputs;
 
-  function handleSkipToday(routine: Routine) {
-    skipTodayMutation.mutate(routine.id);
-  }
-
-  function closeEditTracking(routineId: string) {
+  const closeEditTracking = useCallback((routineId: string) => {
     setEditingTrackingIds((prev) => {
       if (!prev.has(routineId)) return prev;
       const next = new Set(prev);
       next.delete(routineId);
       return next;
     });
-  }
+  }, []);
 
-  function startEditTracking(routine: Routine) {
+  const startEditTracking = useCallback((routine: Routine) => {
     setEditingTrackingIds((prev) => new Set(prev).add(routine.id));
-  }
+  }, []);
 
   // 트래킹 입력창이 화면 아래쪽에 있으면 키보드가 뜨는 순간 화면(또는 그 행)이 키보드에 가려져
   // 저장 버튼을 못 누르던 버그 — 입력창에 포커스가 잡히면 그 행을 스크롤 뷰 위쪽 가까이로
@@ -1016,7 +1196,7 @@ export default function TodayScreen() {
   // 한 번 더 끼어들어서, 우리가 옮겨둔 위치를 다시 아래로 밀어버리는 문제가 있었음 — 그래서
   // keyboardDidShow(키보드가 완전히 다 올라온 시점) 때 한 번 더 강제로 맞춰서 마지막에
   // 우리가 원하는 위치로 확정시킨다
-  function scrollRowIntoView(routineId: string, attemptsLeft = 6) {
+  const scrollRowIntoView = useCallback(function scrollRowIntoView(routineId: string, attemptsLeft = 6): void {
     const y = rowLayoutsRef.current[routineId];
     if (y === undefined) {
       // 화면 복귀 직후처럼 아직 그 행의 레이아웃이 안 잡혔을 수 있어 잠깐 재시도한다
@@ -1024,7 +1204,7 @@ export default function TodayScreen() {
       return;
     }
     listScrollRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
-  }
+  }, []);
 
   useEffect(() => {
     const sub = Keyboard.addListener('keyboardDidShow', () => {
@@ -1032,166 +1212,95 @@ export default function TodayScreen() {
       if (id) scrollRowIntoView(id);
     });
     return () => sub.remove();
+  }, [scrollRowIntoView]);
+
+  const handleFocusTracking = useCallback(
+    (routineId: string) => {
+      focusedTrackingIdRef.current = routineId;
+      scrollRowIntoView(routineId);
+    },
+    [scrollRowIntoView]
+  );
+
+  const handleBlurTracking = useCallback((routineId: string) => {
+    if (focusedTrackingIdRef.current === routineId) focusedTrackingIdRef.current = null;
   }, []);
 
-  function handleSaveTracking(routine: Routine) {
-    const raw = trackingInputs[routine.id];
-    const value = Number(raw);
-    if (!raw || Number.isNaN(value)) return;
-    const existing = completions[routine.id] ?? null;
-    saveTrackingMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, value });
-    // 저장 즉시 "기록됨" 표시로 접어서, 입력창이 사라지고 새 값이 보이는 걸로 저장됐다는 걸 확인할 수 있게 한다
-    closeEditTracking(routine.id);
-  }
+  const handleChangeTrackingInput = useCallback((routineId: string, text: string) => {
+    setTrackingInputs((prev) => ({ ...prev, [routineId]: text }));
+  }, []);
+
+  // 체크박스를 빠르게 두 번 누르면, 첫 번째 요청의 서버 응답이 오기 전에 두 번째 요청이 "아직
+  // 체크 안 된 상태"인 completionsRef를 보고 또 새로 체크 요청을 보내서 같은 날짜에 중복 기록이
+  // 들어가려다 실패하고, 그 실패로 화면 상태가 꼬여 새로고침 전까지 계속 실패하는 문제가 있었음
+  // — 처리 중인 루틴 id를 기록해두고, 응답이 오기 전 같은 루틴에 대한 요청은 그냥 무시한다
+  const pendingToggleIdsRef = useRef<Set<string>>(new Set());
+
+  const handleToggleCheck = useCallback((routine: Routine) => {
+    if (pendingToggleIdsRef.current.has(routine.id)) return;
+    pendingToggleIdsRef.current.add(routine.id);
+    const existing = completionsRef.current[routine.id] ?? null;
+    toggleCheckMutation.mutate(
+      { routineId: routine.id, existingId: existing?.id ?? null },
+      { onSettled: () => pendingToggleIdsRef.current.delete(routine.id) }
+    );
+  }, []);
+
+  const handleSkipToday = useCallback((routine: Routine) => {
+    skipTodayMutation.mutate(routine.id);
+  }, []);
+
+  const handleSaveTracking = useCallback(
+    (routine: Routine) => {
+      const raw = trackingInputsRef.current[routine.id];
+      const value = Number(raw);
+      if (!raw || Number.isNaN(value)) return;
+      const existing = completionsRef.current[routine.id] ?? null;
+      saveTrackingMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, value });
+      // 저장 즉시 "기록됨" 표시로 접어서, 입력창이 사라지고 새 값이 보이는 걸로 저장됐다는 걸 확인할 수 있게 한다
+      closeEditTracking(routine.id);
+    },
+    [closeEditTracking]
+  );
 
   // 트래킹 기록을 완전히 지운다(체크형의 "다시 눌러서 해제"에 해당) — 저장된 값 자체를 없애고
   // 싶을 때 쓰는 용도라, 값을 지우는 completion 삭제(toggleCheckCompletion의 delete 경로)를
   // 그대로 재사용한다(어떤 block_type이든 id로만 지우므로 문제없음)
-  function handleCancelTracking(routine: Routine) {
-    const existing = completions[routine.id];
-    if (!existing) return;
-    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing.id });
-    closeEditTracking(routine.id);
-    swipeRefsRef.current[routine.id]?.close();
-    scrollRowIntoView(routine.id);
-  }
+  const handleCancelTracking = useCallback(
+    (routine: Routine) => {
+      if (pendingToggleIdsRef.current.has(routine.id)) return;
+      const existing = completionsRef.current[routine.id];
+      if (!existing) return;
+      pendingToggleIdsRef.current.add(routine.id);
+      toggleCheckMutation.mutate(
+        { routineId: routine.id, existingId: existing.id },
+        { onSettled: () => pendingToggleIdsRef.current.delete(routine.id) }
+      );
+      closeEditTracking(routine.id);
+      swipeRefsRef.current[routine.id]?.close();
+      scrollRowIntoView(routine.id);
+    },
+    [closeEditTracking, scrollRowIntoView]
+  );
+
+  const handleEditRoutine = useCallback(
+    (routine: Routine) => {
+      swipeRefsRef.current[routine.id]?.close();
+      pendingFocusRoutineIdRef.current = routine.id;
+      router.push({ pathname: '/routine-form', params: { id: routine.id } });
+    },
+    [router]
+  );
+
+  const handlePlayVideo = useCallback(
+    (videoId: string) => {
+      router.push({ pathname: '/video-player', params: { id: videoId } });
+    },
+    [router]
+  );
 
   // flat=true면 "지금" 그룹 박스 안에 여러 개가 같이 들어있는 경우 — 그룹 박스 자체가 이미
   // 강조 테두리를 그려주므로 각 행은 자기만의 테두리 없이 밋밋하게(flat) 그린다
-  function renderListRow(item: Routine, isNow: boolean, flat: boolean) {
-    const completion = completions[item.id];
-    const isDone = Boolean(completion);
-    const streakDays = streaks[item.id] ?? 0;
-    const streakEmoji = emojiForStreak(streakDays, streakConfigs);
-
-    function goToEdit() {
-      swipeRefsRef.current[item.id]?.close();
-      pendingFocusRoutineIdRef.current = item.id;
-      router.push({ pathname: '/routine-form', params: { id: item.id } });
-    }
-
-    return (
-      <Swipeable
-        key={item.id}
-        ref={(instance) => {
-          swipeRefsRef.current[item.id] = instance;
-        }}
-        onSwipeableOpen={() => {
-          clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
-          swipeAutoCloseTimersRef.current[item.id] = setTimeout(() => {
-            swipeRefsRef.current[item.id]?.close();
-          }, 2000);
-        }}
-        onSwipeableClose={() => {
-          clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
-          delete swipeAutoCloseTimersRef.current[item.id];
-        }}
-        overshootRight={false}
-        renderRightActions={() => (
-          <View style={styles.swipeActionsRow}>
-            <Pressable style={styles.editAction} onPress={goToEdit}>
-              <Text style={styles.editActionText}>수정</Text>
-            </Pressable>
-            {item.block_type === 'tracking' && isDone && !editingTrackingIds.has(item.id) && (
-              <Pressable style={styles.cancelTrackingAction} onPress={() => handleCancelTracking(item)}>
-                <Text style={styles.editActionText}>기록삭제</Text>
-              </Pressable>
-            )}
-            <Pressable style={styles.deleteAction} onPress={() => handleSkipToday(item)}>
-              <Text style={styles.deleteActionText}>오늘 삭제</Text>
-            </Pressable>
-          </View>
-        )}>
-        <View style={[styles.row, isNow && !flat && styles.rowHighlighted, flat && styles.rowFlat]}>
-          <View style={styles.timeColumn}>
-            <Text style={styles.time} numberOfLines={1}>
-              {timeLabel(item)}
-            </Text>
-            {item.slots && (
-              <Text style={styles.timeSub} numberOfLines={1}>
-                {slotTimeLabel(item.slots)}
-              </Text>
-            )}
-          </View>
-          <View style={styles.rowMain}>
-            <Pressable style={styles.titleLine} onPress={goToEdit}>
-              <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
-                {item.title}
-              </Text>
-              {streakEmoji && (
-                <Text style={styles.streakBadge}>
-                  {streakEmoji} {streakDays}일
-                </Text>
-              )}
-            </Pressable>
-            {item.is_required && !isDone && <View style={styles.requiredBar} />}
-          </View>
-
-          {item.video_id && (
-            <Pressable
-              style={styles.playButton}
-              onPress={() => router.push({ pathname: '/video-player', params: { id: item.video_id! } })}>
-              <Text style={styles.playButtonText}>▶</Text>
-            </Pressable>
-          )}
-
-          {item.block_type === 'check' && (
-            <View style={styles.actionSlot}>
-              <Pressable
-                style={[styles.checkbox, isDone && styles.checkboxDone]}
-                onPress={() => handleToggleCheck(item)}>
-                {isDone && <Text style={styles.checkmark}>✓</Text>}
-              </Pressable>
-            </View>
-          )}
-
-          {item.block_type === 'tracking' ? (
-            isDone && !editingTrackingIds.has(item.id) ? (
-              <View style={styles.actionSlot}>
-                <Pressable onPress={() => startEditTracking(item)}>
-                  <Text style={styles.trackingDoneBadge} numberOfLines={1}>
-                    ✓ {completion?.tracking_value} {item.tracking_unit}
-                  </Text>
-                </Pressable>
-              </View>
-            ) : (
-              <>
-                <View style={styles.trackingRow}>
-                  <TextInput
-                    style={styles.trackingInput}
-                    keyboardType="numeric"
-                    value={trackingInputs[item.id] ?? ''}
-                    onChangeText={(text) => setTrackingInputs((prev) => ({ ...prev, [item.id]: text }))}
-                    onFocus={() => {
-                      focusedTrackingIdRef.current = item.id;
-                      scrollRowIntoView(item.id);
-                    }}
-                    onBlur={() => {
-                      if (focusedTrackingIdRef.current === item.id) focusedTrackingIdRef.current = null;
-                    }}
-                    placeholder="0"
-                    autoFocus={isDone}
-                  />
-                  <Text style={styles.unit}>{item.tracking_unit}</Text>
-                  {isDone && (
-                    <Pressable style={styles.cancelTrackingButton} onPress={() => closeEditTracking(item.id)}>
-                      <Text style={styles.cancelTrackingButtonText}>닫기</Text>
-                    </Pressable>
-                  )}
-                </View>
-                <View style={styles.actionSlot}>
-                  <Pressable style={styles.saveButton} onPress={() => handleSaveTracking(item)}>
-                    <Text style={styles.saveButtonText}>저장</Text>
-                  </Pressable>
-                </View>
-              </>
-            )
-          ) : null}
-        </View>
-      </Swipeable>
-    );
-  }
-
   if (todayQuery.isLoading) {
     return (
       <View style={styles.centered}>
@@ -1206,70 +1315,88 @@ export default function TodayScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}>
       <View style={styles.header}>
-        <Pressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
-          <Text style={styles.addButtonText}>+ 루틴 추가</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
+          <Text style={styles.addButtonText}>{t('today.addRoutine')}</Text>
+        </AnimatedPressable>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator
-        persistentScrollbar
-        style={styles.headerButtonsScroll}
-        contentContainerStyle={styles.headerButtonsContent}>
-        <Pressable style={styles.presetButton} onPress={() => router.push('/videos')}>
+      {/* 예전엔 가로 스크롤 칩이었는데, 언어에 따라 글자 길이가 달라지면(한글은 짧아서 꽉
+          차 보이고, 영어는 짧게 줄여도 남는 공간이 생겨 어중간해 보였음) 매번 다르게 보이는
+          문제가 있어서, 4등분 flex로 바꿔 화면 폭을 항상 꽉 채우도록 통일했다 */}
+      <View style={styles.headerButtonsRow}>
+        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/videos')}>
           <Ionicons name="film-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText}>영상</Text>
-        </Pressable>
-        <Pressable
+          <Text style={styles.presetButtonText} numberOfLines={1}>
+            {t('today.video')}
+          </Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={styles.presetButton}
           onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
           <Ionicons name="book-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText}>일기</Text>
-        </Pressable>
-        <Pressable style={styles.presetButton} onPress={() => router.push('/presets')}>
+          <Text style={styles.presetButtonText} numberOfLines={1}>
+            {t('today.diary')}
+          </Text>
+        </AnimatedPressable>
+        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/presets')}>
           <Ionicons name="albums-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText}>모음집</Text>
-        </Pressable>
-        <Pressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
+          <Text style={styles.presetButtonText} numberOfLines={1}>
+            {t('today.presets')}
+          </Text>
+        </AnimatedPressable>
+        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
           <Ionicons name="list-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText}>내 루틴</Text>
-        </Pressable>
-      </ScrollView>
+          <Text style={styles.presetButtonText} numberOfLines={1}>
+            {t('today.myRoutines')}
+          </Text>
+        </AnimatedPressable>
+      </View>
 
       <View style={styles.viewModeTabs}>
-        <Pressable
+        <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
           onPress={() => setViewMode('list')}>
-          <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>리스트</Text>
-        </Pressable>
-        <Pressable
+          <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
+            {t('today.list')}
+          </Text>
+        </AnimatedPressable>
+        <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
           onPress={() => setViewMode('timeline')}>
           <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
-            타임라인
+            {t('today.timeline')}
           </Text>
-        </Pressable>
+        </AnimatedPressable>
       </View>
 
-      <ShadowCard style={styles.llmBannerOuter} contentStyle={styles.llmBannerContent}>
-        <Pressable style={styles.llmBanner} onPress={() => router.push('/llm-input')}>
-          <View style={styles.llmBannerLeft}>
-            <Ionicons name="sparkles-outline" size={16} color="#fff" />
-            <Text style={styles.llmBannerText}>말로 루틴 추가하기</Text>
+      {/* 그림자+테두리(ShadowCard)까지 통째로 눌림 애니메이션 대상에 포함시켜야 함 — 안쪽 배너만
+          줄어들면 그 밖의 정적인 테두리/그림자가 그대로 남아 테두리 선처럼 비쳐 보임 */}
+      <AnimatedPressable onPress={() => router.push('/llm-input')}>
+        <ShadowCard style={styles.llmBannerOuter} contentStyle={styles.llmBannerContent}>
+          <View style={styles.llmBanner}>
+            <View style={styles.llmBannerLeft}>
+              <Ionicons name="sparkles-outline" size={16} color="#fff" />
+              <Text style={styles.llmBannerText} numberOfLines={1}>
+                {t('today.llmBanner')}
+              </Text>
+            </View>
+            {llmQuota && (
+              <Text style={styles.llmBannerCount} numberOfLines={1}>
+                {t('llmInput.remainingQuotaPrefix')}
+                {llmQuota.remaining}/{llmQuota.limit}
+                {t('llmInput.remainingQuotaSuffix')}
+              </Text>
+            )}
           </View>
-          {llmQuota && (
-            <Text style={styles.llmBannerCount}>
-              남은 {llmQuota.remaining}/{llmQuota.limit}회
-            </Text>
-          )}
-        </Pressable>
-      </ShadowCard>
+        </ShadowCard>
+      </AnimatedPressable>
 
       {holiday && (
         <View style={styles.holidayBanner}>
           <Ionicons name="flag-outline" size={14} color="#fff" />
-          <Text style={styles.holidayBannerText}>오늘은 {holiday.name}이에요</Text>
+          <Text style={styles.holidayBannerText}>
+            {t('today.holidayPrefix')} {holiday.name}
+          </Text>
         </View>
       )}
 
@@ -1296,7 +1423,7 @@ export default function TodayScreen() {
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={scrollListToNow}>
         {routines.length === 0 ? (
-          <Text style={styles.emptyText}>오늘 할 루틴이 없어요</Text>
+          <Text style={styles.emptyText}>{t('today.empty')}</Text>
         ) : (
           (() => {
             // "지금" 강조가 필요한 루틴이 여러 개 연달아 있으면(같은 시간대에 몰린 경우) 각자
@@ -1327,7 +1454,33 @@ export default function TodayScreen() {
                     const y = e.nativeEvent.layout.y;
                     for (const it of group.items) rowLayoutsRef.current[it.id] = y;
                   }}>
-                  {group.items.map((item) => renderListRow(item, group.isNow, isGroupBox))}
+                  {group.items.map((item) => (
+                    <ListRow
+                      key={item.id}
+                      item={item}
+                      isNow={group.isNow}
+                      flat={isGroupBox}
+                      completion={completions[item.id]}
+                      streakDays={streaks[item.id] ?? 0}
+                      streakEmoji={emojiForStreak(streaks[item.id] ?? 0, streakConfigs)}
+                      isEditingTracking={editingTrackingIds.has(item.id)}
+                      trackingInputValue={trackingInputs[item.id] ?? ''}
+                      styles={styles}
+                      swipeRefsRef={swipeRefsRef}
+                      swipeAutoCloseTimersRef={swipeAutoCloseTimersRef}
+                      onEdit={handleEditRoutine}
+                      onToggleCheck={handleToggleCheck}
+                      onSkipToday={handleSkipToday}
+                      onCancelTracking={handleCancelTracking}
+                      onStartEditTracking={startEditTracking}
+                      onCloseEditTracking={closeEditTracking}
+                      onSaveTracking={handleSaveTracking}
+                      onChangeTrackingInput={handleChangeTrackingInput}
+                      onFocusTracking={handleFocusTracking}
+                      onBlurTracking={handleBlurTracking}
+                      onPlayVideo={handlePlayVideo}
+                    />
+                  ))}
                 </View>
               );
             });
@@ -1339,7 +1492,7 @@ export default function TodayScreen() {
       {routines.length > 0 && (
         <View style={styles.summaryBar}>
           <Text style={styles.summaryText}>
-            오늘 완료 {routines.filter((r) => completions[r.id]).length}/{routines.length} (
+            {t('today.completedLabel')} {routines.filter((r) => completions[r.id]).length}/{routines.length} (
             {Math.round((routines.filter((r) => completions[r.id]).length / routines.length) * 100)}%)
           </Text>
           {(() => {
@@ -1347,7 +1500,8 @@ export default function TodayScreen() {
             const bestEmoji = emojiForStreak(bestStreak, streakConfigs);
             return bestEmoji ? (
               <Text style={styles.summaryText}>
-                최고 기록 {bestEmoji} {bestStreak}일
+                {t('today.bestStreakLabel')} {bestEmoji} {bestStreak}
+                {t('today.daySuffix')}
               </Text>
             ) : null;
           })()}
@@ -1359,6 +1513,9 @@ export default function TodayScreen() {
 }
 
 function createStyles(accent: string, fontKorean: KoreanFontValue) {
+  // 리스트 제목 글자는 기본 폰트든 동글 폰트든 유독 커 보인다는 피드백으로 -2 → -4까지 줄였다가,
+  // 너무 작아졌다는 재피드백으로 1px 다시 키워서 -3
+  const listTitleExtraAdjust = -3;
   return StyleSheet.create({
   container: {
     flex: 1,
@@ -1392,43 +1549,49 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
   },
   llmBannerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flexShrink: 1,
     backgroundColor: 'transparent',
   },
   llmBannerText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '700',
+    flexShrink: 1,
   },
   llmBannerCount: {
     color: 'rgba(255,255,255,0.85)',
     fontSize: 13,
+    flexShrink: 0,
   },
-  headerButtonsScroll: {
-    flexGrow: 0,
+  headerButtonsRow: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
     marginBottom: 12,
-  },
-  headerButtonsContent: {
-    paddingHorizontal: 20,
     gap: 8,
   },
   presetButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    justifyContent: 'center',
+    gap: 4,
     borderWidth: 1,
     borderColor: accent,
     borderRadius: cardRadius,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
   },
+  // 언어를 바꾸면 글자 길이가 달라져서(영어 "Routines"가 한글 "내 루틴"보다 김) 4등분 폭에서
+  // 살짝 빠듯할 수 있어 폰트를 조금 작게 잡는다
   presetButtonText: {
     color: textMuted,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   addButton: {
@@ -1557,8 +1720,8 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     gap: 6,
   },
   rowTitle: {
-    fontSize: 18 + fontKorean.sizeAdjust,
-    lineHeight: 24 + fontKorean.sizeAdjust,
+    fontSize: 18 + fontKorean.sizeAdjust + listTitleExtraAdjust,
+    lineHeight: 24 + fontKorean.sizeAdjust + listTitleExtraAdjust,
     fontFamily: fontKorean.fontFamily,
   },
   rowTitleDone: {

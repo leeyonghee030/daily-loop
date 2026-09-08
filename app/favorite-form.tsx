@@ -2,13 +2,15 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
 
+import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
+import { useTranslation, type TranslationKey } from '@/lib/language';
 import {
   createFavorite,
   deleteFavorite,
@@ -16,9 +18,15 @@ import {
   updateFavorite,
   type FavoriteInput,
 } from '@/lib/favorites';
-import { fetchSlots, slotTimeLabel, SLOT_LABELS, type BlockType, type Slot } from '@/lib/routines';
+import { fetchSlots, slotTimeLabel, SLOT_LABEL_KEYS, type BlockType, type Slot } from '@/lib/routines';
 
-const TRACKING_UNIT_PRESETS = ['잔', '개', '분', '페이지', 'km'];
+const TRACKING_UNIT_KEYS: TranslationKey[] = [
+  'trackingUnit.cup',
+  'trackingUnit.count',
+  'trackingUnit.minute',
+  'trackingUnit.page',
+  'trackingUnit.km',
+];
 
 function timeToDate(time: string | null): Date {
   const date = new Date();
@@ -44,7 +52,9 @@ export default function FavoriteFormScreen() {
   const { session } = useAuth();
   const userId = session?.user.id;
   const accent = useAccentColor();
+  const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
+  const TRACKING_UNIT_PRESETS = useMemo(() => TRACKING_UNIT_KEYS.map((key) => t(key)), [t]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -81,7 +91,7 @@ export default function FavoriteFormScreen() {
   const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
 
   useEffect(() => {
-    if (slotsQuery.isError) setErrorMessage('슬롯 정보를 불러오지 못했어요.');
+    if (slotsQuery.isError) setErrorMessage(t('favoriteForm.errorLoadSlots'));
   }, [slotsQuery.isError]);
 
   useEffect(() => {
@@ -111,7 +121,7 @@ export default function FavoriteFormScreen() {
   }, [favoriteQuery.data]);
 
   useEffect(() => {
-    if (favoriteQuery.isError) setErrorMessage('즐겨찾기 정보를 불러오지 못했어요.');
+    if (favoriteQuery.isError) setErrorMessage(t('favoriteForm.errorLoadFavorite'));
   }, [favoriteQuery.isError]);
 
   function handleTimeChange(setter: (date: Date) => void, hide: () => void) {
@@ -142,15 +152,15 @@ export default function FavoriteFormScreen() {
   async function handleSave() {
     if (!userId) return;
     if (!title.trim()) {
-      setErrorMessage('제목을 입력해주세요.');
+      setErrorMessage(t('favoriteForm.errorTitleRequired'));
       return;
     }
     if (blockType === 'tracking' && !trackingUnit.trim()) {
-      setErrorMessage('트래킹 단위를 입력해주세요.');
+      setErrorMessage(t('favoriteForm.errorTrackingUnitRequired'));
       return;
     }
     if (timeMode === 'slot' && !slotId) {
-      setErrorMessage('슬롯을 선택해주세요.');
+      setErrorMessage(t('favoriteForm.errorSlotRequired'));
       return;
     }
 
@@ -176,7 +186,7 @@ export default function FavoriteFormScreen() {
       }
       router.back();
     } catch (err) {
-      setErrorMessage('저장에 실패했어요.');
+      setErrorMessage(t('favoriteForm.errorSave'));
     } finally {
       setIsSaving(false);
     }
@@ -189,7 +199,7 @@ export default function FavoriteFormScreen() {
       await deleteFavorite(id);
       router.back();
     } catch (err) {
-      setErrorMessage('삭제에 실패했어요.');
+      setErrorMessage(t('favoriteForm.errorDelete'));
       setIsSaving(false);
     }
   }
@@ -204,14 +214,14 @@ export default function FavoriteFormScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.label}>제목</Text>
-      <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="예: 스트레칭" />
+      <Text style={styles.label}>{t('favoriteForm.titleLabel')}</Text>
+      <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder={t('favoriteForm.titlePlaceholder')} />
 
-      <Text style={styles.label}>타입</Text>
+      <Text style={styles.label}>{t('favoriteForm.typeLabel')}</Text>
       <View style={styles.chipRow}>
-        <Chip label="체크" selected={blockType === 'check'} onPress={() => setBlockType('check')} />
+        <Chip label={t('common.check')} selected={blockType === 'check'} onPress={() => setBlockType('check')} />
         <Chip
-          label="트래킹(숫자)"
+          label={t('common.tracking')}
           selected={blockType === 'tracking'}
           onPress={() => setBlockType('tracking')}
         />
@@ -219,7 +229,7 @@ export default function FavoriteFormScreen() {
 
       {blockType === 'tracking' && (
         <>
-          <Text style={styles.label}>단위</Text>
+          <Text style={styles.label}>{t('favoriteForm.unitLabel')}</Text>
           <View style={styles.chipRow}>
             {TRACKING_UNIT_PRESETS.map((unit) => (
               <Chip
@@ -234,46 +244,46 @@ export default function FavoriteFormScreen() {
             style={styles.input}
             value={trackingUnit}
             onChangeText={setTrackingUnit}
-            placeholder="직접 입력 (예: 회)"
+            placeholder={t('presetForm.trackingUnitPlaceholder')}
           />
         </>
       )}
 
-      <Text style={styles.label}>시간</Text>
+      <Text style={styles.label}>{t('favoriteForm.timeLabel')}</Text>
       <View style={styles.chipRow}>
-        <Chip label="정확한 시간" selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
-        <Chip label="시간 체크" selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
-        <Chip label="슬롯" selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
+        <Chip label={t('common.exactTime')} selected={timeMode === 'exact'} onPress={() => setTimeMode('exact')} />
+        <Chip label={t('common.instantTime')} selected={timeMode === 'instant'} onPress={() => setTimeMode('instant')} />
+        <Chip label={t('common.slot')} selected={timeMode === 'slot'} onPress={() => setTimeMode('slot')} />
       </View>
 
       {timeMode === 'exact' ? (
         <View style={styles.chipRow}>
-          <Pressable
+          <AnimatedPressable
             style={styles.timeButton}
             onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
             <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
-          </Pressable>
+          </AnimatedPressable>
           <Text>~</Text>
-          <Pressable
+          <AnimatedPressable
             style={styles.timeButton}
             onPress={() => openTimePicker(endTime, () => setShowEndPicker(true))}>
             <Text>{dateToTimeString(endTime).slice(0, 5)}</Text>
-          </Pressable>
+          </AnimatedPressable>
         </View>
       ) : timeMode === 'instant' ? (
         <View style={styles.chipRow}>
-          <Pressable
+          <AnimatedPressable
             style={styles.timeButton}
             onPress={() => openTimePicker(startTime, () => setShowStartPicker(true))}>
             <Text>{dateToTimeString(startTime).slice(0, 5)}</Text>
-          </Pressable>
+          </AnimatedPressable>
         </View>
       ) : (
         <View style={styles.chipRow}>
           {slots.map((slot) => (
             <Chip
               key={slot.id}
-              label={`${SLOT_LABELS[slot.slot_type]} ${slotTimeLabel(slot)}`}
+              label={`${t(SLOT_LABEL_KEYS[slot.slot_type])} ${slotTimeLabel(slot)}`}
               selected={slotId === slot.id}
               onPress={() => setSlotId(slot.id)}
             />
@@ -302,7 +312,7 @@ export default function FavoriteFormScreen() {
               minuteInterval={15}
               onChange={handleSpinnerTimeChange}
             />
-            <Pressable
+            <AnimatedPressable
               style={styles.spinnerDoneButton}
               onPress={() => {
                 const picked = pickerDraftRef.current;
@@ -311,8 +321,8 @@ export default function FavoriteFormScreen() {
                 setPickerOpenValue(null);
                 setShowStartPicker(false);
               }}>
-              <Text style={styles.spinnerDoneText}>완료</Text>
-            </Pressable>
+              <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         ))}
       {showEndPicker &&
@@ -333,7 +343,7 @@ export default function FavoriteFormScreen() {
               minuteInterval={15}
               onChange={handleSpinnerTimeChange}
             />
-            <Pressable
+            <AnimatedPressable
               style={styles.spinnerDoneButton}
               onPress={() => {
                 const picked = pickerDraftRef.current;
@@ -342,30 +352,30 @@ export default function FavoriteFormScreen() {
                 setPickerOpenValue(null);
                 setShowEndPicker(false);
               }}>
-              <Text style={styles.spinnerDoneText}>완료</Text>
-            </Pressable>
+              <Text style={styles.spinnerDoneText}>{t('common.done')}</Text>
+            </AnimatedPressable>
           </View>
         ))}
 
       <View style={styles.switchRow}>
-        <Text style={styles.label}>필수</Text>
+        <Text style={styles.label}>{t('common.required')}</Text>
         <Switch value={isRequired} onValueChange={setIsRequired} />
       </View>
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+      <AnimatedPressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
         {isSaving ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.saveButtonText}>{isEditing ? '수정 완료' : '즐겨찾기에 추가'}</Text>
+          <Text style={styles.saveButtonText}>{isEditing ? t('favoriteForm.saveEdit') : t('favoriteForm.addToFavorites')}</Text>
         )}
-      </Pressable>
+      </AnimatedPressable>
 
       {isEditing && (
-        <Pressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
-          <Text style={styles.deleteButtonText}>삭제</Text>
-        </Pressable>
+        <AnimatedPressable style={styles.deleteButton} onPress={handleDelete} disabled={isSaving}>
+          <Text style={styles.deleteButtonText}>{t('myRoutines.delete')}</Text>
+        </AnimatedPressable>
       )}
     </ScrollView>
   );
