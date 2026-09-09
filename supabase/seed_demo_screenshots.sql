@@ -10,7 +10,10 @@ declare
   v_slot_lunch uuid;
   v_slot_evening uuid;
   v_slot_sleep uuid;
-  v_today date := current_date;
+  -- 앱은 폰의 한국 시각 기준으로 "오늘"을 판단하는데, DB 서버는 UTC라 하루 중 몇 시간은
+  -- current_date만 쓰면 하루가 어긋난다(스트릭이 전부 0으로 보이는 원인이었음) — 명시적으로
+  -- 한국 시간대 기준 날짜를 구한다.
+  v_today date := (now() at time zone 'Asia/Seoul')::date;
   v_routine_id uuid;
   d date;
   i int;
