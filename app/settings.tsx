@@ -1,5 +1,6 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -25,14 +26,50 @@ export default function SettingsScreen() {
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [showDeleteAccountDesc, setShowDeleteAccountDesc] = useState(false);
+  // 로그아웃 바로 옆이라 잘못 눌리기 쉬워서, 1초 길게 눌러야 "활성화"(빨간색)되고
+  // 그 뒤 3초 안에 다시 눌러야만 실제로 확인창이 뜬다. 3초 안에 안 누르면 자동으로 꺼진다.
+  const [deleteAccountArmed, setDeleteAccountArmed] = useState(false);
+  const deleteAccountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const disarmDeleteAccount = useCallback(() => {
+    if (deleteAccountTimerRef.current) {
+      clearTimeout(deleteAccountTimerRef.current);
+      deleteAccountTimerRef.current = null;
+    }
+    setDeleteAccountArmed(false);
+  }, []);
+
+  // 설정 화면을 벗어나면(시간대 설정 등 다른 화면으로 이동해도) 활성화 상태를 남겨두지 않는다
+  useFocusEffect(
+    useCallback(() => {
+      return () => disarmDeleteAccount();
+    }, [disarmDeleteAccount])
+  );
+
+  const armDeleteAccount = () => {
+    setDeleteAccountArmed(true);
+    if (deleteAccountTimerRef.current) clearTimeout(deleteAccountTimerRef.current);
+    deleteAccountTimerRef.current = setTimeout(() => {
+      deleteAccountTimerRef.current = null;
+      setDeleteAccountArmed(false);
+    }, 3000);
+  };
+
+  const handleDeleteAccountPress = () => {
+    if (!deleteAccountArmed) return;
+    disarmDeleteAccount();
+    setShowDeleteAccountConfirm(true);
+  };
 
   const handleDeleteAccount = async () => {
     setIsDeletingAccount(true);
     try {
       await deleteAccount();
       setShowDeleteAccountConfirm(false);
-    } catch {
-      Alert.alert('', t('settings.deleteAccountError'));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      Alert.alert(t('settings.deleteAccountError'), detail);
     } finally {
       setIsDeletingAccount(false);
     }
@@ -161,20 +198,38 @@ export default function SettingsScreen() {
         </AnimatedPressable>
       </ShadowCard>
 
-      {/* 이메일/로그아웃은 카드 없이, 위쪽 얇은 선으로만 구분된 한 줄에 양 끝 정렬로
-          화면 맨 아래에 고정. 이메일이 길어도 2줄로 안 늘어나고 1줄로 잘리게 함 */}
+      {/* 이메일/회원탈퇴/로그아웃은 카드 없이, 위쪽 얇은 선으로만 구분된 한 줄에 양 끝 정렬로
+          화면 맨 아래에 고정. 이메일이 길어도 2줄로 안 늘어나고 1줄로 잘리게 해서
+          오른쪽의 회원탈퇴·로그아웃 버튼 자리를 침범하지 않게 함 */}
       <View style={styles.accountSection}>
         <View style={styles.accountBlock}>
           <Text style={styles.accountEmail} numberOfLines={1} ellipsizeMode="tail">
             {session?.user.email}
           </Text>
-          <AnimatedPressable onPress={() => setShowSignOutConfirm(true)}>
-            <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
-          </AnimatedPressable>
+          <View style={styles.accountActions}>
+            <View style={styles.deleteAccountGroup}>
+              <AnimatedPressable onPress={() => setShowDeleteAccountDesc((v) => !v)} hitSlop={8}>
+                <Text style={styles.deleteAccountInfoIcon}>ⓘ</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                onPress={handleDeleteAccountPress}
+                onLongPress={armDeleteAccount}
+                delayLongPress={1000}>
+                <Text style={[styles.deleteAccountText, deleteAccountArmed && styles.deleteAccountTextArmed]}>
+                  {t('settings.deleteAccount')}
+                </Text>
+              </AnimatedPressable>
+            </View>
+            <AnimatedPressable onPress={() => setShowSignOutConfirm(true)}>
+              <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
+            </AnimatedPressable>
+          </View>
         </View>
-        <AnimatedPressable style={styles.deleteAccountRow} onPress={() => setShowDeleteAccountConfirm(true)}>
-          <Text style={styles.deleteAccountText}>{t('settings.deleteAccount')}</Text>
-        </AnimatedPressable>
+        {showDeleteAccountDesc && (
+          <Text style={styles.deleteAccountDesc} numberOfLines={1}>
+            {t('settings.deleteAccountHint')}
+          </Text>
+        )}
       </View>
 
       <Modal
@@ -269,6 +324,18 @@ function createStyles(accent: string) {
       flex: 1,
       fontSize: 13,
       opacity: 0.6,
+    },
+    accountActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 14,
+    },
+    // ⓘ 아이콘은 "회원탈퇴"에 대한 설명이라는 게 한눈에 보이게, 로그아웃과의 간격(14)보다
+    // 훨씬 좁은 간격으로 붙여둔다
+    deleteAccountGroup: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
     },
     // 그룹(카드) 위에 놓는 소제목. 설명 문구는 항상 보이지 않고, 옆 ⓘ 아이콘을 눌러야 펼쳐짐
     groupHeaderRow: {
@@ -402,16 +469,29 @@ function createStyles(accent: string) {
       fontWeight: '600',
       fontSize: 13,
     },
-    // 회원탈퇴는 로그아웃보다 훨씬 드물게 쓰는 파괴적 행동이라, 눈에 덜 띄게 아래
-    // 오른쪽 끝에 작은 글씨로만 둔다(실수로 누르기 어렵게)
-    deleteAccountRow: {
-      alignItems: 'flex-end',
-      paddingTop: 10,
-    },
+    // 평소엔 회색으로 눈에 덜 띄다가, 1초 길게 눌러 "활성화"되면 로그아웃과 같은 빨간색으로
+    // 바뀌어서 지금 누르면 실제로 반응한다는 걸 보여준다(그 전엔 눌러도 아무 일도 안 일어남)
     deleteAccountText: {
       color: textMuted,
-      fontSize: 12,
       opacity: 0.6,
+      fontWeight: '600',
+      fontSize: 13,
+    },
+    deleteAccountTextArmed: {
+      color: '#FF6B6B',
+      opacity: 1,
+    },
+    deleteAccountInfoIcon: {
+      fontSize: 13,
+      color: textMuted,
+      opacity: 0.6,
+    },
+    deleteAccountDesc: {
+      textAlign: 'left',
+      fontSize: 12,
+      opacity: 0.55,
+      marginTop: 6,
+      lineHeight: 16,
     },
     confirmBackdrop: {
       flex: 1,

@@ -33,26 +33,48 @@ Deno.serve(async (req) => {
     return json({ error: "서버에 서비스 키가 설정되지 않았습니다." }, 500);
   }
 
-  // 1) 로그인 확인 — 앱이 보낸 유저 토큰으로 본인 확인 (본인 계정만 삭제 가능)
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
-  const { data: userData } = await userClient.auth.getUser();
-  const userId = userData?.user?.id;
-  if (!userId) return json({ error: "로그인이 필요합니다." }, 401);
+  try {
+    // 1) 로그인 확인 — 앱이 보낸 유저 토큰으로 본인 확인 (본인 계정만 삭제 가능)
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: userData, error: userError } = await userClient.auth.getUser();
+    if (userError) {
+      console.error("getUser 실패:", userError);
+      return json({ error: `본인 확인 실패: ${userError.message}` }, 401);
+    }
+    const userId = userData?.user?.id;
+    if (!userId) return json({ error: "로그인이 필요합니다." }, 401);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  // 2) 루틴 첨부 사진 삭제 (내 폴더 전체) — DB cascade로는 안 지워지는 스토리지 파일
-  const { data: files } = await admin.storage.from("routine-photos").list(userId);
-  if (files && files.length > 0) {
-    await admin.storage.from("routine-photos").remove(files.map((f) => `${userId}/${f.name}`));
+    // 2) 루틴 첨부 사진 삭제 (내 폴더 전체) — DB cascade로는 안 지워지는 스토리지 파일
+    const { data: files, error: listError } = await admin.storage.from("routine-photos").list(userId);
+    if (listError) {
+      console.error("스토리지 목록 조회 실패:", listError);
+      return json({ error: `스토리지 목록 조회 실패: ${listError.message}` }, 500);
+    }
+    if (files && files.length > 0) {
+      const { error: removeError } = await admin.storage
+        .from("routine-photos")
+        .remove(files.map((f) => `${userId}/${f.name}`));
+      if (removeError) {
+        console.error("스토리지 파일 삭제 실패:", removeError);
+        return json({ error: `스토리지 파일 삭제 실패: ${removeError.message}` }, 500);
+      }
+    }
+
+    // 3) 계정 삭제 — public.users 이하 모든 데이터가 on delete cascade로 함께 삭제된다
+    const { error: deleteError } = await admin.auth.admin.deleteUser(userId);
+    if (deleteError) {
+      console.error("계정 삭제 실패:", deleteError);
+      return json({ error: `계정 삭제 실패: ${deleteError.message}` }, 500);
+    }
+
+    return json({ success: true });
+  } catch (e) {
+    console.error("delete-account 예외:", e);
+    return json({ error: `서버 예외: ${e instanceof Error ? e.message : String(e)}` }, 500);
   }
-
-  // 3) 계정 삭제 — public.users 이하 모든 데이터가 on delete cascade로 함께 삭제된다
-  const { error } = await admin.auth.admin.deleteUser(userId);
-  if (error) return json({ error: error.message }, 500);
-
-  return json({ success: true });
 });
