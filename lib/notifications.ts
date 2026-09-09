@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 import { fetchMemosInRange } from '@/lib/date-memos';
+import { channelIdForPrefs, getNotificationPrefs, type NotificationPrefs } from '@/lib/notification-prefs';
 import {
   fetchMonthData,
   fetchSlots,
@@ -24,12 +25,22 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function setupNotificationChannel(): Promise<void> {
-  if (Platform.OS !== 'android') return;
-  await Notifications.setNotificationChannelAsync('default', {
-    name: '기본 알림',
-    importance: Notifications.AndroidImportance.DEFAULT,
-  });
+// 안드로이드 채널은 한 번 만들면 소리/진동을 앱에서 되돌릴 수 없어서, 소리/진동 설정
+// 조합마다 별도 채널을 만들어두고 그때그때 맞는 채널 id를 골라 쓴다(notification-prefs.ts).
+// 설정 화면에서 소리/진동을 바꿀 때마다 새 조합의 채널을 미리 만들어두기 위해 호출한다.
+export async function setupNotificationChannel(prefs?: NotificationPrefs): Promise<string> {
+  const resolved = prefs ?? (await getNotificationPrefs());
+  const channelId = channelIdForPrefs(resolved);
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync(channelId, {
+      name: '루틴 알림',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      sound: resolved.soundEnabled ? 'default' : null,
+      vibrationPattern: resolved.vibrationEnabled ? [0, 250, 250, 250] : undefined,
+      enableVibrate: resolved.vibrationEnabled,
+    });
+  }
+  return channelId;
 }
 
 export async function requestNotificationPermissions(): Promise<boolean> {
@@ -52,7 +63,13 @@ function slotIdentifier(slotType: SlotType): string {
 // - 둘 다 꺼짐, 또는 메모 알림만 켜졌는데 메모가 없음 → 아무것도 안 보냄
 // 메모 유무에 따라 매일 문구가 달라져야 해서, 자기전 리마인더(syncReminderAlarm)와 같은
 // "재동기화 때마다 다음 발송 시점 1회성으로 예약" 방식을 그대로 따른다.
-async function scheduleMorningAlarm(userId: string, slot: Slot, identifier: string): Promise<void> {
+async function scheduleMorningAlarm(
+  userId: string,
+  slot: Slot,
+  identifier: string,
+  channelId: string,
+  soundEnabled: boolean
+): Promise<void> {
   const routineOn = slot.notify_enabled;
   const memoOn = slot.memo_notify_enabled;
   if (!routineOn && !memoOn) return;
@@ -93,10 +110,11 @@ async function scheduleMorningAlarm(userId: string, slot: Slot, identifier: stri
 
   await Notifications.scheduleNotificationAsync({
     identifier,
-    content: { title, body },
+    content: { title, body, sound: soundEnabled },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: targetDate,
+      channelId,
     },
   });
 }
@@ -104,13 +122,15 @@ async function scheduleMorningAlarm(userId: string, slot: Slot, identifier: stri
 // 슬롯별 알림: 켜져 있는 슬롯마다 그 슬롯 시작 시각에 매일 반복 알림 예약.
 // 단, 아침 슬롯은 메모 통합을 위해 위 scheduleMorningAlarm으로 별도 처리(자체적으로 on/off 판단).
 export async function syncSlotAlarms(userId: string): Promise<void> {
+  const prefs = await getNotificationPrefs();
+  const channelId = await setupNotificationChannel(prefs);
   const slots = await fetchSlots(userId);
   for (const slot of slots) {
     const identifier = slotIdentifier(slot.slot_type);
     await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
 
     if (slot.slot_type === 'morning') {
-      await scheduleMorningAlarm(userId, slot, identifier);
+      await scheduleMorningAlarm(userId, slot, identifier, channelId, prefs.soundEnabled);
       continue;
     }
     if (!slot.notify_enabled) continue;
@@ -121,11 +141,13 @@ export async function syncSlotAlarms(userId: string): Promise<void> {
       content: {
         title: `${SLOT_LABELS[slot.slot_type]} 시간이에요`,
         body: '오늘의 루틴을 확인해보세요',
+        sound: prefs.soundEnabled,
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DAILY,
         hour,
         minute,
+        channelId,
       },
     });
   }
@@ -137,6 +159,8 @@ export async function syncSlotAlarms(userId: string): Promise<void> {
 export async function syncReminderAlarm(userId: string): Promise<void> {
   await Notifications.cancelScheduledNotificationAsync(REMINDER_IDENTIFIER).catch(() => {});
 
+  const prefs = await getNotificationPrefs();
+  const channelId = await setupNotificationChannel(prefs);
   const slots = await fetchSlots(userId);
   const beforeSleep = slots.find((s) => s.slot_type === 'before_sleep');
   if (!beforeSleep || !beforeSleep.notify_enabled) return;
@@ -161,10 +185,12 @@ export async function syncReminderAlarm(userId: string): Promise<void> {
     content: {
       title: '오늘 루틴을 확인해주세요',
       body: '아직 완료하지 않은 루틴이 있어요',
+      sound: prefs.soundEnabled,
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: targetDate,
+      channelId,
     },
   });
 }

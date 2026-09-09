@@ -1,18 +1,22 @@
 import { useFocusEffect } from '@react-navigation/native';
+import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, StyleSheet, View as RNView } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Linking, Modal, Platform, StyleSheet, Switch, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { border, cardRadius, textMuted } from '@/constants/theme';
+import { border, cardRadius, textMuted, withAlpha } from '@/constants/theme';
 import { ACCENT_PRESETS, ACCENT_LABEL_KEYS, useAccentColorSetting } from '@/lib/accent-color';
 import { deleteAccount } from '@/lib/account';
 import { useAuth } from '@/lib/auth-context';
 import { useFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
 import { useTranslation, type Language } from '@/lib/language';
+import { setupNotificationChannel } from '@/lib/notifications';
+import { useNotificationPrefsSetting } from '@/lib/notification-prefs';
 import { supabase } from '@/lib/supabase';
 
 export default function SettingsScreen() {
@@ -78,6 +82,24 @@ export default function SettingsScreen() {
   const [showThemeDesc, setShowThemeDesc] = useState(false);
   const [showFontDesc, setShowFontDesc] = useState(false);
   const [showLanguageDesc, setShowLanguageDesc] = useState(false);
+  const [showNotifDesc, setShowNotifDesc] = useState(false);
+  const { prefs: notifPrefs, update: updateNotifPrefs } = useNotificationPrefsSetting();
+  const [notifPermissionDenied, setNotifPermissionDenied] = useState(false);
+
+  useEffect(() => {
+    Notifications.getPermissionsAsync().then(({ status }) => setNotifPermissionDenied(status !== 'granted'));
+  }, []);
+
+  // 소리/진동을 바꾸면 그 조합의 안드로이드 채널을 미리 만들어둔다 — 다음에 예약되는
+  // 알림부터 바로 반영됨(이미 예약된 알림은 다음 재동기화 때 새 채널로 다시 예약됨)
+  const handleNotifPrefChange = (partial: { soundEnabled?: boolean; vibrationEnabled?: boolean }) => {
+    updateNotifPrefs(partial).then(() => setupNotificationChannel({ ...notifPrefs, ...partial }));
+  };
+
+  const openExactAlarmSettings = () => {
+    if (Platform.OS !== 'android') return;
+    Linking.sendIntent('android.settings.REQUEST_SCHEDULE_EXACT_ALARM').catch(() => Linking.openSettings());
+  };
 
   const LANGUAGE_OPTIONS: { id: Language; label: string }[] = [
     { id: 'ko', label: t('settings.languageKorean') },
@@ -93,6 +115,59 @@ export default function SettingsScreen() {
           <View style={styles.rowLeft}>
             <Ionicons name="time-outline" size={22} color={textMuted} style={styles.rowIcon} />
             <Text style={styles.rowLabel}>{t('settings.timeSettings')}</Text>
+          </View>
+          <Text style={styles.rowChevron}>›</Text>
+        </AnimatedPressable>
+      </ShadowCard>
+
+      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
+        <View style={styles.groupPadding}>
+          <View style={styles.groupHeaderRow}>
+            <Text style={styles.groupHeader}>{t('settings.notifications')}</Text>
+            <AnimatedPressable onPress={() => setShowNotifDesc((v) => !v)} hitSlop={8}>
+              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+            </AnimatedPressable>
+          </View>
+          {showNotifDesc && <Text style={styles.groupHeaderDesc}>{t('settings.notificationsDesc')}</Text>}
+          <View style={styles.notifToggleRow}>
+            <Text style={styles.notifToggleLabel}>{t('settings.notifSound')}</Text>
+            <Switch
+              value={notifPrefs.soundEnabled}
+              onValueChange={(v) => handleNotifPrefChange({ soundEnabled: v })}
+              trackColor={{ false: '#ccc', true: withAlpha(accent, 0.4) }}
+              thumbColor={notifPrefs.soundEnabled ? accent : '#f4f3f4'}
+            />
+          </View>
+          <View style={styles.notifToggleRow}>
+            <Text style={styles.notifToggleLabel}>{t('settings.notifVibration')}</Text>
+            <Switch
+              value={notifPrefs.vibrationEnabled}
+              onValueChange={(v) => handleNotifPrefChange({ vibrationEnabled: v })}
+              trackColor={{ false: '#ccc', true: withAlpha(accent, 0.4) }}
+              thumbColor={notifPrefs.vibrationEnabled ? accent : '#f4f3f4'}
+            />
+          </View>
+        </View>
+        {Platform.OS === 'android' && (
+          <AnimatedPressable style={[styles.row, styles.rowDivider]} onPress={openExactAlarmSettings}>
+            <View style={styles.rowLeft}>
+              <Ionicons name="alarm-outline" size={22} color={textMuted} style={styles.rowIcon} />
+              <Text style={styles.rowLabel}>{t('settings.exactAlarmPermission')}</Text>
+            </View>
+            <Text style={styles.rowChevron}>›</Text>
+          </AnimatedPressable>
+        )}
+        <AnimatedPressable style={[styles.row, styles.rowDivider]} onPress={() => Linking.openSettings()}>
+          <View style={styles.rowLeft}>
+            <Ionicons
+              name={notifPermissionDenied ? 'notifications-off-outline' : 'notifications-outline'}
+              size={22}
+              color={notifPermissionDenied ? '#FF6B6B' : textMuted}
+              style={styles.rowIcon}
+            />
+            <Text style={[styles.rowLabel, notifPermissionDenied && styles.rowLabelWarning]}>
+              {t('settings.notifTroubleshoot')}
+            </Text>
           </View>
           <Text style={styles.rowChevron}>›</Text>
         </AnimatedPressable>
@@ -196,6 +271,22 @@ export default function SettingsScreen() {
           </View>
           <Text style={styles.rowChevron}>›</Text>
         </AnimatedPressable>
+      </ShadowCard>
+
+      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
+        <AnimatedPressable
+          style={styles.row}
+          onPress={() => Linking.openURL('mailto:leeyonghee030@gmail.com?subject=Daily%20Loop%20문의')}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="mail-outline" size={22} color={textMuted} style={styles.rowIcon} />
+            <Text style={styles.rowLabel}>{t('settings.contact')}</Text>
+          </View>
+          <Text style={styles.rowChevron}>›</Text>
+        </AnimatedPressable>
+        <View style={[styles.row, styles.rowDivider]}>
+          <Text style={styles.rowLabel}>{t('settings.version')}</Text>
+          <Text style={styles.rowValue}>{Constants.expoConfig?.version ?? '1.0.0'}</Text>
+        </View>
       </ShadowCard>
 
       {/* 이메일/회원탈퇴/로그아웃은 카드 없이, 위쪽 얇은 선으로만 구분된 한 줄에 양 끝 정렬로
@@ -400,6 +491,27 @@ function createStyles(accent: string) {
     rowChevron: {
       fontSize: 20,
       opacity: 0.35,
+    },
+    rowValue: {
+      fontSize: 14,
+      opacity: 0.5,
+    },
+    rowLabelWarning: {
+      color: '#FF6B6B',
+    },
+    // 카드 안에서 두 번째 이후 행을 얇은 선으로 구분(iOS 설정 앱 스타일)
+    rowDivider: {
+      borderTopWidth: 1,
+      borderTopColor: border,
+    },
+    notifToggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 6,
+    },
+    notifToggleLabel: {
+      fontSize: 15,
     },
     accentSwatchRow: {
       flexDirection: 'row',
