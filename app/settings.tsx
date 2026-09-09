@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Modal, StyleSheet, View as RNView } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -8,6 +8,7 @@ import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { ACCENT_PRESETS, ACCENT_LABEL_KEYS, useAccentColorSetting } from '@/lib/accent-color';
+import { deleteAccount } from '@/lib/account';
 import { useAuth } from '@/lib/auth-context';
 import { useFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
 import { useTranslation, type Language } from '@/lib/language';
@@ -22,6 +23,21 @@ export default function SettingsScreen() {
   const { language, setLanguage, t } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+
+  const handleDeleteAccount = async () => {
+    setIsDeletingAccount(true);
+    try {
+      await deleteAccount();
+      setShowDeleteAccountConfirm(false);
+    } catch {
+      Alert.alert('', t('settings.deleteAccountError'));
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   const [showThemeDesc, setShowThemeDesc] = useState(false);
   const [showFontDesc, setShowFontDesc] = useState(false);
   const [showLanguageDesc, setShowLanguageDesc] = useState(false);
@@ -127,6 +143,24 @@ export default function SettingsScreen() {
         </View>
       </ShadowCard>
 
+      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
+        <AnimatedPressable
+          style={styles.row}
+          onPress={() =>
+            Linking.openURL(
+              language === 'en'
+                ? 'https://leeyonghee030.github.io/daily-loop/privacy-policy-en'
+                : 'https://leeyonghee030.github.io/daily-loop/'
+            )
+          }>
+          <View style={styles.rowLeft}>
+            <Ionicons name="document-text-outline" size={22} color={textMuted} style={styles.rowIcon} />
+            <Text style={styles.rowLabel}>{t('settings.privacyPolicy')}</Text>
+          </View>
+          <Text style={styles.rowChevron}>›</Text>
+        </AnimatedPressable>
+      </ShadowCard>
+
       {/* 이메일/로그아웃은 카드 없이, 위쪽 얇은 선으로만 구분된 한 줄에 양 끝 정렬로
           화면 맨 아래에 고정. 이메일이 길어도 2줄로 안 늘어나고 1줄로 잘리게 함 */}
       <View style={styles.accountSection}>
@@ -138,6 +172,9 @@ export default function SettingsScreen() {
             <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
           </AnimatedPressable>
         </View>
+        <AnimatedPressable style={styles.deleteAccountRow} onPress={() => setShowDeleteAccountConfirm(true)}>
+          <Text style={styles.deleteAccountText}>{t('settings.deleteAccount')}</Text>
+        </AnimatedPressable>
       </View>
 
       <Modal
@@ -161,6 +198,41 @@ export default function SettingsScreen() {
                   supabase.auth.signOut();
                 }}>
                 <Text style={styles.confirmSignOutText}>{t('settings.signOut')}</Text>
+              </AnimatedPressable>
+            </View>
+          </ShadowCard>
+        </RNView>
+      </Modal>
+
+      <Modal
+        visible={showDeleteAccountConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !isDeletingAccount && setShowDeleteAccountConfirm(false)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => !isDeletingAccount && setShowDeleteAccountConfirm(false)}
+          />
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>{t('settings.deleteAccountConfirmTitle')}</Text>
+            <Text style={styles.confirmDesc}>{t('settings.deleteAccountConfirmDesc')}</Text>
+            <View style={styles.confirmButtonRow}>
+              <AnimatedPressable
+                style={styles.confirmCancelButton}
+                onPress={() => setShowDeleteAccountConfirm(false)}
+                disabled={isDeletingAccount}>
+                <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={styles.confirmDeleteAccountButton}
+                onPress={handleDeleteAccount}
+                disabled={isDeletingAccount}>
+                {isDeletingAccount ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.confirmSignOutText}>{t('settings.deleteAccount')}</Text>
+                )}
               </AnimatedPressable>
             </View>
           </ShadowCard>
@@ -330,6 +402,17 @@ function createStyles(accent: string) {
       fontWeight: '600',
       fontSize: 13,
     },
+    // 회원탈퇴는 로그아웃보다 훨씬 드물게 쓰는 파괴적 행동이라, 눈에 덜 띄게 아래
+    // 오른쪽 끝에 작은 글씨로만 둔다(실수로 누르기 어렵게)
+    deleteAccountRow: {
+      alignItems: 'flex-end',
+      paddingTop: 10,
+    },
+    deleteAccountText: {
+      color: textMuted,
+      fontSize: 12,
+      opacity: 0.6,
+    },
     confirmBackdrop: {
       flex: 1,
       alignItems: 'center',
@@ -384,6 +467,14 @@ function createStyles(accent: string) {
       fontSize: 14,
       fontWeight: '700',
       color: '#fff',
+    },
+    confirmDeleteAccountButton: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 12,
+      borderRadius: cardRadius,
+      backgroundColor: '#FF6B6B',
     },
   });
 }
