@@ -78,7 +78,7 @@ To operate the App reliably, we outsource certain processing to the providers be
 You may request access to, correction of, deletion of, or suspension of processing of your personal information at any time.
 
 - You can edit or delete your own routines, records, and memos directly within the App.
-- **Full account deletion**: An in-app self-service deletion feature is under development. To request deletion in the meantime, please email us at the address below — we will verify your request and delete your account and associated data without undue delay (typically within a few business days).
+- **Full account deletion**: You can delete your account yourself from the "Delete Account" menu in the Settings screen. Your account and all associated data are deleted without delay as soon as you confirm. If you're unable to use the App, you may also email us at the address below to request deletion.
 
 ## 9. Children's Privacy
 
