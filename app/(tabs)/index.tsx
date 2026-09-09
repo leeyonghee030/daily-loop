@@ -660,8 +660,6 @@ type ListRowProps = {
   isNow: boolean;
   flat: boolean;
   completion: RoutineCompletion | undefined;
-  streakDays: number;
-  streakEmoji: string | null;
   isEditingTracking: boolean;
   trackingInputValue: string;
   styles: ReturnType<typeof createStyles>;
@@ -691,8 +689,6 @@ const ListRow = memo(function ListRow({
   isNow,
   flat,
   completion,
-  streakDays,
-  streakEmoji,
   isEditingTracking,
   trackingInputValue,
   styles,
@@ -760,12 +756,6 @@ const ListRow = memo(function ListRow({
             <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
               {item.title}
             </Text>
-            {streakEmoji && (
-              <Text style={styles.streakBadge}>
-                {streakEmoji} {streakDays}
-                {t('today.daySuffix')}
-              </Text>
-            )}
           </AnimatedPressable>
           {item.is_required && !isDone && <View style={styles.requiredBar} />}
         </View>
@@ -1461,8 +1451,6 @@ export default function TodayScreen() {
                       isNow={group.isNow}
                       flat={isGroupBox}
                       completion={completions[item.id]}
-                      streakDays={streaks[item.id] ?? 0}
-                      streakEmoji={emojiForStreak(streaks[item.id] ?? 0, streakConfigs)}
                       isEditingTracking={editingTrackingIds.has(item.id)}
                       trackingInputValue={trackingInputs[item.id] ?? ''}
                       styles={styles}
@@ -1735,10 +1723,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     bottom: -4,
     height: 2,
     backgroundColor: withAlpha(accent, 0.35),
-  },
-  streakBadge: {
-    fontSize: 12,
-    opacity: 0.7,
   },
   // 체크박스(28px)와 시각적 중심을 맞추기 위해 같은 높이로 고정하고 그 안에서 가운데 정렬
   trackingRow: {

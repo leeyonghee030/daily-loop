@@ -7,6 +7,7 @@ import { CalendarList, type DateData } from 'react-native-calendars';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
+import { DottedStreakRing } from '@/components/DottedStreakRing';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -14,7 +15,6 @@ import Colors from '@/constants/Colors';
 import {
   border,
   cardRadius,
-  fontDisplay,
   fontMono,
   statusDone,
   statusMissed,
@@ -481,13 +481,7 @@ export default function CalendarScreen() {
       {viewMode === 'week' && (
         <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
           {bestStreakEver !== null && bestStreakEver > 0 ? (
-            <>
-              <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
-              <View style={styles.streakHeroNumRow}>
-                <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-                <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
-              </View>
-            </>
+            <DottedStreakRing size={48} dotCount={14} />
           ) : (
             <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
           )}
@@ -791,28 +785,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   streakHero: {
     padding: 14,
-  },
-  streakHeroLabel: {
-    fontFamily: fontMono,
-    fontSize: 10,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: textMuted,
-  },
-  streakHeroNumRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
-    marginTop: 6,
-  },
-  streakHeroNum: {
-    fontFamily: fontDisplay,
-    fontSize: 34,
-    color: accent,
-  },
-  streakHeroUnit: {
-    fontSize: 13,
-    color: textMuted,
+    alignItems: 'center',
   },
   streakBadgeEmptyText: {
     fontSize: 11,
