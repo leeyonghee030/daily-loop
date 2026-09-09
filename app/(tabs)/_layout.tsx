@@ -6,6 +6,7 @@ import { Tabs, useRouter } from 'expo-router';
 import { Platform, StyleSheet } from 'react-native';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
+import { StreakHeaderBadge } from '@/components/StreakHeaderBadge';
 import { textMuted } from '@/constants/theme';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
@@ -41,8 +42,9 @@ export default function TabLayout() {
           : {}),
         headerShown: useClientOnlyValue(false, true),
         headerTitleStyle: { fontFamily: koreanFont.fontFamily, fontSize: 20 + koreanFont.sizeAdjust },
-        // 탭 상단 큰 제목은 없애되, 탭바 아래쪽 라벨(오늘/캘린더/통계)은 각 화면의 title 값을 그대로 씀
-        headerTitle: '',
+        // 탭 상단 큰 제목은 없애되, 탭바 아래쪽 라벨(오늘/캘린더/통계)은 각 화면의 title 값을 그대로 씀.
+        // 대신 그 빈 자리(설정 아이콘 왼쪽)에 역대 최고 스트릭을 은은한 장식으로 채운다
+        headerTitle: () => <StreakHeaderBadge />,
         headerRight: () => (
           <AnimatedPressable style={{ marginRight: 16 }} onPress={() => router.push('/settings')}>
             <FontAwesome name="gear" size={22} color={textMuted} />

@@ -9,10 +9,11 @@ import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
-import { ActivityIndicator, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
+import { AppLoadingScreen } from '@/components/AppLoadingScreen';
 import { View } from '@/components/Themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -127,9 +128,7 @@ function RootLayoutNav() {
   return (
     <ThemeProvider value={appTheme}>
       {isLoading || (session && onboardingSeen === null) ? (
-        <View style={styles.loading}>
-          <ActivityIndicator />
-        </View>
+        <AppLoadingScreen />
       ) : (
         <Stack
           screenOptions={{
@@ -176,10 +175,5 @@ function RootLayoutNav() {
 const styles = StyleSheet.create({
   flex: {
     flex: 1,
-  },
-  loading: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

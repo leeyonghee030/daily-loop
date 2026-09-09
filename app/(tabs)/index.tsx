@@ -1720,6 +1720,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     gap: 6,
   },
   rowTitle: {
+    flexShrink: 1,
     fontSize: 18 + fontKorean.sizeAdjust + listTitleExtraAdjust,
     lineHeight: 24 + fontKorean.sizeAdjust + listTitleExtraAdjust,
     fontFamily: fontKorean.fontFamily,
