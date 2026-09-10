@@ -37,6 +37,7 @@ import {
   type MemoColor,
 } from '@/lib/date-memos';
 import { fetchDiaryDatesInRange } from '@/lib/diary';
+import { fetchPhotoDiaryDatesInRange } from '@/lib/photo-diary';
 import { syncSlotAlarms } from '@/lib/notifications';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import {
@@ -201,10 +202,24 @@ export default function CalendarScreen() {
     enabled: !!userId && viewMode === 'week',
   });
 
+  // 사진일기 작성 날짜도 같은 방식으로 조회 — 둘 다 있는 날은 카메라 아이콘을 우선 표시
+  const monthPhotoDiaryQuery = useQuery({
+    queryKey: ['photo-diary-dates', userId, monthStart, monthEnd],
+    queryFn: () => fetchPhotoDiaryDatesInRange(userId!, monthStart, monthEnd),
+    enabled: !!userId && viewMode === 'month',
+  });
+  const weekPhotoDiaryQuery = useQuery({
+    queryKey: ['photo-diary-dates', userId, weekStart, weekEnd],
+    queryFn: () => fetchPhotoDiaryDatesInRange(userId!, weekStart, weekEnd),
+    enabled: !!userId && viewMode === 'week',
+  });
+
   const monthMemosByDate = useMemo(() => groupMemosByDate(monthMemosQuery.data ?? []), [monthMemosQuery.data]);
   const monthDiaryDates = useMemo(() => new Set(monthDiaryQuery.data ?? []), [monthDiaryQuery.data]);
+  const monthPhotoDiaryDates = useMemo(() => new Set(monthPhotoDiaryQuery.data ?? []), [monthPhotoDiaryQuery.data]);
   const weekMemosByDate = useMemo(() => groupMemosByDate(weekMemosQuery.data ?? []), [weekMemosQuery.data]);
   const weekDiaryDates = useMemo(() => new Set(weekDiaryQuery.data ?? []), [weekDiaryQuery.data]);
+  const weekPhotoDiaryDates = useMemo(() => new Set(weekPhotoDiaryQuery.data ?? []), [weekPhotoDiaryQuery.data]);
   const activeMemosByDate = viewMode === 'week' ? weekMemosByDate : monthMemosByDate;
 
   // 탭에 돌아올 때마다 지금 보고 있는 뷰(월 또는 주)의 데이터만 다시 불러온다 — 예전
@@ -214,10 +229,12 @@ export default function CalendarScreen() {
       monthQuery.refetch();
       monthMemosQuery.refetch();
       monthDiaryQuery.refetch();
+      monthPhotoDiaryQuery.refetch();
     } else {
       weekQuery.refetch();
       weekMemosQuery.refetch();
       weekDiaryQuery.refetch();
+      weekPhotoDiaryQuery.refetch();
     }
     statsQuery.refetch();
   }, [
@@ -225,9 +242,11 @@ export default function CalendarScreen() {
     monthQuery.refetch,
     monthMemosQuery.refetch,
     monthDiaryQuery.refetch,
+    monthPhotoDiaryQuery.refetch,
     weekQuery.refetch,
     weekMemosQuery.refetch,
     weekDiaryQuery.refetch,
+    weekPhotoDiaryQuery.refetch,
     statsQuery.refetch,
   ]);
   useRefetchOnFocus(refetchActive, !!userId);
@@ -403,7 +422,11 @@ export default function CalendarScreen() {
       return (
         <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
           <View style={styles.diaryIconSlot}>
-            {monthDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
+            {monthPhotoDiaryDates.has(dateStr) ? (
+              <Ionicons name="camera-outline" size={10} color={textMuted} />
+            ) : (
+              monthDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
+            )}
           </View>
           <View
             style={[
@@ -554,7 +577,11 @@ export default function CalendarScreen() {
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
                       <View style={styles.diaryIconSlot}>
-                        {weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />}
+                        {weekPhotoDiaryDates.has(dateStr) ? (
+                          <Ionicons name="camera-outline" size={10} color={textMuted} />
+                        ) : (
+                          weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
+                        )}
                       </View>
                       <Text style={styles.weekRowWeekday}>{t(WEEKDAY_KEYS[dow])}</Text>
                       <Text style={styles.weekRowDay}>{dayNum}</Text>

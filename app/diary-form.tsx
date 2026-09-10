@@ -13,6 +13,7 @@ import {
   TextInput,
   TouchableWithoutFeedback,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 // 내용이 짧아 화면을 안 채울 때도 드래그 제스처가 스크롤로 인식되도록 확보하는 여백 높이
 const SCROLL_SPACER_HEIGHT = Math.round(Dimensions.get('window').height * 0.8);
@@ -25,6 +26,7 @@ import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useAuth } from '@/lib/auth-context';
 import { useTranslation, type Language } from '@/lib/language';
 import { deleteDiary, fetchDiary, saveDiary } from '@/lib/diary';
+import { fetchPhotoDiary } from '@/lib/photo-diary';
 
 const EN_MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -51,6 +53,12 @@ export default function DiaryFormScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [diaryId, setDiaryId] = useState<string | null>(null);
   const [content, setContent] = useState('');
+
+  const photoDiaryQuery = useQuery({
+    queryKey: ['photo-diary', userId, date],
+    queryFn: () => fetchPhotoDiary(userId!, date),
+    enabled: !!userId && !!date,
+  });
 
   const diaryQuery = useQuery({
     queryKey: ['diary', userId, date],
@@ -135,6 +143,15 @@ export default function DiaryFormScreen() {
 
           {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
+          <AnimatedPressable
+            style={styles.photoDiaryButton}
+            onPress={() => router.push({ pathname: '/photo-diary-form', params: { date } })}>
+            <Ionicons name="camera-outline" size={16} color={accent} />
+            <Text style={styles.photoDiaryButtonText}>
+              {photoDiaryQuery.data ? t('photoDiary.viewButton') : t('photoDiary.createButton')}
+            </Text>
+          </AnimatedPressable>
+
           <AnimatedPressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
             {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{t('today.save')}</Text>}
           </AnimatedPressable>
@@ -185,8 +202,24 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: '#FF6B6B',
     marginTop: 12,
   },
-  saveButton: {
+  photoDiaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
     marginTop: 16,
+    borderWidth: 1,
+    borderColor: accent,
+    borderRadius: cardRadius,
+    paddingVertical: 12,
+  },
+  photoDiaryButtonText: {
+    color: accent,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  saveButton: {
+    marginTop: 12,
     backgroundColor: accent,
     borderRadius: cardRadius,
     paddingVertical: 14,

@@ -343,15 +343,15 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
             <Text style={styles.categoryActionText}>{t('categoryVideoGrid.renameCategory')}</Text>
           </AnimatedPressable>
         )}
-        {selectedCategory && (
-          <AnimatedPressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
-            <Ionicons name="trash-outline" size={14} color="#FF6B6B" />
-            <Text style={styles.categoryActionTextDanger}>{t('myRoutines.delete')}</Text>
-          </AnimatedPressable>
-        )}
         <AnimatedPressable style={styles.trashLinkButton} onPress={openTrash}>
           <Text style={styles.trashLinkText}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
         </AnimatedPressable>
+        {selectedCategory && (
+          <AnimatedPressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
+            <Ionicons name="trash-outline" size={14} color={accent} />
+            <Text style={styles.categoryActionText}>{t('myRoutines.delete')}</Text>
+          </AnimatedPressable>
+        )}
       </View>
 
       {isLoading ? (
@@ -699,11 +699,6 @@ function createStyles(accent: string) {
   },
   categoryActionText: {
     color: accent,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  categoryActionTextDanger: {
-    color: '#FF6B6B',
     fontSize: 13,
     fontWeight: '600',
   },

@@ -29,14 +29,24 @@ const HIGHLIGHT_WIDTH = ARC_LENGTH * 0.22;
 const HIGHLIGHT_LIGHTEN = 0.16; // 아이콘 원색에 가깝게, 살짝만 밝힘
 const HIGHLIGHT_SUBSEGS = 13; // 하이라이트 폭을 이만큼 잘게 나눠 종 모양 투명도를 입힌다
 
-// 아이콘에서 실측한 색 — 호 길이 기준 0%/25%/50%/75%/100% 지점의 실제 색
-// 양 끝(0%/100%)은 실측 당시 둥근 캡 끝부분이라 배경 흰색과 살짝 섞여있었던 값이라,
-// 한쪽만 튀어 보이지 않도록 같은 값으로 맞춰 대칭시킨다
+// 아이콘에서 실측한 색 — 호 길이를 따라 여러 지점의 실제 색을 찍어 이었다.
+// 양 끝(0%/100%)은 같은 옅은 하늘색. 시작쪽(0~25%)은 옅은색 근처에 "머무는" 구간이
+// 25%로 넉넉해서 은은해 보이는데, 끝쪽은 80~100% 구간을 직선 하나로 이었더니
+// (조각당 색 변화량은 균일했지만) 옅은색 부근에 머무는 시간 자체가 짧아서 시작쪽보다
+// 상대적으로 빨리 진해지는 느낌이었다(캡 부분만 잘라 시작점과 나란히 비교해서 확인).
+// 그래서 80~100% 구간을 직선 대신 완만한 곡선(제곱근 이징 — 캡에 가까울수록
+// 천천히, 파랑 쪽에 가까울수록 좀 더 빠르게 변함)으로 바꿔서, 옅은색 부근에 머무는
+// 체감 구간을 시작쪽만큼 길게 늘렸다.
 const COLOR_STOPS: { t: number; r: number; g: number; b: number }[] = [
   { t: 0, r: 0xb9, g: 0xd0, b: 0xe7 },
   { t: 0.25, r: 0x83, g: 0x98, b: 0xc3 },
   { t: 0.5, r: 0xd1, g: 0x90, b: 0x7d },
   { t: 0.75, r: 0x8f, g: 0x85, b: 0xb1 },
+  { t: 0.775, r: 0x89, g: 0x90, b: 0xbb },
+  { t: 0.8, r: 0x82, g: 0x9a, b: 0xc5 },
+  { t: 0.85, r: 0x9d, g: 0xb5, b: 0xd6 },
+  { t: 0.9, r: 0xa9, g: 0xc0, b: 0xdd },
+  { t: 0.95, r: 0xb2, g: 0xc9, b: 0xe2 },
   { t: 1, r: 0xb9, g: 0xd0, b: 0xe7 },
 ];
 
@@ -68,13 +78,6 @@ function toHex({ r, g, b }: { r: number; g: number; b: number }): string {
 // 그라데이션 효과). 조각 수를 넉넉히 잡아서 이음새(각진 경계)가 안 보이게 한다
 const SEGMENT_COUNT = 200;
 
-// 양 끝을 원형 캡(단색 반원이든, 원형 그라데이션 점이든)으로 마감하면 결국 "덧붙인 점"
-// 처럼 보여 옆 그라데이션과 이질감이 생긴다 — 대신 끝으로 갈수록 두께 자체를 점점
-// 가늘게 좁혀서 자연스러운 뾰족한 끝으로 사라지게 한다(붓이 떼어지는 느낌). 색은 그대로
-// 그 위치의 실측 값이라 이질감이 생길 여지 자체가 없다.
-const TAPER_FRACTION = 0.12; // 양 끝 이 비율(호 길이 기준)만큼 두께가 점점 얇아짐
-const TAPER_MIN_WIDTH_FRAC = 0.06; // 맨 끝에서도 완전히 0은 아니게 최소 두께 유지
-
 export function AppLoadingScreen() {
   const progress = useRef(new Animated.Value(0)).current;
 
@@ -89,22 +92,24 @@ export function AppLoadingScreen() {
     return () => loop.stop();
   }, [progress]);
 
+  // 양 끝 다 테이퍼가 아니라 실제 아이콘과 대조해보니 평범한 둥근(round) 선 캡이었다.
+  // 별도의 캡 전용 도형을 링 위에 겹쳐 그리거나(v20~22) 끝점만 회전 기준을 따로
+  // 두는 식(v26~28)으로 여러 번 시도했지만, 그때마다 모양이 뭉툭해지거나 다른
+  // 부작용이 생겼다 — 결국 가장 단순한 방식(맨 처음/맨 끝 조각 자체의
+  // strokeLinecap만 "round"로 바꾸고, 나머지는 그대로 두는 것)이 시작점·끝점 둘 다
+  // 모양은 문제없이 잘 나왔다. 끝점 쪽에서 한동안 보였던 이음선은 이 조각의
+  // 지오메트리 문제가 아니라, 그 위를 도는 애니메이션 하이라이트가 캡 근처를
+  // 지나는 순간의 잔상이었을 가능성이 높다(정지 상태에서는 안 보임).
   const segments = useMemo(() => {
     const segLen = ARC_LENGTH / SEGMENT_COUNT;
     return Array.from({ length: SEGMENT_COUNT }).map((_, i) => {
       const t = (i + 0.5) / SEGMENT_COUNT;
-      let widthFactor = 1;
-      if (t < TAPER_FRACTION) {
-        widthFactor = t / TAPER_FRACTION;
-      } else if (t > 1 - TAPER_FRACTION) {
-        widthFactor = (1 - t) / TAPER_FRACTION;
-      }
       return {
         key: i,
         offset: -(i * segLen),
-        length: segLen,
+        length: segLen + 0.6,
         color: toHex(colorAt(t)),
-        strokeWidth: STROKE_WIDTH * Math.max(widthFactor, TAPER_MIN_WIDTH_FRAC),
+        linecap: (i === 0 || i === SEGMENT_COUNT - 1 ? 'round' : 'butt') as 'round' | 'butt',
       };
     });
   }, []);
@@ -143,9 +148,9 @@ export function AppLoadingScreen() {
             cy={SIZE / 2}
             r={RADIUS}
             stroke={seg.color}
-            strokeWidth={seg.strokeWidth}
-            strokeLinecap="butt"
-            strokeDasharray={`${seg.length + 0.6} ${CIRCUMFERENCE}`}
+            strokeWidth={STROKE_WIDTH}
+            strokeLinecap={seg.linecap}
+            strokeDasharray={`${seg.length} ${CIRCUMFERENCE}`}
             strokeDashoffset={seg.offset}
             fill="none"
             transform={`rotate(${START_ANGLE_DEG} ${SIZE / 2} ${SIZE / 2})`}

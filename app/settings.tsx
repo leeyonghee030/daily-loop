@@ -2,7 +2,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Platform, StyleSheet, Switch, View as RNView } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, StyleSheet, Switch, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
@@ -79,6 +79,15 @@ export default function SettingsScreen() {
     }
   };
 
+  const [showBasicSettings, setShowBasicSettings] = useState(false);
+
+  // 시간대 설정 등 다른 화면 갔다 뒤로가기로 돌아오면 항상 접힌 상태로 초기화
+  useFocusEffect(
+    useCallback(() => {
+      return () => setShowBasicSettings(false);
+    }, [])
+  );
+
   const [showThemeDesc, setShowThemeDesc] = useState(false);
   const [showFontDesc, setShowFontDesc] = useState(false);
   const [showLanguageDesc, setShowLanguageDesc] = useState(false);
@@ -106,14 +115,117 @@ export default function SettingsScreen() {
     { id: 'en', label: t('settings.languageEnglish') },
   ];
 
+  // 기본 설정을 펼쳐둔 채로 카드 바깥의 빈 곳(다른 행들은 각자 onPress로 이 터치를
+  // 먼저 가져가므로 안 걸림)을 누르면 접히게 한다
+  const closeBasicSettingsIfOpen = () => {
+    if (showBasicSettings) setShowBasicSettings(false);
+  };
+
   return (
+    <Pressable style={styles.pressableRoot} onPress={closeBasicSettingsIfOpen}>
     <View style={styles.container}>
       {/* iOS 설정 앱처럼, 관련 항목을 하나의 둥근 카드 안에 얇은 구분선으로 묶어서 보여준다.
           그룹 제목·설명은 항상 카드 "위"에 함께 둔다(카드 아래에 따로 떼어두면 붕 떠보여서) */}
+      {/* 테마색/폰트/언어를 "기본 설정" 하나로 묶어 맨 위에 둠 — 눌러야만 펼쳐져서
+          평소엔 화면을 덜 차지하고, 자주 안 바꾸는 설정이라 접어둬도 무방함 */}
+      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
+        <AnimatedPressable style={styles.row} onPress={() => setShowBasicSettings((v) => !v)}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="options-outline" size={22} color={accent} style={styles.rowIcon} />
+            <Text style={styles.rowLabel}>{t('settings.basicSettings')}</Text>
+          </View>
+          <Ionicons
+            name={showBasicSettings ? 'chevron-down' : 'chevron-forward'}
+            size={16}
+            color={textMuted}
+            style={styles.rowChevronIcon}
+          />
+        </AnimatedPressable>
+        {showBasicSettings && (
+          <>
+            <View style={[styles.groupPadding, styles.rowDivider]}>
+              <View style={styles.groupHeaderRow}>
+                <Text style={styles.groupHeader}>{t('settings.themeColor')}</Text>
+                <AnimatedPressable onPress={() => setShowThemeDesc((v) => !v)} hitSlop={8}>
+                  <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+                </AnimatedPressable>
+              </View>
+              {showThemeDesc && <Text style={styles.groupHeaderDesc}>{t('settings.themeColorDesc')}</Text>}
+              <View style={styles.accentSwatchRow}>
+                {ACCENT_PRESETS.map((preset) => (
+                  <AnimatedPressable
+                    key={preset.id}
+                    style={styles.accentSwatchItem}
+                    onPress={() => setAccentColor(preset.color)}>
+                    <View style={[styles.accentSwatchRing, preset.color === accent && styles.accentSwatchRingSelected]}>
+                      <View style={[styles.accentSwatch, { backgroundColor: preset.color }]} />
+                    </View>
+                    <View style={styles.accentSwatchLabelBox}>
+                      <Text style={styles.accentSwatchLabel} numberOfLines={2}>
+                        {t(ACCENT_LABEL_KEYS[preset.id])}
+                      </Text>
+                    </View>
+                  </AnimatedPressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={[styles.groupPadding, styles.rowDivider]}>
+              <View style={styles.groupHeaderRow}>
+                <Text style={styles.groupHeader}>{t('settings.font')}</Text>
+                <AnimatedPressable onPress={() => setShowFontDesc((v) => !v)} hitSlop={8}>
+                  <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+                </AnimatedPressable>
+              </View>
+              {showFontDesc && <Text style={styles.groupHeaderDesc}>{t('settings.fontDesc')}</Text>}
+              <View style={styles.fontOptionRow}>
+                {fontPresets.map((preset) => (
+                  <AnimatedPressable
+                    key={preset.id}
+                    style={[styles.fontOptionButton, preset.id === fontPresetId && styles.fontOptionButtonActive]}
+                    onPress={() => setFontPresetId(preset.id)}>
+                    <Text
+                      style={[
+                        styles.fontOptionText,
+                        { fontFamily: preset.fontFamily },
+                        preset.id === fontPresetId && styles.fontOptionTextActive,
+                      ]}>
+                      {t(preset.labelKey)}
+                    </Text>
+                  </AnimatedPressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={[styles.groupPadding, styles.rowDivider]}>
+              <View style={styles.groupHeaderRow}>
+                <Text style={styles.groupHeader}>{t('settings.language')}</Text>
+                <AnimatedPressable onPress={() => setShowLanguageDesc((v) => !v)} hitSlop={8}>
+                  <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+                </AnimatedPressable>
+              </View>
+              {showLanguageDesc && <Text style={styles.groupHeaderDesc}>{t('settings.languageDesc')}</Text>}
+              <View style={styles.fontOptionRow}>
+                {LANGUAGE_OPTIONS.map((option) => (
+                  <AnimatedPressable
+                    key={option.id}
+                    style={[styles.fontOptionButton, option.id === language && styles.fontOptionButtonActive]}
+                    onPress={() => setLanguage(option.id)}>
+                    <Text style={[styles.fontOptionText, option.id === language && styles.fontOptionTextActive]}>
+                      {option.label}
+                    </Text>
+                  </AnimatedPressable>
+                ))}
+              </View>
+            </View>
+          </>
+        )}
+      </ShadowCard>
+
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
         <AnimatedPressable style={styles.row} onPress={() => router.push('/slot-settings')}>
           <View style={styles.rowLeft}>
-            <Ionicons name="time-outline" size={22} color={textMuted} style={styles.rowIcon} />
+            <Ionicons name="time-outline" size={22} color={accent} style={styles.rowIcon} />
             <Text style={styles.rowLabel}>{t('settings.timeSettings')}</Text>
           </View>
           <Text style={styles.rowChevron}>›</Text>
@@ -151,7 +263,7 @@ export default function SettingsScreen() {
         {Platform.OS === 'android' && (
           <AnimatedPressable style={[styles.row, styles.rowDivider]} onPress={openExactAlarmSettings}>
             <View style={styles.rowLeft}>
-              <Ionicons name="alarm-outline" size={22} color={textMuted} style={styles.rowIcon} />
+              <Ionicons name="alarm-outline" size={22} color={accent} style={styles.rowIcon} />
               <Text style={styles.rowLabel}>{t('settings.exactAlarmPermission')}</Text>
             </View>
             <Text style={styles.rowChevron}>›</Text>
@@ -162,7 +274,7 @@ export default function SettingsScreen() {
             <Ionicons
               name={notifPermissionDenied ? 'notifications-off-outline' : 'notifications-outline'}
               size={22}
-              color={notifPermissionDenied ? '#FF6B6B' : textMuted}
+              color={notifPermissionDenied ? '#FF6B6B' : accent}
               style={styles.rowIcon}
             />
             <Text style={[styles.rowLabel, notifPermissionDenied && styles.rowLabelWarning]}>
@@ -171,88 +283,6 @@ export default function SettingsScreen() {
           </View>
           <Text style={styles.rowChevron}>›</Text>
         </AnimatedPressable>
-      </ShadowCard>
-
-      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
-        <View style={styles.groupPadding}>
-          <View style={styles.groupHeaderRow}>
-            <Text style={styles.groupHeader}>{t('settings.themeColor')}</Text>
-            <AnimatedPressable onPress={() => setShowThemeDesc((v) => !v)} hitSlop={8}>
-              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
-            </AnimatedPressable>
-          </View>
-          {showThemeDesc && <Text style={styles.groupHeaderDesc}>{t('settings.themeColorDesc')}</Text>}
-          <View style={styles.accentSwatchRow}>
-            {ACCENT_PRESETS.map((preset) => (
-              <AnimatedPressable
-                key={preset.id}
-                style={styles.accentSwatchItem}
-                onPress={() => setAccentColor(preset.color)}>
-                <View style={[styles.accentSwatchRing, preset.color === accent && styles.accentSwatchRingSelected]}>
-                  <View style={[styles.accentSwatch, { backgroundColor: preset.color }]} />
-                </View>
-                <View style={styles.accentSwatchLabelBox}>
-                  <Text style={styles.accentSwatchLabel} numberOfLines={2}>
-                    {t(ACCENT_LABEL_KEYS[preset.id])}
-                  </Text>
-                </View>
-              </AnimatedPressable>
-            ))}
-          </View>
-        </View>
-      </ShadowCard>
-
-      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
-        <View style={styles.groupPadding}>
-          <View style={styles.groupHeaderRow}>
-            <Text style={styles.groupHeader}>{t('settings.font')}</Text>
-            <AnimatedPressable onPress={() => setShowFontDesc((v) => !v)} hitSlop={8}>
-              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
-            </AnimatedPressable>
-          </View>
-          {showFontDesc && <Text style={styles.groupHeaderDesc}>{t('settings.fontDesc')}</Text>}
-          <View style={styles.fontOptionRow}>
-            {fontPresets.map((preset) => (
-              <AnimatedPressable
-                key={preset.id}
-                style={[styles.fontOptionButton, preset.id === fontPresetId && styles.fontOptionButtonActive]}
-                onPress={() => setFontPresetId(preset.id)}>
-                <Text
-                  style={[
-                    styles.fontOptionText,
-                    { fontFamily: preset.fontFamily },
-                    preset.id === fontPresetId && styles.fontOptionTextActive,
-                  ]}>
-                  {t(preset.labelKey)}
-                </Text>
-              </AnimatedPressable>
-            ))}
-          </View>
-        </View>
-      </ShadowCard>
-
-      <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
-        <View style={styles.groupPadding}>
-          <View style={styles.groupHeaderRow}>
-            <Text style={styles.groupHeader}>{t('settings.language')}</Text>
-            <AnimatedPressable onPress={() => setShowLanguageDesc((v) => !v)} hitSlop={8}>
-              <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
-            </AnimatedPressable>
-          </View>
-          {showLanguageDesc && <Text style={styles.groupHeaderDesc}>{t('settings.languageDesc')}</Text>}
-          <View style={styles.fontOptionRow}>
-            {LANGUAGE_OPTIONS.map((option) => (
-              <AnimatedPressable
-                key={option.id}
-                style={[styles.fontOptionButton, option.id === language && styles.fontOptionButtonActive]}
-                onPress={() => setLanguage(option.id)}>
-                <Text style={[styles.fontOptionText, option.id === language && styles.fontOptionTextActive]}>
-                  {option.label}
-                </Text>
-              </AnimatedPressable>
-            ))}
-          </View>
-        </View>
       </ShadowCard>
 
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
@@ -266,7 +296,7 @@ export default function SettingsScreen() {
             )
           }>
           <View style={styles.rowLeft}>
-            <Ionicons name="document-text-outline" size={22} color={textMuted} style={styles.rowIcon} />
+            <Ionicons name="document-text-outline" size={22} color={accent} style={styles.rowIcon} />
             <Text style={styles.rowLabel}>{t('settings.privacyPolicy')}</Text>
           </View>
           <Text style={styles.rowChevron}>›</Text>
@@ -278,7 +308,7 @@ export default function SettingsScreen() {
           style={styles.row}
           onPress={() => Linking.openURL('mailto:leeyonghee030@gmail.com?subject=Daily%20Loop%20문의')}>
           <View style={styles.rowLeft}>
-            <Ionicons name="mail-outline" size={22} color={textMuted} style={styles.rowIcon} />
+            <Ionicons name="mail-outline" size={22} color={accent} style={styles.rowIcon} />
             <Text style={styles.rowLabel}>{t('settings.contact')}</Text>
           </View>
           <Text style={styles.rowChevron}>›</Text>
@@ -385,11 +415,15 @@ export default function SettingsScreen() {
         </RNView>
       </Modal>
     </View>
+    </Pressable>
   );
 }
 
 function createStyles(accent: string) {
   return StyleSheet.create({
+    pressableRoot: {
+      flex: 1,
+    },
     container: {
       flex: 1,
       padding: 20,
@@ -490,6 +524,11 @@ function createStyles(accent: string) {
     },
     rowChevron: {
       fontSize: 20,
+      opacity: 0.35,
+    },
+    // "기본 설정" 펼침/접힘 표시 — 텍스트 화살표(›/⌄)는 글자마다 세로 중심이 안 맞고
+    // ⌄가 유독 세로로 길어 보여서, 대신 크기를 정확히 맞출 수 있는 아이콘을 쓴다
+    rowChevronIcon: {
       opacity: 0.35,
     },
     rowValue: {

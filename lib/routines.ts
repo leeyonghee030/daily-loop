@@ -235,6 +235,43 @@ export async function fetchTodayRoutines(userId: string): Promise<{
   return { routines: todays, completions, holiday };
 }
 
+// 사진일기의 "루틴 고르기"용 — fetchTodayRoutines와 로직은 같지만 실제 오늘이 아니라
+// 임의의 날짜(dateStr) 기준으로 그날 예정이었던 루틴을 가져온다(과거 날짜의 일기도 작성 가능하므로)
+export async function fetchRoutinesForDate(
+  userId: string,
+  dateStr: string
+): Promise<{ routines: Routine[]; completions: RoutineCompletion[] }> {
+  const dow = new Date(`${dateStr}T00:00:00`).getDay();
+
+  const [{ data: routines, error: routinesError }, { data: holidayRow }] = await Promise.all([
+    supabase.from('routines').select('*, slots(*)').eq('user_id', userId).is('deleted_at', null),
+    supabase.from('holidays').select('date').eq('date', dateStr).maybeSingle(),
+  ]);
+  if (routinesError) throw routinesError;
+
+  const allIds = (routines ?? []).map((r) => r.id);
+  const [{ data: skipRows, error: skipError }, { data: completionRows, error: completionsError }] =
+    allIds.length > 0
+      ? await Promise.all([
+          supabase.from('routine_skip_dates').select('routine_id').eq('skip_date', dateStr).in('routine_id', allIds),
+          supabase.from('routine_completions').select('*').in('routine_id', allIds).eq('completed_date', dateStr),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
+  if (skipError) throw skipError;
+  if (completionsError) throw completionsError;
+  const skippedIds = new Set((skipRows ?? []).map((row) => row.routine_id));
+
+  const isHoliday = Boolean(holidayRow);
+  const matched = sortRoutines(
+    (routines ?? []).filter((r) => !skippedIds.has(r.id) && matchesToday(r as Routine, dateStr, dow, isHoliday))
+  );
+
+  const matchedIdSet = new Set(matched.map((r) => r.id));
+  const completions = (completionRows ?? []).filter((c) => matchedIdSet.has(c.routine_id));
+
+  return { routines: matched, completions };
+}
+
 // "내 루틴" 전체보기 화면용 — 오늘 예정 여부와 무관하게 삭제되지 않은 루틴 전체.
 // 시간순이 아니라 sort_order 기준(사용자가 직접 드래그로 바꾸는 순서)으로 정렬한다.
 export async function fetchAllRoutines(userId: string): Promise<Routine[]> {

@@ -157,6 +157,10 @@ function RootLayoutNav() {
             name="diary-form"
             options={{ presentation: 'modal', title: '' }}
           />
+          <Stack.Screen
+            name="photo-diary-form"
+            options={{ presentation: 'modal', title: '' }}
+          />
           <Stack.Screen name="llm-input" options={{ title: '' }} />
           <Stack.Screen name="videos" options={{ title: '' }} />
           <Stack.Screen
