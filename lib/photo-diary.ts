@@ -5,12 +5,14 @@ import { supabase } from '@/lib/supabase';
 
 export type PhotoDiaryMode = 'text' | 'routines';
 export type PhotoSource = 'camera' | 'library';
+export type TextColorMode = 'black' | 'white' | 'accent';
 
 // "루틴 고르기" 모드의 자유 캔버스 위 블록 하나 — 루틴이거나 사용자가 자유롭게 적는 메모.
 // x/y는 사진 좌상단을 기준(0,0)으로 하는 캔버스 안에서의 절대 위치(px) — 사진 위에도 올릴 수 있다.
 export type CanvasBlock =
-  | { id: string; type: 'routine'; routineId: string; x: number; y: number }
-  | { id: string; type: 'text'; text: string; x: number; y: number };
+  | { id: string; type: 'routine'; routineId: string; x: number; y: number; scale?: number }
+  | { id: string; type: 'text'; text: string; x: number; y: number; scale?: number }
+  | { id: string; type: 'photo'; uri: string; source: PhotoSource | null; x: number; y: number; scale?: number };
 
 export type PhotoDiary = {
   id: string;
@@ -21,11 +23,12 @@ export type PhotoDiary = {
   content: string | null;
   blocks: CanvasBlock[] | null;
   routine_color_enabled: boolean;
+  text_color_mode: TextColorMode;
   updated_at: string;
 };
 
 const SELECT_COLUMNS =
-  'id, entry_date, photo_url, photo_source, mode, content, blocks, routine_color_enabled, updated_at';
+  'id, entry_date, photo_url, photo_source, mode, content, blocks, routine_color_enabled, text_color_mode, updated_at';
 
 export async function fetchPhotoDiary(userId: string, date: string): Promise<PhotoDiary | null> {
   const { data, error } = await supabase
@@ -46,6 +49,7 @@ export type SavePhotoDiaryInput = {
   content: string | null;
   blocks: CanvasBlock[] | null;
   routineColorEnabled: boolean;
+  textColorMode: TextColorMode;
 };
 
 export async function savePhotoDiary(
@@ -61,6 +65,7 @@ export async function savePhotoDiary(
     content: input.mode === 'text' ? input.content : null,
     blocks: input.mode === 'routines' ? input.blocks : null,
     routine_color_enabled: input.routineColorEnabled,
+    text_color_mode: input.textColorMode,
   };
 
   if (existingId) {

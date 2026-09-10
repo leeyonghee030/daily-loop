@@ -13,9 +13,7 @@ import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useTranslation } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
 import {
-  emojiForStreak,
   fetchStats,
-  fetchStreakConfigs,
   routineMatchesDayCategory,
   setHideFromStats,
   type RoutineStats,
@@ -100,14 +98,6 @@ export default function StatsScreen() {
   useRefetchOnFocus(summaryQuery.refetch, !!userId);
   const summary = summaryQuery.data ?? null;
 
-  // 오늘 탭과 같은 쿼리 키를 쓰기 때문에 이미 오늘 탭에서 받아온 값이 있으면 재요청 없이 공유됨
-  const streakConfigsQuery = useQuery({
-    queryKey: ['streak-configs'],
-    queryFn: fetchStreakConfigs,
-    staleTime: 60 * 60 * 1000,
-  });
-  const streakConfigs = streakConfigsQuery.data ?? [];
-
   const [showHidden, setShowHidden] = useState(false);
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
   const [dayCategory, setDayCategory] = useState<'all' | 'weekday' | 'weekend'>('all');
@@ -187,8 +177,6 @@ export default function StatsScreen() {
   }
 
   function renderRoutine({ item }: { item: RoutineStats }) {
-    const currentEmoji = emojiForStreak(item.currentStreak, streakConfigs);
-    const bestEmoji = emojiForStreak(item.bestStreak, streakConfigs);
     const rate = rateValue(item.completedCount, item.scheduledCount);
     return (
       <View style={styles.card}>
@@ -203,7 +191,6 @@ export default function StatsScreen() {
           <View style={styles.streakChip}>
             <Text style={styles.streakChipLabel}>{t('stats.currentStreak')}</Text>
             <Text style={styles.streakChipValue}>
-              {currentEmoji ? `${currentEmoji} ` : ''}
               {item.currentStreak}
               {t('today.daySuffix')}
             </Text>
@@ -211,7 +198,6 @@ export default function StatsScreen() {
           <View style={styles.streakChip}>
             <Text style={styles.streakChipLabel}>{t('stats.bestStreak')}</Text>
             <Text style={styles.streakChipValue}>
-              {bestEmoji ? `${bestEmoji} ` : ''}
               {item.bestStreak}
               {t('today.daySuffix')}
             </Text>

@@ -92,6 +92,8 @@ export default function SettingsScreen() {
   const [showFontDesc, setShowFontDesc] = useState(false);
   const [showLanguageDesc, setShowLanguageDesc] = useState(false);
   const [showNotifDesc, setShowNotifDesc] = useState(false);
+  const [showExactAlarmDesc, setShowExactAlarmDesc] = useState(false);
+  const [showNotifTroubleshootDesc, setShowNotifTroubleshootDesc] = useState(false);
   const { prefs: notifPrefs, update: updateNotifPrefs } = useNotificationPrefsSetting();
   const [notifPermissionDenied, setNotifPermissionDenied] = useState(false);
 
@@ -261,28 +263,52 @@ export default function SettingsScreen() {
           </View>
         </View>
         {Platform.OS === 'android' && (
-          <AnimatedPressable style={[styles.row, styles.rowDivider]} onPress={openExactAlarmSettings}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="alarm-outline" size={22} color={accent} style={styles.rowIcon} />
-              <Text style={styles.rowLabel}>{t('settings.exactAlarmPermission')}</Text>
-            </View>
-            <Text style={styles.rowChevron}>›</Text>
-          </AnimatedPressable>
-        )}
-        <AnimatedPressable style={[styles.row, styles.rowDivider]} onPress={() => Linking.openSettings()}>
-          <View style={styles.rowLeft}>
-            <Ionicons
-              name={notifPermissionDenied ? 'notifications-off-outline' : 'notifications-outline'}
-              size={22}
-              color={notifPermissionDenied ? '#FF6B6B' : accent}
-              style={styles.rowIcon}
-            />
-            <Text style={[styles.rowLabel, notifPermissionDenied && styles.rowLabelWarning]}>
-              {t('settings.notifTroubleshoot')}
-            </Text>
+          <View style={styles.rowDivider}>
+            <AnimatedPressable style={styles.row} onPress={openExactAlarmSettings}>
+              <View style={styles.rowLeft}>
+                <Ionicons name="alarm-outline" size={22} color={accent} style={styles.rowIcon} />
+                <Text style={styles.rowLabel}>{t('settings.exactAlarmPermission')}</Text>
+              </View>
+              <View style={styles.rowRightGroup}>
+                <AnimatedPressable onPress={() => setShowExactAlarmDesc((v) => !v)} hitSlop={8}>
+                  <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+                </AnimatedPressable>
+                <Text style={styles.rowChevron}>›</Text>
+              </View>
+            </AnimatedPressable>
+            {showExactAlarmDesc && (
+              <Text style={[styles.groupHeaderDesc, styles.rowDescPadding]}>
+                {t('settings.exactAlarmPermissionDesc')}
+              </Text>
+            )}
           </View>
-          <Text style={styles.rowChevron}>›</Text>
-        </AnimatedPressable>
+        )}
+        <View style={styles.rowDivider}>
+          <AnimatedPressable style={styles.row} onPress={() => Linking.openSettings()}>
+            <View style={styles.rowLeft}>
+              <Ionicons
+                name={notifPermissionDenied ? 'notifications-off-outline' : 'notifications-outline'}
+                size={22}
+                color={notifPermissionDenied ? '#FF6B6B' : accent}
+                style={styles.rowIcon}
+              />
+              <Text style={[styles.rowLabel, notifPermissionDenied && styles.rowLabelWarning]}>
+                {t('settings.notifTroubleshoot')}
+              </Text>
+            </View>
+            <View style={styles.rowRightGroup}>
+              <AnimatedPressable onPress={() => setShowNotifTroubleshootDesc((v) => !v)} hitSlop={8}>
+                <Text style={styles.groupHeaderInfoIcon}>ⓘ</Text>
+              </AnimatedPressable>
+              <Text style={styles.rowChevron}>›</Text>
+            </View>
+          </AnimatedPressable>
+          {showNotifTroubleshootDesc && (
+            <Text style={[styles.groupHeaderDesc, styles.rowDescPadding]}>
+              {t('settings.notifTroubleshootDesc')}
+            </Text>
+          )}
+        </View>
       </ShadowCard>
 
       <ShadowCard style={styles.groupOuter} contentStyle={styles.group}>
@@ -512,6 +538,16 @@ function createStyles(accent: string) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
+    },
+    rowRightGroup: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    rowDescPadding: {
+      paddingHorizontal: 16,
+      marginTop: -6,
+      marginBottom: 12,
     },
     // 아이콘 폰트 자체의 여백 때문에 alignItems:center만으로는 글자와 세로 중심이 살짝
     // 안 맞아서, 아주 조금 내려서 시각적으로 맞춘다
