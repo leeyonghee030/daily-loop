@@ -9,10 +9,11 @@ export type TextColorMode = 'black' | 'white' | 'accent';
 
 // "루틴 고르기" 모드의 자유 캔버스 위 블록 하나 — 루틴이거나 사용자가 자유롭게 적는 메모.
 // x/y는 사진 좌상단을 기준(0,0)으로 하는 캔버스 안에서의 절대 위치(px) — 사진 위에도 올릴 수 있다.
+// pasted: 클립보드 붙여넣기로 추가됐는지(쌓임 순서 배치용). textColor: 전체 글자색 설정보다 우선하는 개별 글자색.
 export type CanvasBlock =
-  | { id: string; type: 'routine'; routineId: string; x: number; y: number; scale?: number }
-  | { id: string; type: 'text'; text: string; x: number; y: number; scale?: number }
-  | { id: string; type: 'photo'; uri: string; source: PhotoSource | null; x: number; y: number; scale?: number };
+  | { id: string; type: 'routine'; routineId: string; x: number; y: number; scale?: number; textColor?: TextColorMode }
+  | { id: string; type: 'text'; text: string; x: number; y: number; scale?: number; pasted?: boolean; textColor?: TextColorMode }
+  | { id: string; type: 'photo'; uri: string; source: PhotoSource | null; x: number; y: number; scale?: number; pasted?: boolean };
 
 export type PhotoDiary = {
   id: string;
