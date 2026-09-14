@@ -148,8 +148,19 @@ function isMostlyOutsideCanvas(
 }
 
 const DRAG_HOLD_MS = 150;
-const MIN_BLOCK_SCALE = 0.6;
+// 너무 작아지면 삭제 배지를 누르거나 다시 확대하기 어려워진다는 피드백으로 0.4 → 0.55로 올림
+const MIN_BLOCK_SCALE = 0.55;
 const MAX_BLOCK_SCALE = 2.2;
+// 선택된 블록의 핀치 인식 영역을 실제 크기보다 넓혀주는 여백 — 작은 칩/메모 위에 정확히 두
+// 손가락을 올리기 어렵다는 피드백으로 기존 24 → 44 → 56으로 계속 넓힘(선택된 블록에만
+// 적용되므로 다른 블록의 터치에는 영향 없음)
+const PINCH_HIT_SLOP = 56;
+// 사진 블록은 항상 scale=1일 때 PHOTO_BLOCK_WIDTH로 렌더링되므로(photoBlockBase 스타일 참고),
+// 이 배율이면 사진 폭이 정확히 캔버스 폭과 같아진다 — 핀치로 이 근처까지 키우면 자석처럼
+// 딱 이 값으로 달라붙게(스냅) 하는 기준값
+const PHOTO_SNAP_SCALE = CANVAS_WIDTH / PHOTO_BLOCK_WIDTH;
+// 스냅이 걸리는 허용 오차를 배율이 아니라 "픽셀" 감각으로 잡기 위해 폭 기준으로 환산
+const PHOTO_SNAP_SCALE_TOLERANCE = 14 / PHOTO_BLOCK_WIDTH;
 
 // 자유 캔버스 위 블록 하나를 드래그로 옮기거나 두 손가락으로 확대/축소할 수 있게 감싸는 컴포넌트.
 // 예전엔 PanResponder(구형 API)로 직접 구현했는데, ScrollView와 제스처 우선순위를 안정적으로
@@ -168,15 +179,24 @@ function DraggableBlock({
   onMove,
   onScale,
   onLayoutSize,
+  onTap,
+  snapScale,
   children,
 }: {
   x: number;
   y: number;
   scale?: number;
   pinchEnabled?: boolean;
-  onMove: (x: number, y: number) => void;
+  onMove: (x: number, y: number, scale?: number) => void;
   onScale?: (scale: number) => void;
   onLayoutSize?: (size: BlockSize) => void;
+  // 메모(텍스트) 블록의 탭 처리 전용 — RN 기본 Pressable로 하면 두 손가락 중 하나를 그
+  // 터치 responder가 먼저 채가서 Pinch가 두 손가락을 잘 못 알아채는 문제가 있어서, 같은
+  // gesture-handler 안에서 탭까지 함께 처리한다(넘겨줄 때만 Race에 포함시켜 사진/루틴
+  // 블록의 기존 Pressable 기반 탭은 그대로 둔다)
+  onTap?: () => void;
+  // 이 값 근처로 핀치하면 자석처럼 정확히 이 배율로 달라붙는다(사진을 캔버스 폭에 맞출 때 사용)
+  snapScale?: number;
   children: React.ReactNode;
 }) {
   const translateX = useSharedValue(0);
@@ -198,44 +218,69 @@ function DraggableBlock({
       translateY.value = 0;
     });
 
-  // 선택된 블록에 한해서만, 작은 칩에서도 두 손가락을 정확히 올리기 쉽도록 핀치 인식 영역을 넓혀준다.
-  // 확대/축소만 되고 그 상태로 손을 옮겨 위치를 못 바꾸면 불편하다는 피드백으로, 두 손가락의
-  // 중심점(focal point)이 프레임마다 움직인 만큼을 그대로 이동량에 더해줘서 "핀치하면서 동시에
-  // 이동"이 되게 한다(같은 translateX/Y를 Pan과 공유해서 애니메이션 스타일은 그대로 재사용)
-  const pinchLastFocalX = useSharedValue(0);
-  const pinchLastFocalY = useSharedValue(0);
-  const pinch = Gesture.Pinch()
+  // 확대/축소하면서 두 손가락째로 위치도 같이 옮기고 싶다는 요청 — 예전엔 두 손가락의
+  // 중심점이 움직인 만큼을 직접 계산해서 더했는데, 뷰 자신이 그 계산으로 움직이면 다음
+  // 프레임엔 "뷰 기준 상대좌표"가 어긋나 서로 되먹임(feedback)이 생겨 손을 뗀 자리로
+  // 튕기는 것처럼 보이는 버그가 있었다. 이번엔 별도의 "두 손가락 전용 Pan"을 만들어 Pinch와
+  // 동시에(Simultaneous) 켜서, 이동은 Pan 고유의 안정적인 translationX/Y(제스처 시작점
+  // 기준 절대값이라 되먹임이 없음)만 쓰고, Pinch는 순수하게 배율만 담당하도록 역할을 분리했다
+  const twoFingerPan = Gesture.Pan()
     .enabled(pinchEnabled)
-    .hitSlop(pinchEnabled ? 24 : 0)
-    .onStart((e) => {
-      pinchLastFocalX.value = e.focalX;
-      pinchLastFocalY.value = e.focalY;
-    })
+    .minPointers(2)
+    .maxPointers(2)
     .onUpdate((e) => {
-      // 손가락을 아주 작게 오므리면 배율이 최소치보다 한참 아래로 떨어졌다가 손을 떼는 순간
-      // 최소치로 갑자기 튀어오르면서(고무줄처럼) 사진이 눈에 안 보이는 곳으로 훌쩍 이동한
-      // 것처럼 느껴지는 버그가 있었음 — 손가락을 움직이는 동안에도 최종 배율과 같은 범위로
-      // 미리 제한해서 미리보기와 실제 결과가 항상 일치하게 한다
-      const proposedScale = baseScaleRef.current * e.scale;
-      const clampedScale = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, proposedScale));
-      gestureScale.value = clampedScale / baseScaleRef.current;
-      translateX.value += e.focalX - pinchLastFocalX.value;
-      translateY.value += e.focalY - pinchLastFocalY.value;
-      pinchLastFocalX.value = e.focalX;
-      pinchLastFocalY.value = e.focalY;
+      translateX.value = e.translationX;
+      translateY.value = e.translationY;
     })
     .onEnd((e) => {
-      if (onScale) {
-        const next = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, baseScaleRef.current * e.scale));
-        runOnJS(onScale)(next);
-      }
-      runOnJS(onMove)(x + translateX.value, y + translateY.value);
-      gestureScale.value = 1;
+      // 이 순간 화면에 보이는 배율(baseScaleRef * gestureScale)을 같이 넘겨줘야, 경계
+      // 계산(onMove)이 아직 리렌더 전이라 옛 값을 들고 있는 scale prop 대신 정확한 최신
+      // 크기로 안전 위치를 계산한다(안 그러면 축소 직후 위치 보정이 엉뚱하게 튀는 버그가 재발함)
+      const liveScale = baseScaleRef.current * gestureScale.value;
+      runOnJS(onMove)(x + e.translationX, y + e.translationY, liveScale);
       translateX.value = 0;
       translateY.value = 0;
     });
 
-  const composedGesture = Gesture.Race(pan, pinch);
+  const pinch = Gesture.Pinch()
+    .enabled(pinchEnabled)
+    .hitSlop(pinchEnabled ? PINCH_HIT_SLOP : 0)
+    .onUpdate((e) => {
+      // 손가락을 아주 작게 오므리면 배율이 최소치보다 한참 아래로 떨어졌다가 손을 떼는 순간
+      // 최소치로 갑자기 튀어오르는(고무줄) 느낌이 있어서, 움직이는 동안에도 최종 배율과 같은
+      // 범위로 미리 제한해 미리보기와 실제 결과가 항상 일치하게 한다
+      const proposedScale = baseScaleRef.current * e.scale;
+      let clampedScale = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, proposedScale));
+      // 사진일 때(snapScale이 있을 때)는 그 배율 근처에 오면 자석처럼 딱 달라붙게 한다
+      if (snapScale && Math.abs(clampedScale - snapScale) < PHOTO_SNAP_SCALE_TOLERANCE) {
+        clampedScale = snapScale;
+      }
+      gestureScale.value = clampedScale / baseScaleRef.current;
+    })
+    .onEnd((e) => {
+      const proposedScale = baseScaleRef.current * e.scale;
+      let next = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, proposedScale));
+      const snapped = !!snapScale && Math.abs(next - snapScale) < PHOTO_SNAP_SCALE_TOLERANCE;
+      if (snapped) next = snapScale!;
+      if (onScale) runOnJS(onScale)(next);
+      // 스냅된 순간엔 캔버스 폭과 딱 맞도록 왼쪽 끝(x=0)에도 붙여서 진짜 "꽉 채운" 느낌을 준다
+      if (snapped) runOnJS(onMove)(0, y, next);
+      gestureScale.value = 1;
+    });
+
+  const pinchAndMove = Gesture.Simultaneous(pinch, twoFingerPan);
+
+  // 메모 탭 인식 전용(RN 기본 Pressable 대신 gesture-handler로 처리해야 Pinch가 두 손가락을
+  // 잘 인식함) — 더블탭으로 "선택만" 모드를 따로 두려고 했었는데 실기에서 잘 안 잡혀서,
+  // 싱글탭 하나로 단순화(탭하면 바로 선택+입력 모드, 이동/핀치/삭제도 그 상태에서 그대로 가능)
+  const singleTap = Gesture.Tap()
+    .numberOfTaps(1)
+    .maxDuration(250)
+    .onEnd((_e, success) => {
+      if (success && onTap) runOnJS(onTap)();
+    });
+
+  const composedGesture = onTap ? Gesture.Race(pan, pinchAndMove, singleTap) : Gesture.Race(pan, pinchAndMove);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -302,10 +347,9 @@ export default function PhotoDiaryFormScreen() {
   const [routineColorEnabled, setRoutineColorEnabled] = useState(true);
   const [textColorMode, setTextColorMode] = useState<TextColorMode>('black');
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  // 메모(텍스트) 블록만 별도로 관리하는 "입력창(키보드) 모드" — 한 번 탭하면 이 상태가 돼서
-  // 키보드가 뜨고, selectedBlockId(핀치/삭제뱃지용)와는 분리해서 더블탭으로만 진입하게 한다
+  // 메모(텍스트) 블록만 별도로 관리하는 "입력창(키보드) 모드" — 탭하면 selectedBlockId와
+  // 같이 이 상태도 켜져서 키보드가 뜨고, 그 상태에서도 이동/핀치/삭제는 그대로 가능하다
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
-  const tapTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // 블록별 실제 렌더링 크기(캔버스 밖으로 얼마나 나갔는지 정확히 계산하는 용도) — onLayout으로 채움
   const blockSizeRef = useRef<Map<string, BlockSize>>(new Map());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -332,6 +376,7 @@ export default function PhotoDiaryFormScreen() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteAllNotesConfirm, setShowDeleteAllNotesConfirm] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showPasteEmptyModal, setShowPasteEmptyModal] = useState(false);
   // 사진 선택 팝업을 "대표 사진 바꾸기" 용도로 열었는지, "캔버스에 사진 추가" 용도로 열었는지 구분
   const [photoPickTarget, setPhotoPickTarget] = useState<'cover' | 'add'>('cover');
 
@@ -434,14 +479,20 @@ export default function PhotoDiaryFormScreen() {
         if (Array.isArray(draft.hiddenRoutineIds)) setHiddenRoutineIds(draft.hiddenRoutineIds);
         if (typeof draft.routineColorEnabled === 'boolean') setRoutineColorEnabled(draft.routineColorEnabled);
         if (draft.textColorMode) setTextColorMode(draft.textColorMode);
+        // 사진은 찍었는데 "무엇을 적을까요" 모드를 고르기 전에 앱이 재시작된 경우, 모드가
+        // 없는 채로 photoUri만 복원되면 저장/임시저장삭제 버튼이 전부 mode를 요구해서 하나도
+        // 안 뜨는 막다른 화면이 됐었다 — 모드 선택 모달을 다시 띄워서 이어갈 수 있게 한다
+        if (draft.photoUri && !draft.mode) setShowModeModal(true);
       })
       .catch(() => {});
   }, [draftKey, diaryQuery.isLoading]);
 
   useEffect(() => {
     // entryId가 있는(기존 항목을 수정 중인) 경우도 포함 — "사진 추가"로 카메라를 여는 동안
-    // 앱이 재시작되면 그동안의 편집 내용을 잃지 않도록 항상 최신 상태를 기기에 남겨둔다
-    if (!draftKey || !photoUri || !draftRestoredRef.current) return;
+    // 앱이 재시작되면 그동안의 편집 내용을 잃지 않도록 항상 최신 상태를 기기에 남겨둔다.
+    // mode가 정해지기 전(사진만 찍고 "무엇을 적을까요"를 아직 안 고른 상태)은 애매한
+    // 중간 상태라 그 시점부턴 저장 안 하고, 모드를 고른 뒤부터만 임시저장을 시작한다
+    if (!draftKey || !photoUri || !mode || !draftRestoredRef.current) return;
     const draft = { photoUri, photoSource, mode, content, blocks, hiddenRoutineIds, routineColorEnabled, textColorMode };
     AsyncStorage.setItem(draftKey, JSON.stringify(draft)).catch(() => {});
   }, [draftKey, photoUri, photoSource, mode, content, blocks, hiddenRoutineIds, routineColorEnabled, textColorMode]);
@@ -509,12 +560,14 @@ export default function PhotoDiaryFormScreen() {
     }
     setPhotoUri(uri);
     setPhotoSource(source);
-    if (!entryId) {
+    // "모드를 아직 한 번도 안 골랐을 때"(entryId가 아니라 mode 자체)만 모드 선택 팝업을 띄운다.
+    // 예전엔 entryId(서버 저장 여부)로 판단해서, 신규 작성 중(아직 저장 전) "사진 바꾸기"를 누르면
+    // 매번 모드 팝업이 다시 뜨고 chooseMode가 blocks를 통째로 새로 채워서 루틴/메모가 초기화됐었다
+    if (!mode) {
       setShowModeModal(true);
       return;
     }
-    // 기존 항목의 "사진 바꾸기"인 경우, 루틴 캔버스에 이미 있는 대표 사진 블록도 같이 바꿔서
-    // 화면에 보이는 사진도 즉시 교체되게 한다(없으면 새로 만든다)
+    // 루틴 캔버스에 이미 있는 대표 사진 블록만 바꿔서, 화면에 보이는 사진만 교체되고 루틴/메모는 그대로 남는다
     if (mode === 'routines') {
       setBlocks((prev) => {
         const idx = prev.findIndex((b) => b.type === 'photo');
@@ -551,7 +604,7 @@ export default function PhotoDiaryFormScreen() {
           { id: nextBlockId(), type: 'text', text, pasted: true, x: 24, y: CANVAS_PHOTO_HEIGHT + 40 },
         ]);
       } else {
-        Alert.alert(t('photoDiary.pasteEmptyTitle'));
+        setShowPasteEmptyModal(true);
       }
     } catch {
       setErrorMessage(t('photoDiary.errorPaste'));
@@ -632,6 +685,48 @@ export default function PhotoDiaryFormScreen() {
     setBlocks((prev) => prev.filter((b) => b.id !== id));
   }
 
+  // 캔버스에 사진이 0장이어도 저장 가능(대표 사진은 photoUri에 남아있고, 나중에 "사진
+  // 추가"·붙여넣기로 다시 채울 수 있음)이라 마지막 한 장도 자유롭게 지울 수 있다
+  function removePhotoBlock(id: string) {
+    setBlocks((prev) => prev.filter((b) => b.id !== id));
+    setSelectedBlockId((prev) => (prev === id ? null : prev));
+  }
+
+  // 사진을 크게 확대하면 삭제 배지가 캔버스 밖(overflow:hidden으로 안 보이는 영역)으로
+  // 밀려날 수 있어서, 배지를 사진 자체에 붙이지 않고 "지금 화면에 보이는 사진 영역"의
+  // 오른쪽 위 모서리에 맞춰 캔버스 기준 좌표로 따로 계산해 띄운다
+  // 원래 자리(사진/메모의 실제 오른쪽 위 모서리)에 살짝 겹치게 두되, 블록이 너무 커져서
+  // 그 모서리가 캔버스 아래로 넘어가면 복잡하게 다시 계산하지 않고 지금 위치에서 30px만
+  // 위로 당겨온다. 오른쪽으로 넘어가는 경우만 캔버스 안쪽으로 살짝 당겨서 완전히 안 보이는
+  // 것만 막는다
+  function cornerBadgePosition(x: number, y: number, w: number, badgeSize: number) {
+    let left = x + w - badgeSize * 0.6;
+    let top = y - badgeSize * 0.4;
+    if (top > canvasHeight - badgeSize) top -= 30;
+    if (left > CANVAS_WIDTH - badgeSize) left = CANVAS_WIDTH - badgeSize;
+    return { left, top };
+  }
+
+  function fitPhotoBadgePosition(block: Extract<CanvasBlock, { type: 'photo' }>) {
+    const size = blockSizeRef.current.get(block.id) ?? { width: PHOTO_BLOCK_WIDTH, height: PHOTO_BLOCK_HEIGHT };
+    const w = size.width * (block.scale ?? 1);
+    return cornerBadgePosition(block.x, block.y, w, 24);
+  }
+
+  function fitTextBadgePosition(block: Extract<CanvasBlock, { type: 'text' }>) {
+    const size = blockSizeRef.current.get(block.id) ?? { width: 60, height: 24 };
+    const w = size.width * (block.scale ?? 1);
+    return cornerBadgePosition(block.x, block.y, w, 20);
+  }
+
+  // 캔버스에서 확대해도 폭이 정확히 캔버스 폭과 같아지도록 배율을 계산 — 손으로 핀치해서
+  // 딱 맞추기 어렵다는 피드백으로 버튼 한 번으로 되게 한다
+  function fitPhotoToCanvasWidth(id: string) {
+    const size = blockSizeRef.current.get(id) ?? { width: PHOTO_BLOCK_WIDTH, height: PHOTO_BLOCK_HEIGHT };
+    const targetScale = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, CANVAS_WIDTH / size.width));
+    setBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, scale: targetScale, x: 0 } : b)));
+  }
+
   function deleteAllTextBlocks() {
     const textIds = new Set(blocks.filter((b) => b.type === 'text').map((b) => b.id));
     setBlocks((prev) => prev.filter((b) => b.type !== 'text'));
@@ -643,7 +738,6 @@ export default function PhotoDiaryFormScreen() {
   async function handleSave() {
     if (!userId || !date || !mode) return;
     if (mode === 'text' && !photoUri) return;
-    if (mode === 'routines' && !blocks.some((b) => b.type === 'photo')) return;
     setIsSaving(true);
     setErrorMessage(null);
     try {
@@ -791,25 +885,12 @@ export default function PhotoDiaryFormScreen() {
     setEditingBlockId(null);
   }
 
-  const DOUBLE_TAP_MS = 260;
-
-  // 메모(텍스트) 블록 탭 처리 — 한 번 탭하면(짧은 지연 뒤 두 번째 탭이 안 오면) 입력창(키보드)
-  // 모드로, 그 지연 안에 다시 탭하면(더블탭) 키보드 없이 선택만(이동/핀치/삭제 가능) 모드로 전환한다
-  function handleTextBlockPress(id: string) {
-    const pending = tapTimersRef.current.get(id);
-    if (pending) {
-      clearTimeout(pending);
-      tapTimersRef.current.delete(id);
-      setEditingBlockId(null);
-      setSelectedBlockId(id);
-      return;
-    }
-    const timer = setTimeout(() => {
-      tapTimersRef.current.delete(id);
-      setSelectedBlockId(id);
-      setEditingBlockId(id);
-    }, DOUBLE_TAP_MS);
-    tapTimersRef.current.set(id, timer);
+  // 메모(텍스트) 블록 탭 처리 — 탭하면 선택 + 입력창(키보드) 모드가 함께 켜진다(선택 상태라
+  // 이동/핀치/삭제도 그 상태에서 그대로 가능). 원래는 더블탭으로 키보드 없이 "선택만" 하는
+  // 모드도 따로 뒀는데, 실기에서 더블탭이 잘 안 잡혀서 제거하고 이걸로 단순화했다
+  function handleTextSingleTap(id: string) {
+    setSelectedBlockId(id);
+    setEditingBlockId(id);
   }
 
   if (isLoading) {
@@ -861,6 +942,7 @@ export default function PhotoDiaryFormScreen() {
               <>
                 {/* 사진일기 "범위" 표시는 사용자 편의용 안내선일 뿐이라, 저장/공유되는 이미지에는
                     안 보이도록 실제로 캡처되는 ViewShot 바깥에 별도 테두리로 감싼다 */}
+                <RNView style={styles.templateWrap}>
                 <RNView style={styles.templateFrame}>
                   <ViewShot ref={shotRef} style={styles.template} options={{ format: 'jpg', quality: 0.9 }}>
                     <RNView
@@ -915,12 +997,16 @@ export default function PhotoDiaryFormScreen() {
                                 scale={block.scale ?? 1}
                                 pinchEnabled={isSelected}
                                 onLayoutSize={(size) => blockSizeRef.current.set(block.id, size)}
-                                onMove={(x, y) => {
+                                onMove={(x, y, nextScale) => {
                                   const size = blockSizeRef.current.get(block.id);
                                   const fallbackWidth = block.type === 'routine' ? ROUTINE_COL_WIDTH : PHOTO_BLOCK_WIDTH;
                                   const fallbackHeight = block.type === 'routine' ? ROUTINE_ROW_HEIGHT : PHOTO_BLOCK_HEIGHT;
-                                  const w = (size?.width ?? fallbackWidth) * (block.scale ?? 1);
-                                  const h = (size?.height ?? fallbackHeight) * (block.scale ?? 1);
+                                  // 두 손가락으로 핀치+이동을 같이 하면 scale도 이 순간 같이 바뀌는
+                                  // 중이라, 아직 리렌더 전이라 옛 값을 들고 있는 block.scale 대신
+                                  // 방금 계산된 nextScale이 있으면 그걸 우선 써서 경계를 계산한다
+                                  const effectiveScale = nextScale ?? block.scale ?? 1;
+                                  const w = (size?.width ?? fallbackWidth) * effectiveScale;
+                                  const h = (size?.height ?? fallbackHeight) * effectiveScale;
                                   // 루틴 칩을 캔버스 밖으로 80% 이상 밀어내면 삭제가 아니라
                                   // "담지 않은 루틴" 목록으로 보내서, 다시 추가하면 초기 위치로
                                   // 되돌아오게 한다(끌던 위치를 그대로 기억하지 않음)
@@ -943,29 +1029,36 @@ export default function PhotoDiaryFormScreen() {
                                   }
                                   updateBlockPosition(block.id, x, y);
                                 }}
-                                onScale={(s) => updateBlockScale(block.id, s)}>
+                                onScale={(s) => updateBlockScale(block.id, s)}
+                                onTap={block.type === 'text' && !isEditing ? () => handleTextSingleTap(block.id) : undefined}
+                                snapScale={block.type === 'photo' ? PHOTO_SNAP_SCALE : undefined}>
                                 {block.type === 'photo' ? (
-                                  <AnimatedPressable
-                                    onPress={() => setSelectedBlockId((prev) => (prev === block.id ? null : block.id))}
-                                    style={[styles.photoBlockBase, isSelected && styles.photoBlockSelected]}>
-                                    <Image source={{ uri: block.uri }} style={styles.photoBlockImage} />
-                                    {block.source === 'camera' && (
-                                      <>
-                                        <BlurView
-                                          intensity={12}
-                                          tint="light"
-                                          style={StyleSheet.absoluteFill}
-                                          pointerEvents="none"
-                                        />
-                                        <RNView pointerEvents="none" style={[StyleSheet.absoluteFill, styles.filterWarmLayer]} />
-                                        <RNView
-                                          pointerEvents="none"
-                                          style={[StyleSheet.absoluteFill, { backgroundColor: withAlpha(accent, 0.16) }]}
-                                        />
-                                        <VignetteOverlay width={PHOTO_BLOCK_WIDTH} height={PHOTO_BLOCK_HEIGHT} />
-                                      </>
-                                    )}
-                                  </AnimatedPressable>
+                                  <RNView>
+                                    <AnimatedPressable
+                                      onPress={() => setSelectedBlockId((prev) => (prev === block.id ? null : block.id))}
+                                      style={[styles.photoBlockBase, isSelected && styles.photoBlockSelected]}>
+                                      <Image source={{ uri: block.uri }} style={styles.photoBlockImage} />
+                                      {block.source === 'camera' && (
+                                        <>
+                                          <BlurView
+                                            intensity={12}
+                                            tint="light"
+                                            style={StyleSheet.absoluteFill}
+                                            pointerEvents="none"
+                                          />
+                                          <RNView pointerEvents="none" style={[StyleSheet.absoluteFill, styles.filterWarmLayer]} />
+                                          <RNView
+                                            pointerEvents="none"
+                                            style={[StyleSheet.absoluteFill, { backgroundColor: withAlpha(accent, 0.16) }]}
+                                          />
+                                          <VignetteOverlay width={PHOTO_BLOCK_WIDTH} height={PHOTO_BLOCK_HEIGHT} />
+                                        </>
+                                      )}
+                                    </AnimatedPressable>
+                                    {/* 삭제 버튼은 여기(사진과 같이 확대/축소되는 자리)가 아니라
+                                        캔버스 레벨에 별도로 떠서 사진이 캔버스보다 커져도 항상
+                                        보이는 위치에 고정된다 — 아래 selectedPhotoBadgeBox 참고 */}
+                                  </RNView>
                                 ) : block.type === 'routine' ? (
                                   <RoutineBlockContent
                                     routine={routineById.get(block.routineId)}
@@ -975,6 +1068,7 @@ export default function PhotoDiaryFormScreen() {
                                     textColor={blockTextColor}
                                     accent={accent}
                                     styles={styles}
+                                    scale={block.scale ?? 1}
                                     onPress={() => setSelectedBlockId((prev) => (prev === block.id ? null : block.id))}
                                     onHide={() => hideRoutineBlock(block.id, block.routineId)}
                                   />
@@ -991,38 +1085,56 @@ export default function PhotoDiaryFormScreen() {
                                         multiline
                                       />
                                     ) : (
-                                      // 한 번 탭 = (짧은 지연 뒤) 키보드가 뜨는 입력 모드, 그 지연
-                                      // 안에 다시 탭 = 더블탭으로 인식해 키보드 없이 선택만(이동/
-                                      // 핀치/삭제 가능) 모드로 전환. 손가락이 스치기만 해도 곧장
-                                      // 포커스를 가져가 키보드가 깜빡이던 예전 버그를 막기 위해
-                                      // 선택 전엔 포커스 없는 일반 텍스트로만 보여준다
-                                      <AnimatedPressable onPress={() => handleTextBlockPress(block.id)}>
-                                        <Text style={[styles.textChip, { color: blockTextColor }]}>
-                                          {block.text || t('photoDiary.notePlaceholder')}
-                                        </Text>
-                                      </AnimatedPressable>
-                                    )}
-                                    {isSelected && (
-                                      <AnimatedPressable
-                                        style={styles.chipDeleteBadgeLight}
-                                        onPress={() => removeTextBlock(block.id)}>
-                                        <Ionicons name="close" size={11} color={textMuted} />
-                                      </AnimatedPressable>
+                                      // 탭하면 선택 + 입력(키보드) 모드가 함께 켜진다. 손가락이
+                                      // 스치기만 해도 곧장 포커스를 가져가 키보드가 깜빡이던 예전
+                                      // 버그를 막기 위해 탭 전엔 포커스 없는 일반 텍스트로만
+                                      // 보여준다. 탭 인식은 DraggableBlock의 onTap(gesture-handler
+                                      // 기반)이 담당 — RN 기본 Pressable을 쓰면 두 손가락 중
+                                      // 하나를 먼저 채가서 핀치(확대/축소) 인식이 잘 안 되는
+                                      // 문제가 있었다
+                                      <Text style={[styles.textChip, { color: blockTextColor }]}>
+                                        {block.text || t('photoDiary.notePlaceholder')}
+                                      </Text>
                                     )}
                                   </RNView>
                                 )}
                               </DraggableBlock>
                             );
                           })}
+                          {/* 사진 삭제 버튼은 사진 자체가 아니라 캔버스 기준 좌표로 따로 띄워서,
+                              사진을 크게 확대해 배지가 사진의 실제 모서리에서 캔버스 밖으로
+                              밀려나도 항상 지금 보이는 영역 안에서 누를 수 있게 한다 */}
+                          {selectedBlock && selectedBlock.type === 'photo' && (
+                            <AnimatedPressable
+                              style={[styles.photoDeleteBadge, fitPhotoBadgePosition(selectedBlock)]}
+                              onPress={() => removePhotoBlock(selectedBlock.id)}>
+                              <Ionicons name="close" size={13} color="#fff" />
+                            </AnimatedPressable>
+                          )}
+                          {/* 메모 삭제 버튼도 사진과 같은 방식 — 메모 자체에 붙이지 않고 캔버스
+                              기준 좌표로 띄워서 크게 확대해도 항상 누를 수 있는 자리에 있다 */}
+                          {selectedBlock && selectedBlock.type === 'text' && (
+                            <AnimatedPressable
+                              style={[styles.chipDeleteBadgeLight, fitTextBadgePosition(selectedBlock)]}
+                              onPress={() => removeTextBlock(selectedBlock.id)}>
+                              <Ionicons name="close" size={11} color="#fff" />
+                            </AnimatedPressable>
+                          )}
                         </>
                       )}
                     </RNView>
                   </ViewShot>
                 </RNView>
 
-                <AnimatedPressable style={styles.changePhotoButton} onPress={openChangeCoverPhoto} disabled={isBusy}>
-                  <Text style={styles.changePhotoText}>{t('photoDiary.changePhoto')}</Text>
-                </AnimatedPressable>
+                {/* 루틴 모드는 아래 "글자색" 줄의 빈 공간에 작게 넣고, 일기(텍스트) 모드는
+                    그 줄 자체가 없어서 기존처럼 사진 위에 겹쳐 띄운다 */}
+                {mode !== 'routines' && (
+                  <AnimatedPressable style={styles.changePhotoButton} onPress={openChangeCoverPhoto} disabled={isBusy}>
+                    <Ionicons name="camera" size={14} color="#fff" />
+                    <Text style={styles.changePhotoText}>{t('photoDiary.changePhoto')}</Text>
+                  </AnimatedPressable>
+                )}
+                </RNView>
 
                 {mode === 'routines' && (
                   <>
@@ -1076,6 +1188,13 @@ export default function PhotoDiaryFormScreen() {
                           ]}
                         />
                       ))}
+                      <AnimatedPressable
+                        style={styles.changePhotoInlineButton}
+                        onPress={openChangeCoverPhoto}
+                        disabled={isBusy}>
+                        <Ionicons name="camera-outline" size={13} color={accent} />
+                        <Text style={styles.changePhotoInlineText}>{t('photoDiary.changePhoto')}</Text>
+                      </AnimatedPressable>
                     </View>
 
                     {selectedBlockSupportsColor && selectedBlock && (
@@ -1096,6 +1215,17 @@ export default function PhotoDiaryFormScreen() {
                         ))}
                         <AnimatedPressable onPress={() => updateBlockTextColor(selectedBlock.id, undefined)} hitSlop={6}>
                           <Text style={styles.restoreText}>{t('photoDiary.individualTextColorReset')}</Text>
+                        </AnimatedPressable>
+                      </View>
+                    )}
+
+                    {selectedBlock && selectedBlock.type === 'photo' && (
+                      <View style={styles.colorToggleRow}>
+                        <AnimatedPressable
+                          style={styles.changePhotoInlineButton}
+                          onPress={() => fitPhotoToCanvasWidth(selectedBlock.id)}>
+                          <Ionicons name="resize-outline" size={13} color={accent} />
+                          <Text style={styles.changePhotoInlineText}>{t('photoDiary.fitPhotoWidth')}</Text>
                         </AnimatedPressable>
                       </View>
                     )}
@@ -1149,27 +1279,30 @@ export default function PhotoDiaryFormScreen() {
                     <Text style={styles.saveButtonText}>{t('today.save')}</Text>
                   )}
                 </AnimatedPressable>
-                <AnimatedPressable
-                  style={styles.discardDraftLink}
-                  disabled={isSaving}
-                  onPress={() =>
-                    Alert.alert(t('photoDiary.discardDraftConfirmTitle'), t('photoDiary.discardDraftConfirmDesc'), [
-                      { text: t('settings.cancel'), style: 'cancel' },
-                      { text: t('photoDiary.discardDraftButton'), style: 'destructive', onPress: discardDraft },
-                    ])
-                  }>
-                  <Text style={styles.discardDraftLinkText}>{t('photoDiary.discardDraftButton')}</Text>
-                </AnimatedPressable>
+                {/* 저장된 항목(entryId)이 있을 때만 "사진일기 삭제"도 같이 뜨므로, 그때는 임시저장
+                    삭제와 좌우로 나란히, 신규 작성 중(아직 저장 전)엔 임시저장 삭제만 가운데 */}
+                <View style={[styles.bottomLinksRow, !entryId && styles.bottomLinksRowSingle]}>
+                  <AnimatedPressable
+                    style={styles.discardDraftLink}
+                    disabled={isSaving}
+                    onPress={() =>
+                      Alert.alert(t('photoDiary.discardDraftConfirmTitle'), t('photoDiary.discardDraftConfirmDesc'), [
+                        { text: t('settings.cancel'), style: 'cancel' },
+                        { text: t('photoDiary.discardDraftButton'), style: 'destructive', onPress: discardDraft },
+                      ])
+                    }>
+                    <Text style={styles.discardDraftLinkText}>{t('photoDiary.discardDraftButton')}</Text>
+                  </AnimatedPressable>
+                  {entryId && (
+                    <AnimatedPressable
+                      style={styles.deleteLinkBottom}
+                      onPress={() => setShowDeleteConfirm(true)}
+                      disabled={isSaving}>
+                      <Text style={styles.deleteLinkBottomText}>{t('photoDiary.deleteButton')}</Text>
+                    </AnimatedPressable>
+                  )}
+                </View>
               </>
-            )}
-
-            {entryId && (
-              <AnimatedPressable
-                style={styles.deleteLinkBottom}
-                onPress={() => setShowDeleteConfirm(true)}
-                disabled={isSaving}>
-                <Text style={styles.deleteLinkBottomText}>{t('photoDiary.deleteButton')}</Text>
-              </AnimatedPressable>
             )}
             </RNView>
           </TouchableWithoutFeedback>
@@ -1209,7 +1342,10 @@ export default function PhotoDiaryFormScreen() {
             </AnimatedPressable>
             <AnimatedPressable style={styles.optionRow} onPress={() => chooseMode('routines')}>
               <Ionicons name="list-outline" size={20} color={accent} />
-              <Text style={styles.optionRowText}>{t('photoDiary.modeRoutines')}</Text>
+              <Text style={[styles.optionRowText, { flex: 1 }]}>{t('photoDiary.modeRoutines')}</Text>
+              <View style={styles.recommendedBadge}>
+                <Text style={styles.recommendedBadgeText}>{t('photoDiary.recommendedBadge')}</Text>
+              </View>
             </AnimatedPressable>
           </ShadowCard>
         </RNView>
@@ -1278,19 +1414,47 @@ export default function PhotoDiaryFormScreen() {
           <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
             <Text style={styles.confirmTitle}>{t('photoDiary.helpTitle')}</Text>
             <View style={styles.helpBulletList}>
-              {[
-                t('photoDiary.helpBullet1'),
-                t('photoDiary.helpBullet2'),
-                t('photoDiary.helpBullet3'),
-                t('photoDiary.helpBullet4'),
-              ].map((line) => (
-                <Text key={line} style={styles.helpBulletText}>
-                  {'•  '}
-                  {line}
-                </Text>
+              {(
+                [
+                  ['move-outline', t('photoDiary.helpTitle1'), t('photoDiary.helpDesc1')],
+                  ['create-outline', t('photoDiary.helpTitle2'), t('photoDiary.helpDesc2')],
+                  ['close-circle-outline', t('photoDiary.helpTitle3'), t('photoDiary.helpDesc3')],
+                  ['arrow-undo-outline', t('photoDiary.helpTitle4'), t('photoDiary.helpDesc4')],
+                  ['camera-outline', t('photoDiary.helpTitle5'), t('photoDiary.helpDesc5')],
+                ] as const
+              ).map(([icon, title, desc]) => (
+                <View key={title} style={styles.helpRow}>
+                  <View style={styles.helpIconBadge}>
+                    <Ionicons name={icon} size={15} color={accent} />
+                  </View>
+                  <View style={styles.helpTextCol}>
+                    <Text style={styles.helpRowTitle}>{title}</Text>
+                    <Text style={styles.helpRowDesc}>{desc}</Text>
+                  </View>
+                </View>
               ))}
             </View>
             <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowHelpModal(false)}>
+              <Text style={styles.confirmCancelText}>{t('photoDiary.helpCloseButton')}</Text>
+            </AnimatedPressable>
+          </ShadowCard>
+        </RNView>
+      </Modal>
+
+      <Modal
+        visible={showPasteEmptyModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPasteEmptyModal(false)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowPasteEmptyModal(false)} />
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <RNView style={styles.pasteEmptyIconBadge}>
+              <Ionicons name="clipboard-outline" size={26} color={accent} />
+            </RNView>
+            <Text style={styles.confirmTitle}>{t('photoDiary.pasteEmptyTitle')}</Text>
+            <Text style={styles.confirmDesc}>{t('photoDiary.pasteEmptyDesc')}</Text>
+            <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowPasteEmptyModal(false)}>
               <Text style={styles.confirmCancelText}>{t('photoDiary.helpCloseButton')}</Text>
             </AnimatedPressable>
           </ShadowCard>
@@ -1315,6 +1479,7 @@ function RoutineBlockContent({
   textColor,
   accent,
   styles,
+  scale,
   onPress,
   onHide,
 }: {
@@ -1325,6 +1490,7 @@ function RoutineBlockContent({
   textColor: string;
   accent: string;
   styles: ReturnType<typeof createStyles>;
+  scale: number;
   onPress: () => void;
   onHide: () => void;
 }) {
@@ -1345,7 +1511,11 @@ function RoutineBlockContent({
         </Text>
       </AnimatedPressable>
       {isSelected && (
-        <AnimatedPressable style={styles.chipHideBadge} onPress={onHide}>
+        // 블록이 작게 축소되면 배지도 같이 줄어들어 누르기 어려워지므로, 부모 스케일의
+        // 역수만큼 되돌려 항상 원래 크기로 보이게 한다
+        <AnimatedPressable
+          style={[styles.chipHideBadge, { transform: [{ scale: 1 / scale }] }]}
+          onPress={onHide}>
           <Ionicons name="close" size={12} color="#fff" />
         </AnimatedPressable>
       )}
@@ -1391,14 +1561,25 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       // 겹쳐 보이던 문제로 하단 여백을 더 넉넉하게 둠
       paddingBottom: 44,
     },
+    // 임시저장 삭제(왼쪽)와 사진일기 삭제(오른쪽)를 한 줄에 나란히 — 사진일기 삭제 버튼이
+    // 없을 때(신규 작성 중)는 bottomLinksRowSingle로 가운데 정렬만 남긴다
+    bottomLinksRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 14,
+      // 양 끝(space-between)이 너무 멀어 보인다는 피드백으로 좌우를 20px씩 안으로 당김
+      paddingHorizontal: 20,
+    },
+    bottomLinksRowSingle: {
+      justifyContent: 'center',
+    },
     deleteLinkBottom: {
-      alignSelf: 'center',
-      marginTop: 18,
       paddingVertical: 10,
       paddingHorizontal: 16,
     },
     deleteLinkBottomText: {
-      color: '#FF6B6B',
+      color: accent,
       fontSize: 13,
       fontWeight: '600',
     },
@@ -1431,6 +1612,13 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       opacity: 0.5,
       textAlign: 'center',
       paddingHorizontal: 28,
+    },
+    // "사진 바꾸기" 버튼을 사진 모서리에 겹쳐 띄우기 위한 바깥 래퍼 — templateFrame 자체는
+    // overflow:hidden이라 그 안에 절대위치로 넣으면 버튼이 잘려서, 잘리지 않는 이 래퍼에 둔다
+    templateWrap: {
+      alignSelf: 'center',
+      position: 'relative',
+      marginTop: 20,
     },
     // 사진일기 전체 범위를 은은한 주색 테두리로 안내 — ViewShot 바깥이라 저장/공유 이미지에는
     // 찍히지 않고, 편집 화면에서만 "여기까지가 사진일기예요"를 알려주는 용도
@@ -1517,9 +1705,26 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       width: 20,
       height: 20,
       borderRadius: 10,
-      backgroundColor: '#FF6B6B',
+      backgroundColor: withAlpha(accent, 0.7),
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    // left/top은 fitPhotoBadgePosition()이 매번 계산해서 넘겨준다(캔버스 안에서 항상
+    // 보이는 위치로 고정하기 위해 사진 자신에 붙이지 않고 캔버스 기준 절대좌표로 띄움)
+    photoDeleteBadge: {
+      position: 'absolute',
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      backgroundColor: withAlpha(accent, 0.7),
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 3,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 3,
+      zIndex: 5,
     },
     textChipWrap: {
       position: 'relative',
@@ -1538,29 +1743,46 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       fontFamily: fontKorean.fontFamily,
       fontWeight: '600',
     },
+    // left/top은 fitTextBadgePosition()이 매번 계산해서 넘겨준다(사진 삭제 배지와 같은 이유로
+    // 메모 자체가 아니라 캔버스 기준 절대좌표로 띄움)
     chipDeleteBadgeLight: {
       position: 'absolute',
-      top: -8,
-      right: -8,
-      width: 18,
-      height: 18,
-      borderRadius: 9,
-      backgroundColor: '#fff',
-      borderWidth: 1,
-      borderColor: border,
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+      backgroundColor: withAlpha(accent, 0.7),
       alignItems: 'center',
       justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 3,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 4,
+      zIndex: 5,
     },
+    // 사진 오른쪽 아래 모서리에 살짝 겹쳐 뜨는 동그란 배지 느낌의 버튼으로 변경 — 예전엔
+    // 사진 아래 흐린 밑줄 텍스트라 위치도 애매하고 눈에 잘 안 띄었다
     changePhotoButton: {
-      alignSelf: 'center',
-      marginTop: 10,
-      paddingVertical: 6,
-      paddingHorizontal: 4,
+      position: 'absolute',
+      right: 10,
+      bottom: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      backgroundColor: accent,
+      paddingVertical: 8,
+      paddingHorizontal: 13,
+      borderRadius: 999,
+      shadowColor: '#000',
+      shadowOpacity: 0.25,
+      shadowRadius: 5,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 4,
     },
     changePhotoText: {
-      fontSize: 13,
-      opacity: 0.5,
-      textDecorationLine: 'underline',
+      color: '#fff',
+      fontSize: 12.5,
+      fontWeight: '700',
     },
     // 4개(메모/사진/붙여넣기/메모삭제)가 화면 폭에 상관없이 항상 한 줄에 다 들어가도록
     // 폭을 나눠 갖게 한다(flexWrap 없이 각자 flex:1)
@@ -1605,6 +1827,24 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     textColorSwatchSelected: {
       borderWidth: 2,
       borderColor: accent,
+    },
+    // "글자색" 줄 맨 끝, 스와치 옆 남는 자리에 들어가는 작은 사진 바꾸기 버튼(루틴 모드 전용) —
+    // 사진 위에 겹쳐 뜨던 버튼을 여기로 옮겨서 사진을 가리지 않게 한다
+    changePhotoInlineButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginLeft: 4,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: withAlpha(accent, 0.35),
+    },
+    changePhotoInlineText: {
+      color: accent,
+      fontSize: 11.5,
+      fontWeight: '600',
     },
     hiddenSection: {
       marginTop: 16,
@@ -1678,8 +1918,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       fontWeight: '600',
     },
     discardDraftLink: {
-      alignSelf: 'center',
-      marginTop: 10,
       paddingVertical: 8,
       paddingHorizontal: 12,
     },
@@ -1715,14 +1953,47 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       marginBottom: 20,
       textAlign: 'center',
     },
+    pasteEmptyIconBadge: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      backgroundColor: withAlpha(accent, 0.12),
+      alignItems: 'center',
+      justifyContent: 'center',
+      alignSelf: 'center',
+      marginBottom: 12,
+    },
     helpBulletList: {
-      gap: 10,
+      gap: 16,
       marginBottom: 18,
     },
-    helpBulletText: {
-      fontSize: 13,
-      lineHeight: 19,
-      opacity: 0.75,
+    helpRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 10,
+    },
+    helpIconBadge: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: withAlpha(accent, 0.14),
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    helpTextCol: {
+      flex: 1,
+      paddingTop: 2,
+    },
+    helpRowTitle: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: accent,
+      marginBottom: 2,
+    },
+    helpRowDesc: {
+      fontSize: 12.5,
+      lineHeight: 17,
+      opacity: 0.65,
     },
     optionRow: {
       flexDirection: 'row',
@@ -1734,6 +2005,17 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     },
     optionRowText: {
       fontSize: 15,
+    },
+    recommendedBadge: {
+      backgroundColor: withAlpha(accent, 0.15),
+      paddingVertical: 3,
+      paddingHorizontal: 8,
+      borderRadius: 999,
+    },
+    recommendedBadgeText: {
+      color: accent,
+      fontSize: 11,
+      fontWeight: '700',
     },
     confirmButtonRow: {
       flexDirection: 'row',
