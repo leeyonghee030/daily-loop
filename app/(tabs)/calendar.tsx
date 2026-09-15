@@ -418,6 +418,8 @@ export default function CalendarScreen() {
       const memos = (monthMemosByDate[dateStr] ?? []).slice(0, 5);
       const isSelected = selectedDate === dateStr;
       const isDisabled = state === 'disabled';
+      // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
+      const isHoliday = !isDisabled && (monthData?.holidayDates.has(dateStr) ?? false);
 
       return (
         <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
@@ -437,11 +439,16 @@ export default function CalendarScreen() {
             <Text
               style={[
                 styles.dayNumberText,
-                { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : Colors[theme].text },
-                dateStr === todayStr ? { fontWeight: '700' } : null,
+                { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : isHoliday ? accent : Colors[theme].text },
+                // 공휴일도 오늘처럼 굵게 — 테마색을 "검정"(#4A4A4A, 거의 검정)으로 골랐을 때도
+                // 색만으로는 구분이 잘 안 될 수 있어서, 굵기 차이로 항상 표시가 나게 한다
+                (dateStr === todayStr || isHoliday) ? { fontWeight: '700' } : null,
               ]}>
               {date.day}
             </Text>
+            {/* 색만으로는 테마색을 "검정"에 가까운 프리셋으로 골랐을 때 티가 잘 안 나서, 색과
+                무관하게 항상 눈에 띄는 작은 점을 숫자 아래에 덧붙인다 */}
+            {isHoliday && <View style={[styles.holidayDot, { backgroundColor: accent }]} />}
           </View>
           {memos.length > 0 && (
             <View style={styles.memoStack}>
@@ -949,9 +956,18 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
   dayNumberText: {
     fontSize: 14,
+  },
+  // 공휴일 표시 점 — 색 자체의 채도/명도와 무관하게 "점이 있다/없다"만으로 항상 구분되게 한다
+  holidayDot: {
+    position: 'absolute',
+    bottom: -4,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   memoStack: {
     marginTop: 3,

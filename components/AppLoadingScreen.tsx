@@ -19,7 +19,11 @@ const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 // 네이티브 스플래시(정지된 아이콘, 흰 배경)가 사라지는 순간 이 화면이 이어받기 때문에,
 // 배경은 다크모드와 무관하게 항상 흰색으로 고정해야 전환이 끊겨 보이지 않는다.
 const SIZE = 96;
-const STROKE_WIDTH = 20;
+// 실제 아이콘 PNG(assets/images/icon.png, splash-icon.png — 둘 다 같은 원본)를 다시 픽셀
+// 단위로 측정해보니 링 굵기 비율이 이 화면 쪽만 더 두껍게(20/96≈0.208) 잘못 잡혀 있었다.
+// 실측값은 두께 87px : 바깥지름 531px ≈ 0.164 — 네이티브 스플래시 화면(앱 첫 진입 시
+// 뜨는 정지 아이콘)과 이 로딩화면이 이어질 때 링이 갑자기 두꺼워지고 작아 보이던 원인
+const STROKE_WIDTH = 16;
 const RADIUS = (SIZE - STROKE_WIDTH) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 const ARC_DEGREES = 290; // 아이콘에서 실측한 값

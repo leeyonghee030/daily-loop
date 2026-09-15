@@ -297,7 +297,10 @@ export default function PresetFormScreen() {
       updateItem(picker.index, { scheduled_time_end: time });
       return;
     }
-    updateItem(picker.index, { scheduled_time_start: time });
+    // 시작 시각이 바뀌면 끝 시각을 항상 시작 +1시간으로 맞춘다 — routine-form.tsx의
+    // applyStartTime과 동일한 규칙(끝이 시작보다 이른 시각으로 남아있던 버그 방지)
+    const endDate = new Date(date.getTime() + 60 * 60 * 1000);
+    updateItem(picker.index, { scheduled_time_start: time, scheduled_time_end: dateToTimeString(endDate) });
   }
 
   // 안드로이드는 시계가 OS 다이얼로그로 뜨고 확인/취소를 누르면 다이얼로그 스스로 닫히므로,
