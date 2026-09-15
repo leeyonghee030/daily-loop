@@ -29,13 +29,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { Gesture, GestureDetector, GestureHandlerRootView, ScrollView } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
+  useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
+import Svg, { Circle, ClipPath, Defs, G, Image as SvgImage, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { InAppCamera } from '@/components/InAppCamera';
@@ -58,6 +59,16 @@ import {
   type TextColorMode,
 } from '@/lib/photo-diary';
 import { fetchRoutinesForDate, type Routine } from '@/lib/routines';
+import {
+  deleteStickerFromCollection,
+  fetchStickerCollection,
+  saveStickerToCollection,
+  type StickerItem,
+} from '@/lib/stickers';
+
+// 펀칭기계 편집 화면에서 모양 미리보기 크기를 프레임 크기(shared value)에 실시간으로
+// 맞추는 용도 — width/height를 useAnimatedProps로 매 프레임 직접 먹인다
+const AnimatedSvg = Animated.createAnimatedComponent(Svg);
 
 // "루틴 고르기" 모드의 자유 캔버스 크기 — 화면 좌우 padding(20+20)을 뺀 너비에서 한 번 더
 // 줄여서, 캔버스 바깥(=제스처가 안 걸린 순수 여백)이 좌우로 넉넉히 남게 한다. 캔버스가 화면
@@ -119,9 +130,12 @@ function buildBlocksFromEntry(entry: PhotoDiary, routineById: Map<string, Routin
   return withPhoto;
 }
 
-// 화면에 그리는 순서(겹침) 전용 우선순위 — 낮을수록 아래에 깔린다
+// 화면에 그리는 순서(겹침) 전용 우선순위 — 낮을수록 아래에 깔린다. 같은 층 안에서는
+// renderBlocks가 배열에 추가된 순서(최근 추가한 게 더 나중 = 더 위)로 다시 한 번 정렬한다.
+// 사진은 붙여넣었든(pasted) 아니든 같은 층으로 묶어야, "사진 추가"로 마지막에 올린 사진이
+// 먼저 있던 사진(대표 사진이든 붙여넣은 것이든) 위로 항상 올라온다
 function blockLayer(b: CanvasBlock): number {
-  if (b.type === 'photo') return b.pasted ? 1 : 0;
+  if (b.type === 'photo') return 0;
   if (b.type === 'routine') return 2;
   return b.pasted ? 1 : 3;
 }
@@ -175,10 +189,8 @@ const RESIZE_HANDLE_HIT_SLOP = 22;
 const ROTATE_HANDLE_SIZE = 32;
 const ROTATE_HANDLE_HIT_SLOP = 22;
 const ROTATE_SENSITIVITY = 0.6;
-// 완전히 거꾸로 뒤집히면 오히려 어색해 보여서, 스크랩북처럼 살짝 기울어지는 정도로 제한
-const MAX_ROTATION_DEG = 35;
 // 사진 더블탭(위치 조정 화면 열기) 판정 간격
-const PHOTO_DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_MS = 400;
 // "루틴 색 강조" 토글 — 예전 네이티브 Switch(안드로이드 스타일: 얇은 선 위에 동그란 손잡이가
 // 겹쳐서 움직이는 모양)를 흉내낸 커스텀 트랙+손잡이 크기. 손잡이가 선보다 두꺼워서 위아래로
 // 살짝 튀어나오게 겹친다
@@ -347,6 +359,9 @@ function DraggableBlock({
     .enabled(pinchEnabled && !isBoxMode)
     .minPointers(2)
     .maxPointers(2)
+    // 루틴/메모가 작게 줄어들면(최소 배율 근처) 블록 자체의 터치 영역도 같이 작아져서 두
+    // 손가락을 다 그 좁은 영역 안에 올리기 어려워진다 — pinch와 같은 hitSlop으로 인식 범위를 넓힌다
+    .hitSlop(PINCH_HIT_SLOP)
     .onUpdate((e) => {
       translateX.value = e.translationX;
       translateY.value = e.translationY;
@@ -393,9 +408,11 @@ function DraggableBlock({
   // e.rotation은 라디안 단위 누적값이라 도(degree)로 환산해서 더한다
   const rotateGesture = Gesture.Rotation()
     .enabled(rotatable && pinchEnabled && !isBoxMode)
+    // 위 twoFingerPan과 같은 이유 — 블록이 작을 때도 회전 인식이 잘 되도록 인식 범위를 넓힌다
+    .hitSlop(PINCH_HIT_SLOP)
     .onUpdate((e) => {
-      const proposed = baseRotationRef.current + (e.rotation * 180) / Math.PI;
-      rotationLive.value = Math.min(MAX_ROTATION_DEG, Math.max(-MAX_ROTATION_DEG, proposed));
+      // 360도 전부 자유롭게 — 더 이상 각도를 제한하지 않는다
+      rotationLive.value = baseRotationRef.current + (e.rotation * 180) / Math.PI;
     })
     .onEnd(() => {
       if (onRotate) runOnJS(onRotate)(rotationLive.value);
@@ -418,25 +435,33 @@ function DraggableBlock({
 
   // 회전 손잡이 드래그(사진 전용 — 루틴/메모는 위 rotateGesture로 대신함) — 절대좌표 기준으로
   // 손가락-중심 각도를 계산하는 방식은 스크롤 오프셋 등에 따라 불안정해서, 리사이즈 손잡이와
-  // 같은 원리로 "가로로 끈 만큼(px) 각도(도)가 바뀐다"는 단순한 매핑을 쓴다. 오른쪽으로 끌면
-  // 시계방향(양수), 왼쪽으로 끌면 반시계방향
+  // 같은 원리로 "가로로 끈 만큼(px) 각도(도)가 바뀐다"는 단순한 매핑을 쓴다. 손잡이가 왼쪽
+  // 아래 모서리에 있어서, 회전 후 손잡이 자신도 같이 돌아간 위치에 그려진다는 걸 감안하면
+  // "오른쪽으로 끌수록 손잡이가 화면상 오른쪽으로 따라와야" 자연스러운데, 그러려면 각도는
+  // 반시계(음수) 방향으로 줄어야 한다(회전 행렬로 좌하단 모서리 좌표를 계산해보면 시계방향
+  // 회전일수록 오히려 왼쪽으로 이동함) — 그래서 부호를 반전한다(왼쪽 위였을 땐 반대로 옳았음)
   const rotatePan = Gesture.Pan()
     .enabled(isBoxMode && rotatable && pinchEnabled)
     .hitSlop(ROTATE_HANDLE_HIT_SLOP)
     .onUpdate((e) => {
-      const proposed = baseRotationRef.current + e.translationX * ROTATE_SENSITIVITY;
-      rotationLive.value = Math.min(MAX_ROTATION_DEG, Math.max(-MAX_ROTATION_DEG, proposed));
+      // 360도 전부 자유롭게 — 더 이상 각도를 제한하지 않는다
+      rotationLive.value = baseRotationRef.current - e.translationX * ROTATE_SENSITIVITY;
     })
     .onEnd(() => {
       if (onRotate) runOnJS(onRotate)(rotationLive.value);
     });
 
-  // 메모 탭 인식 전용(RN 기본 Pressable 대신 gesture-handler로 처리해야 Pinch가 두 손가락을
-  // 잘 인식함) — 더블탭으로 "선택만" 모드를 따로 두려고 했었는데 실기에서 잘 안 잡혀서,
-  // 싱글탭 하나로 단순화(탭하면 바로 선택+입력 모드, 이동/핀치/삭제도 그 상태에서 그대로 가능)
+  // 메모/사진 탭 인식 전용(RN 기본 Pressable 대신 gesture-handler로 처리해야 Pinch가 두
+  // 손가락을 잘 인식함) — 여기선 매번 "한 번 탭"만 인식한다. 사진은 이 콜백이 불릴 때마다
+  // handlePhotoPress가 직접 시각 차이를 재서 더블탭(위치 조정 화면 열기)을 판정한다. 메모는
+  // 포커스된 TextInput 위에서 이 방식을 썼다가 타이핑 중 커서 이동 탭과 뒤섞여 오작동해서
+  // 더블탭 판정 없이 단순 탭만 쓴다(handleTextPress 주석 참고)
   const singleTap = Gesture.Tap()
     .numberOfTaps(1)
-    .maxDuration(250)
+    .maxDuration(300)
+    // 블록이 작으면(짧은 메모 등) 터치 영역도 같이 작아져서 탭이 잘 안 잡힌다는 피드백으로
+    // 인식 범위를 넓힌다
+    .hitSlop(PINCH_HIT_SLOP)
     .onEnd((_e, success) => {
       if (success && onTap) runOnJS(onTap)();
     });
@@ -598,8 +623,9 @@ export default function PhotoDiaryFormScreen() {
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   // 사진을 더블탭하면 여는 "사진 위치 조정" 화면 — 원본 중 어느 부분을 보여줄지 고르는 용도
   const [focalEditBlockId, setFocalEditBlockId] = useState<string | null>(null);
-  // 더블탭 판정용 — Pressable은 연속 탭을 자동으로 묶어주지 않아서 블록별 마지막 탭 시각을 직접 기억해둔다
-  const lastPhotoTapRef = useRef<Map<string, number>>(new Map());
+  // 더블탭 판정용(사진·메모 공용, 블록 id가 서로 겹치지 않으니 같은 Map으로 충분) —
+  // Pressable은 연속 탭을 자동으로 묶어주지 않아서 블록별 마지막 탭 시각을 직접 기억해둔다
+  const lastTapRef = useRef<Map<string, number>>(new Map());
   // 블록별 실제 렌더링 크기(캔버스 밖으로 얼마나 나갔는지 정확히 계산하는 용도) — onLayout으로 채움
   const blockSizeRef = useRef<Map<string, BlockSize>>(new Map());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -628,8 +654,15 @@ export default function PhotoDiaryFormScreen() {
   const [showDiscardDraftConfirm, setShowDiscardDraftConfirm] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showPasteEmptyModal, setShowPasteEmptyModal] = useState(false);
-  // 사진 선택 팝업을 "대표 사진 바꾸기" 용도로 열었는지, "캔버스에 사진 추가" 용도로 열었는지 구분
-  const [photoPickTarget, setPhotoPickTarget] = useState<'cover' | 'add'>('cover');
+  const [showPasteChoiceModal, setShowPasteChoiceModal] = useState(false);
+  const [showStickerModal, setShowStickerModal] = useState(false);
+  const [isSavingSticker, setIsSavingSticker] = useState(false);
+  // 사진 선택 팝업을 "대표 사진 바꾸기"/"캔버스에 사진 추가" 중 어떤 용도로 열었는지 구분.
+  // 'punch'는 "펀칭기계"(모양대로 사진 오려내기)용 — 같은 팝업(사진찍기/사진불러오기)에서
+  // 사진을 고르면 캔버스에 바로 추가하는 대신 펀칭 편집 화면으로 넘어간다
+  const [photoPickTarget, setPhotoPickTarget] = useState<'cover' | 'add' | 'punch'>('cover');
+  // 펀칭기계로 고른 원본 사진(아직 모양을 안 정한 상태) — null이 아니면 편집 모달이 뜬다
+  const [punchSourceUri, setPunchSourceUri] = useState<string | null>(null);
 
   const shotRef = useRef<ViewShot>(null);
 
@@ -656,6 +689,13 @@ export default function PhotoDiaryFormScreen() {
     enabled: !!userId && !!date,
   });
 
+  // 스티커 모음집 — 버튼을 눌러 모달을 열 때만 조회(항상 미리 받아둘 만큼 자주 쓰는 화면은 아님)
+  const stickerQuery = useQuery({
+    queryKey: ['sticker-collection', userId],
+    queryFn: () => fetchStickerCollection(userId!),
+    enabled: !!userId && showStickerModal,
+  });
+
   const isLoading = diaryQuery.isLoading || routinesQuery.isLoading;
   const candidateRoutines = routinesQuery.data?.routines ?? [];
   const completions = routinesQuery.data?.completions ?? [];
@@ -679,6 +719,7 @@ export default function PhotoDiaryFormScreen() {
   );
   const selectedBlock = blocks.find((b) => b.id === selectedBlockId);
   const selectedBlockSupportsColor = selectedBlock && selectedBlock.type !== 'photo';
+  const canSaveSelectedToCollection = selectedBlock?.type === 'photo' && selectedBlock.pasted === true;
   const focalEditBlock = blocks.find(
     (b): b is Extract<CanvasBlock, { type: 'photo' }> => b.id === focalEditBlockId && b.type === 'photo'
   );
@@ -765,6 +806,7 @@ export default function PhotoDiaryFormScreen() {
 
   async function pickFromLibrary() {
     setIsBusy(true);
+    setErrorMessage(null);
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -772,10 +814,16 @@ export default function PhotoDiaryFormScreen() {
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        // 예전 API(MediaTypeOptions.Images)는 deprecated라 최신 배열 형태로 교체
+        mediaTypes: ['images'],
         quality: 0.7,
       });
       if (!result.canceled && result.assets[0]) onPhotoObtained(result.assets[0].uri, 'library');
+    } catch {
+      // 예전엔 catch가 없어서 여기서 뭔가 실패하면(권한 요청/피커 실행 중 예외) 화면엔 아무
+      // 반응도 없이 조용히 묻혀버렸다 — "사진 불러오기가 안 열린다"는 제보의 유력한 원인이라
+      // 최소한 에러 배너로라도 실패를 눈에 보이게 한다
+      setErrorMessage(t('photoDiary.errorPickLibrary'));
     } finally {
       setIsBusy(false);
     }
@@ -812,24 +860,42 @@ export default function PhotoDiaryFormScreen() {
 
   // 캔버스에 사진을 하나 더 추가 — 대표 사진보다 조금 작게 시작해서 서로 구분되게 하고,
   // 이후 선택해서 자유롭게 드래그/핀치줌으로 옮기고 키울 수 있다
+  // 기본(4:3) 박스로 시작하면, 정사각형(펀칭 결과)이나 세로로 긴 사진처럼 비율이 다른
+  // 이미지는 캔버스가 resizeMode="cover"로 채우면서 위아래(또는 좌우)가 잘려 보인다 —
+  // 실제 이미지 비율을 먼저 조회해서 그 비율 그대로(잘림 없이) 시작 크기를 잡는다
   function addPhotoBlockFromUri(uri: string, source: PhotoSource, pasted = false, vintage = false) {
-    setBlocks((prev) => [
-      ...prev,
-      {
-        id: nextBlockId(),
-        type: 'photo',
-        uri,
-        source,
-        vintage,
-        pasted,
-        x: CANVAS_SIDE_MARGIN,
-        y: CANVAS_PHOTO_HEIGHT + 12,
-        scale: 0.6,
+    const place = (width?: number, height?: number) => {
+      setBlocks((prev) => [
+        ...prev,
+        {
+          id: nextBlockId(),
+          type: 'photo',
+          uri,
+          source,
+          vintage,
+          pasted,
+          x: CANVAS_SIDE_MARGIN,
+          y: CANVAS_PHOTO_HEIGHT + 12,
+          ...(width && height ? { width, height } : { scale: 0.6 }),
+        },
+      ]);
+    };
+    Image.getSize(
+      uri,
+      (naturalW, naturalH) => {
+        const base = PHOTO_BLOCK_HEIGHT * 0.6; // 기존 기본 크기(scale 0.6)와 비슷한 눈대중 크기
+        const aspect = naturalW / naturalH;
+        place(aspect >= 1 ? base * aspect : base, aspect >= 1 ? base : base / aspect);
       },
-    ]);
+      () => place() // 크기 조회 실패 시 예전 방식(4:3 기본 박스)으로 대체
+    );
   }
 
   function onPhotoObtained(uri: string, source: PhotoSource, vintage = false) {
+    if (photoPickTarget === 'punch') {
+      setPunchSourceUri(uri);
+      return;
+    }
     if (photoPickTarget === 'add') {
       addPhotoBlockFromUri(uri, source, false, vintage);
       return;
@@ -858,20 +924,30 @@ export default function PhotoDiaryFormScreen() {
     }
   }
 
-  // 이미지든 텍스트든, 클립보드에 있는 걸 캔버스 위 새 블록으로 붙여넣는다
+  // 클립보드에 이미지가 있으면 기기 캐시에 파일로 써서 로컬 경로를 돌려준다 — 캔버스에 바로
+  // 붙여넣을 때(pasteFromClipboard)와 모음집에 바로 저장할 때(handleSaveClipboardToCollection)
+  // 둘 다 이 단계가 똑같아서 공용으로 뺐다
+  async function getClipboardImageLocalUri(): Promise<string | null> {
+    const hasImage = await Clipboard.hasImageAsync();
+    if (!hasImage) return null;
+    const image = await Clipboard.getImageAsync({ format: 'jpeg', jpegQuality: 0.8 });
+    if (!image?.data) return null;
+    const base64 = image.data.replace(/^data:image\/\w+;base64,/, '');
+    const path = `${FileSystem.cacheDirectory}pasted-${Date.now()}.jpg`;
+    await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+    return path;
+  }
+
+  // 이미지든 텍스트든, 클립보드에 있는 걸 캔버스 위 새 블록으로 붙여넣는다(1회성 — 모음집엔
+  // 안 남음. 계속 쓸 걸 저장해두고 싶으면 붙여넣기 모음집 쪽의 "클립보드에서 저장"을 쓴다)
   async function pasteFromClipboard() {
     setIsBusy(true);
     setErrorMessage(null);
     try {
-      const hasImage = await Clipboard.hasImageAsync();
-      if (hasImage) {
-        const image = await Clipboard.getImageAsync({ format: 'jpeg', jpegQuality: 0.8 });
-        if (image?.data) {
-          const base64 = image.data.replace(/^data:image\/\w+;base64,/, '');
-          const path = `${FileSystem.cacheDirectory}pasted-${Date.now()}.jpg`;
-          await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
-          addPhotoBlockFromUri(path, 'library', true);
-        }
+      const imagePath = await getClipboardImageLocalUri();
+      if (imagePath) {
+        addPhotoBlockFromUri(imagePath, 'library', true);
+        showToast(t('photoDiary.pasteImageAddedToast'));
         return;
       }
       const text = await Clipboard.getStringAsync();
@@ -887,6 +963,70 @@ export default function PhotoDiaryFormScreen() {
       setErrorMessage(t('photoDiary.errorPaste'));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  // 캔버스 위 붙여넣은 사진을 붙여넣기 모음집에 저장 — 사진일기 자체를 아직 저장하기 전이어도
+  // (로컬 파일 상태여도) 독립적으로 업로드/저장된다
+  async function handleSaveSticker(block: Extract<CanvasBlock, { type: 'photo' }>) {
+    if (!userId || isSavingSticker) return;
+    setIsSavingSticker(true);
+    try {
+      await saveStickerToCollection(userId, block.uri, isLocalUri(block.uri));
+      showToast(t('photoDiary.stickerSavedToast'));
+      queryClient.invalidateQueries({ queryKey: ['sticker-collection', userId] });
+    } catch {
+      setErrorMessage(t('photoDiary.errorSaveSticker'));
+    } finally {
+      setIsSavingSticker(false);
+    }
+  }
+
+  // 붙여넣기 모음집 모달 안의 "클립보드에서 저장" — 캔버스에 올리는 과정 없이, 지금 복사돼
+  // 있는 이미지를 곧바로 모음집에만 저장한다
+  async function handleSaveClipboardToCollection() {
+    if (!userId || isSavingSticker) return;
+    setIsSavingSticker(true);
+    try {
+      const imagePath = await getClipboardImageLocalUri();
+      if (!imagePath) {
+        setShowPasteEmptyModal(true);
+        return;
+      }
+      await saveStickerToCollection(userId, imagePath, true);
+      showToast(t('photoDiary.stickerSavedToast'));
+      queryClient.invalidateQueries({ queryKey: ['sticker-collection', userId] });
+    } catch {
+      setErrorMessage(t('photoDiary.errorSaveSticker'));
+    } finally {
+      setIsSavingSticker(false);
+    }
+  }
+
+  // 모음집에서 스티커를 고르면 새 사진 블록으로 캔버스에 추가 — 클립보드로 붙여넣은 것과
+  // 동일하게 취급(pasted: true)해서 다시 모음집에 저장하거나 디카 필터를 켤 수 있다
+  function handleSelectSticker(sticker: StickerItem) {
+    addPhotoBlockFromUri(sticker.image_url, 'library', true);
+    setShowStickerModal(false);
+  }
+
+  // 펀칭기계로 모양대로 오려낸 결과(투명 배경 PNG 로컬 파일)를 확정하면 — 캔버스에 바로
+  // 추가하고, 만드는 행위 자체가 "스티커로 쓰겠다"는 의도라 붙여넣기 모음집에도 같이 저장한다
+  // 캔버스에 추가만 하고 모음집엔 자동으로 저장하지 않는다 — 다른 붙여넣기 스티커와
+  // 동일하게, 이 블록을 선택한 뒤 "모음집에 저장" 버튼을 눌러야 저장되는 수동 방식으로 통일
+  function handlePunchConfirm(uri: string) {
+    setPunchSourceUri(null);
+    addPhotoBlockFromUri(uri, 'library', true);
+    showToast(t('photoDiary.punchAddedToast'));
+  }
+
+  async function handleDeleteSticker(id: string) {
+    if (!userId) return;
+    try {
+      await deleteStickerFromCollection(id);
+      queryClient.invalidateQueries({ queryKey: ['sticker-collection', userId] });
+    } catch {
+      setErrorMessage(t('photoDiary.errorSaveSticker'));
     }
   }
 
@@ -1009,18 +1149,33 @@ export default function PhotoDiaryFormScreen() {
     );
   }
 
-  // 사진 탭 처리 — 한 번 탭이면 선택/해제, 300ms 안에 두 번째 탭이 들어오면 더블탭으로 보고
-  // "사진 위치 조정" 화면을 연다. Pressable은 연속 탭을 자동으로 묶어주지 않아서 직접 판정한다
+  // 사진끼리 겹쳐 있을 때, 탭한 사진을 다른 사진들보다 위로 올려서 보이게 한다 — blockLayer가
+  // 같은 층(사진) 안에서는 blocks 배열 순서로 겹침을 정하므로, 이 블록을 배열 맨 뒤로 옮기면 된다
+  function bringPhotoToFront(id: string) {
+    setBlocks((prev) => {
+      const idx = prev.findIndex((b) => b.id === id);
+      if (idx === -1 || idx === prev.length - 1) return prev;
+      const next = [...prev];
+      const [item] = next.splice(idx, 1);
+      next.push(item);
+      return next;
+    });
+  }
+
+  // 사진 탭 처리 — 한 번 탭이면 선택(+ 다른 사진들 위로 올라옴)/해제, 300ms 안에 두 번째
+  // 탭이 들어오면 더블탭으로 보고 "사진 위치 조정" 화면을 연다. Pressable은 연속 탭을
+  // 자동으로 묶어주지 않아서 직접 판정한다
   function handlePhotoPress(id: string) {
     const now = Date.now();
-    const last = lastPhotoTapRef.current.get(id) ?? 0;
-    lastPhotoTapRef.current.set(id, now);
-    if (now - last < PHOTO_DOUBLE_TAP_MS) {
-      lastPhotoTapRef.current.delete(id);
+    const last = lastTapRef.current.get(id) ?? 0;
+    lastTapRef.current.set(id, now);
+    if (now - last < DOUBLE_TAP_MS) {
+      lastTapRef.current.delete(id);
       setFocalEditBlockId(id);
       return;
     }
     setSelectedBlockId((prev) => (prev === id ? null : id));
+    bringPhotoToFront(id);
   }
 
   // 개별 글자색 지정 — undefined를 주면 "기본값 사용"(전체 글자색 설정을 따름)으로 되돌아간다
@@ -1070,10 +1225,14 @@ export default function PhotoDiaryFormScreen() {
     return cornerBadgePosition(block.x, block.y, size.width, 24);
   }
 
+  // 메모는 확대/회전(rotation)까지 가능해져서, 실제 확대된 크기를 기준으로 배지 위치를
+  // 계산하면 회전 각도는 전혀 반영을 안 하다 보니(회전 행렬 계산까지 하기엔 배지 하나에
+  // 과함) 기울어진 정도가 클수록 진짜 오른쪽 위 모서리와 점점 멀어져 엉뚱한 자리에 떠
+  // 보였다 — 대신 배율/회전과 무관하게 항상 "원래(기본) 크기 기준 오른쪽 위"라는 고정된
+  // 자리에 두기로 단순화했다(확대해도 배지는 그 자리 그대로)
   function fitTextBadgePosition(block: Extract<CanvasBlock, { type: 'text' }>) {
     const size = blockSizeRef.current.get(block.id) ?? { width: 60, height: 24 };
-    const w = size.width * (block.scale ?? 1);
-    return cornerBadgePosition(block.x, block.y, w, 20);
+    return cornerBadgePosition(block.x, block.y, size.width, 20);
   }
 
   // 캔버스에서 확대해도 폭이 정확히 캔버스 폭과 같아지도록 조절 — 손으로 핀치해서 딱
@@ -1254,12 +1413,21 @@ export default function PhotoDiaryFormScreen() {
     if (success) runOnJS(dismissKeyboardAndSelection)();
   });
 
-  // 메모(텍스트) 블록 탭 처리 — 탭하면 선택 + 입력창(키보드) 모드가 함께 켜진다(선택 상태라
-  // 이동/핀치/삭제도 그 상태에서 그대로 가능). 원래는 더블탭으로 키보드 없이 "선택만" 하는
-  // 모드도 따로 뒀는데, 실기에서 더블탭이 잘 안 잡혀서 제거하고 이걸로 단순화했다
-  function handleTextSingleTap(id: string) {
+  // 메모(텍스트) 블록 탭 처리 — 예전엔 탭 한 번으로 선택+입력(키보드)이 함께 켜졌는데, 이게
+  // 두 가지 문제의 공통 원인이었다: ① 키보드가 뜨는 순간 화면 아래쪽 글자색/회전초기화
+  // 버튼이 가려져 못 눌림 ② 선택하자마자 TextInput이 포커스를 잡아버려서, 그 상태로
+  // 두 손가락 확대·축소·회전을 시도하면 포커스된 입력창이 멀티터치를 자기 것(텍스트 선택 등)
+  // 으로 가로채 제스처 인식이 불안정해짐(루틴은 이 문제가 없음 — 포커스되는 입력창 자체가
+  // 없어서). 그래서 선택과 입력을 분리했다: 처음 탭하면 선택만(키보드 없이) 되고, 그 상태로
+  // 이동/확대·축소/회전을 자유롭게 할 수 있다. 이미 선택된 걸 한 번 더 탭해야 그때 입력
+  // 모드(키보드)로 들어간다 — 더블탭(연속 탭 시각차 판정)은 포커스된 입력창 위에서 커서
+  // 이동 탭과 뒤섞여 오작동했던 적이 있어 쓰지 않고, 매번 지금 상태만 보고 판단한다
+  function handleTextPress(id: string) {
+    if (selectedBlockId === id) {
+      setEditingBlockId(id);
+      return;
+    }
     setSelectedBlockId(id);
-    setEditingBlockId(id);
   }
 
   if (isLoading) {
@@ -1276,6 +1444,23 @@ export default function PhotoDiaryFormScreen() {
         <Animated.View style={[styles.toast, toastAnimatedStyle]} pointerEvents="none">
           <Text style={styles.toastText}>{toastMessage}</Text>
         </Animated.View>
+      )}
+      {/* 메모를 입력 중이면 키보드가 화면 아래쪽 글자색/회전초기화 버튼을 가릴 수 있어서,
+          ScrollView 안(스크롤에 따라 같이 가려질 수 있는 자리) 대신 KeyboardAvoidingView
+          바로 밑에 떠 있는 버튼으로 둬서 키보드가 떠 있는 동안 항상 눌러서 닫을 수 있게 한다.
+          예전엔 더블탭으로 풀려고 했지만 포커스된 TextInput 위에서 탭 제스처가 불안정해서
+          이 방식으로 바꿨다(handleTextPress 주석 참고) */}
+      {editingBlockId && (
+        <AnimatedPressable
+          style={styles.keyboardDismissButton}
+          onPress={() => {
+            Keyboard.dismiss();
+            setEditingBlockId(null);
+          }}
+          hitSlop={8}>
+          <Ionicons name="chevron-down" size={14} color="#fff" />
+          <Text style={styles.keyboardDismissText}>{t('photoDiary.dismissKeyboard')}</Text>
+        </AnimatedPressable>
       )}
       <RNView style={styles.container}>
         <ScrollView
@@ -1382,7 +1567,7 @@ export default function PhotoDiaryFormScreen() {
                                 }}
                                 onScale={(s) => updateBlockScale(block.id, s)}
                                 onResize={block.type === 'photo' ? (w, h) => updateBlockSize(block.id, w, h) : undefined}
-                                onTap={block.type === 'text' && !isEditing ? () => handleTextSingleTap(block.id) : undefined}>
+                                onTap={block.type === 'text' && !isEditing ? () => handleTextPress(block.id) : undefined}>
                                 {block.type === 'photo' ? (
                                   <RNView style={{ flex: 1 }}>
                                     <AnimatedPressable
@@ -1472,13 +1657,17 @@ export default function PhotoDiaryFormScreen() {
                                         multiline
                                       />
                                     ) : (
-                                      // 탭하면 선택 + 입력(키보드) 모드가 함께 켜진다. 손가락이
-                                      // 스치기만 해도 곧장 포커스를 가져가 키보드가 깜빡이던 예전
-                                      // 버그를 막기 위해 탭 전엔 포커스 없는 일반 텍스트로만
-                                      // 보여준다. 탭 인식은 DraggableBlock의 onTap(gesture-handler
-                                      // 기반)이 담당 — RN 기본 Pressable을 쓰면 두 손가락 중
-                                      // 하나를 먼저 채가서 핀치(확대/축소) 인식이 잘 안 되는
-                                      // 문제가 있었다
+                                      // 처음 탭하면 선택만 되고(이동/확대축소/회전/삭제/색상
+                                      // 전부 이 상태에서 가능), 이미 선택된 걸 한 번 더 탭해야
+                                      // 그때 입력(키보드) 모드로 들어간다 — 선택과 동시에
+                                      // 포커스를 가져가게 했더니 ① 키보드가 아래쪽 툴바를 가려
+                                      // 못 누르고 ② 포커스된 입력창이 두 손가락 제스처를 자기
+                                      // 것(텍스트 선택 등)으로 가로채 확대/축소/회전 인식이
+                                      // 불안정해지는 문제가 있어서 선택/입력을 분리했다
+                                      // (handleTextPress 참고). 탭 인식은 DraggableBlock의
+                                      // onTap(gesture-handler 기반)이 담당 — RN 기본 Pressable을
+                                      // 쓰면 두 손가락 중 하나를 먼저 채가서 핀치(확대/축소)
+                                      // 인식이 잘 안 되는 문제가 있었다
                                       <Text style={[styles.textChip, { color: blockTextColor }]}>
                                         {block.text || t('photoDiary.notePlaceholder')}
                                       </Text>
@@ -1526,12 +1715,28 @@ export default function PhotoDiaryFormScreen() {
                           {t('photoDiary.addPhoto')}
                         </Text>
                       </AnimatedPressable>
-                      <AnimatedPressable style={styles.addNoteButton} onPress={pasteFromClipboard} disabled={isBusy}>
+                      <AnimatedPressable
+                        style={styles.addNoteButton}
+                        onPress={() => setShowPasteChoiceModal(true)}
+                        disabled={isBusy}>
                         <Ionicons name="clipboard-outline" size={16} color={accent} />
                         <Text style={styles.addNoteButtonText} numberOfLines={1}>
                           {t('photoDiary.pasteButton')}
                         </Text>
                       </AnimatedPressable>
+                      {/* 붙여넣은 사진을 선택했을 때만 나타남(전체삭제 버튼과 같은 방식 —
+                          이 줄에 원래도 조건부로 나타났다 사라지는 버튼이 있었음) */}
+                      {canSaveSelectedToCollection && selectedBlock?.type === 'photo' && (
+                        <AnimatedPressable
+                          style={styles.addNoteButton}
+                          onPress={() => handleSaveSticker(selectedBlock)}
+                          disabled={isSavingSticker}>
+                          <Ionicons name="bookmark-outline" size={16} color={accent} />
+                          <Text style={styles.addNoteButtonText} numberOfLines={1}>
+                            {t('photoDiary.saveToStickerCollection')}
+                          </Text>
+                        </AnimatedPressable>
+                      )}
                       {blocks.some((b) => b.type === 'text') && (
                         <AnimatedPressable style={styles.addNoteButton} onPress={() => setShowDeleteAllNotesConfirm(true)}>
                           <Ionicons name="trash-outline" size={16} color={textMuted} />
@@ -1608,12 +1813,22 @@ export default function PhotoDiaryFormScreen() {
                             ]}
                           />
                         ))}
-                        <AnimatedPressable onPress={() => updateBlockTextColor(selectedBlock.id, undefined)} hitSlop={6}>
-                          <Text style={styles.restoreText}>{t('photoDiary.individualTextColorReset')}</Text>
-                        </AnimatedPressable>
-                        <AnimatedPressable onPress={() => resetBlockRotation(selectedBlock.id)} hitSlop={6}>
-                          <Text style={styles.restoreText}>{t('photoDiary.resetRotation')}</Text>
-                        </AnimatedPressable>
+                        {/* 기본값/회전초기화 두 버튼은 항상 붙어 있어야 해서, 한 줄이 좁아
+                            wrap될 때도 둘이 따로 떨어지지 않도록 하나의 묶음으로 감싼다 */}
+                        <View style={styles.rotationResetGroup}>
+                          <AnimatedPressable
+                            style={styles.changePhotoInlineButton}
+                            onPress={() => updateBlockTextColor(selectedBlock.id, undefined)}>
+                            <Ionicons name="color-palette-outline" size={13} color={accent} />
+                            <Text style={styles.changePhotoInlineText}>{t('photoDiary.individualTextColorReset')}</Text>
+                          </AnimatedPressable>
+                          <AnimatedPressable
+                            style={[styles.changePhotoInlineButton, styles.rotationResetButtonSpacing]}
+                            onPress={() => resetBlockRotation(selectedBlock.id)}>
+                            <Ionicons name="refresh-outline" size={13} color={accent} />
+                            <Text style={styles.changePhotoInlineText}>{t('photoDiary.resetRotation')}</Text>
+                          </AnimatedPressable>
+                        </View>
                       </View>
                     )}
 
@@ -1645,6 +1860,12 @@ export default function PhotoDiaryFormScreen() {
                             ]}>
                             {t('photoDiary.toggleVintageFilter')}
                           </Text>
+                        </AnimatedPressable>
+                        <AnimatedPressable
+                          style={[styles.changePhotoInlineButton, styles.rotationResetButtonSpacing]}
+                          onPress={() => updateBlockRotation(selectedBlock.id, 0)}>
+                          <Ionicons name="refresh-outline" size={13} color={accent} />
+                          <Text style={styles.changePhotoInlineText}>{t('photoDiary.resetRotation')}</Text>
                         </AnimatedPressable>
                       </View>
                     )}
@@ -1726,7 +1947,9 @@ export default function PhotoDiaryFormScreen() {
         <RNView style={styles.confirmBackdrop}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowSourceModal(false)} />
           <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
-            <Text style={styles.confirmTitle}>{t('photoDiary.chooseSourceTitle')}</Text>
+            <Text style={styles.confirmTitle}>
+              {photoPickTarget === 'punch' ? t('photoDiary.choosePunchSourceTitle') : t('photoDiary.chooseSourceTitle')}
+            </Text>
             <AnimatedPressable style={styles.optionRow} onPress={requestCameraCapture}>
               <Ionicons name="camera-outline" size={20} color={accent} />
               <Text style={styles.optionRowText}>{t('photoDiary.takePhoto')}</Text>
@@ -1735,6 +1958,16 @@ export default function PhotoDiaryFormScreen() {
               <Ionicons name="images-outline" size={20} color={accent} />
               <Text style={styles.optionRowText}>{t('photoDiary.pickFromLibrary')}</Text>
             </AnimatedPressable>
+            {/* "사진 추가"에서만 — 골라둔 사진을 모양대로 오려서 스티커로 만드는 기능.
+                누르면 이 팝업은 그대로 두고 target만 'punch'로 바꿔서, 곧이어 사진찍기/
+                사진불러오기 중 하나로 사진을 고르면 캔버스에 바로 얹는 대신 모양 편집
+                화면으로 넘어간다 */}
+            {photoPickTarget === 'add' && (
+              <AnimatedPressable style={styles.optionRow} onPress={() => setPhotoPickTarget('punch')}>
+                <Ionicons name="cut-outline" size={20} color={accent} />
+                <Text style={styles.optionRowText}>{t('photoDiary.punchMachineOption')}</Text>
+              </AnimatedPressable>
+            )}
             <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowSourceModal(false)}>
               <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
             </AnimatedPressable>
@@ -1860,6 +2093,7 @@ export default function PhotoDiaryFormScreen() {
                 [
                   ['move-outline', t('photoDiary.helpTitle1'), t('photoDiary.helpDesc1')],
                   ['create-outline', t('photoDiary.helpTitle2'), t('photoDiary.helpDesc2')],
+                  ['reload-outline', t('photoDiary.helpTitle3'), t('photoDiary.helpDesc3')],
                   ['scan-outline', t('photoDiary.helpTitle7'), t('photoDiary.helpDesc7')],
                 ] as const
               ).map(([icon, title, desc]) => (
@@ -1876,6 +2110,39 @@ export default function PhotoDiaryFormScreen() {
             </View>
             <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowHelpModal(false)}>
               <Text style={styles.confirmCancelText}>{t('photoDiary.helpCloseButton')}</Text>
+            </AnimatedPressable>
+          </ShadowCard>
+        </RNView>
+      </Modal>
+
+      {/* "붙여넣기" 버튼을 누르면 바로 클립보드를 붙여넣는 대신, 저장해둔 걸 다시 쓸지
+          지금 복사한 걸 바로 붙일지 먼저 고르게 한다 */}
+      <Modal
+        visible={showPasteChoiceModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPasteChoiceModal(false)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowPasteChoiceModal(false)} />
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>{t('photoDiary.pasteChoiceTitle')}</Text>
+            <AnimatedPressable
+              style={styles.optionRow}
+              onPress={() => {
+                setShowPasteChoiceModal(false);
+                setShowStickerModal(true);
+              }}>
+              <Ionicons name="albums-outline" size={20} color={accent} />
+              <Text style={styles.optionRowText}>{t('photoDiary.pasteCollectionOption')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable
+              style={styles.optionRow}
+              onPress={() => {
+                setShowPasteChoiceModal(false);
+                pasteFromClipboard();
+              }}>
+              <Ionicons name="clipboard-outline" size={20} color={accent} />
+              <Text style={styles.optionRowText}>{t('photoDiary.pasteClipboardOption')}</Text>
             </AnimatedPressable>
           </ShadowCard>
         </RNView>
@@ -1900,6 +2167,30 @@ export default function PhotoDiaryFormScreen() {
           </ShadowCard>
         </RNView>
       </Modal>
+
+      <StickerCollectionModal
+        visible={showStickerModal}
+        stickers={stickerQuery.data ?? []}
+        isLoading={stickerQuery.isLoading}
+        isSaving={isSavingSticker}
+        onSelect={handleSelectSticker}
+        onDelete={handleDeleteSticker}
+        onSaveFromClipboard={handleSaveClipboardToCollection}
+        onClose={() => setShowStickerModal(false)}
+        accent={accent}
+        styles={styles}
+        t={t}
+      />
+
+      <ShapePunchModal
+        visible={!!punchSourceUri}
+        uri={punchSourceUri}
+        onCancel={() => setPunchSourceUri(null)}
+        onConfirm={handlePunchConfirm}
+        accent={accent}
+        styles={styles}
+        t={t}
+      />
 
       <InAppCamera
         visible={showInAppCamera}
@@ -1968,7 +2259,7 @@ function RoutineBlockContent({
             : styles.routineChipNeutral,
         ]}
         onPress={onPress}>
-        {isCompleted && <Ionicons name="checkmark-circle" size={13} color={accent} />}
+        {isCompleted && <Ionicons name="checkmark-circle" size={11} color={accent} />}
         <Text style={[styles.routineChipText, { color: textColor }]} numberOfLines={1}>
           {routine.title}
         </Text>
@@ -1983,6 +2274,95 @@ function RoutineBlockContent({
         </AnimatedPressable>
       )}
     </RNView>
+  );
+}
+
+// 그리드를 담는 ScrollView는 부모(ShadowCard/모달 카드)가 내용물 크기에 맞춰 늘어나는
+// 구조라 퍼센트(%) maxHeight로는 기준이 되는 높이가 없어 거의 0으로 찌그러지는 문제가
+// 있었다(사진일기 캔버스의 VignetteOverlay가 퍼센트 대신 실제 px를 쓰게 고쳤던 것과 같은
+// 종류의 버그) — 화면 높이 기준으로 계산한 실제 px 값을 줘야 ScrollView가 그 높이만큼
+// 확보되고, 넘치는 내용을 스크롤할 수 있다
+const STICKER_GRID_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.4);
+
+// 붙여넣기 모음집 — "붙여넣기"로 캔버스에 올린 이미지 중 직접 저장해둔 것만 모아서 보여주고,
+// 탭하면 새 사진 블록으로 캔버스에 다시 추가한다(요즘 스티커 꾸미기 앱들의 "내 보관함" 느낌).
+// 캔버스에 올리는 과정 없이 지금 클립보드에 있는 이미지를 바로 저장하는 버튼도 같이 둔다
+function StickerCollectionModal({
+  visible,
+  stickers,
+  isLoading,
+  isSaving,
+  onSelect,
+  onDelete,
+  onSaveFromClipboard,
+  onClose,
+  accent,
+  styles,
+  t,
+}: {
+  visible: boolean;
+  stickers: StickerItem[];
+  isLoading: boolean;
+  isSaving: boolean;
+  onSelect: (sticker: StickerItem) => void;
+  onDelete: (id: string) => void;
+  onSaveFromClipboard: () => void;
+  onClose: () => void;
+  accent: string;
+  styles: ReturnType<typeof createStyles>;
+  t: (key: TranslationKey) => string;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <RNView style={styles.confirmBackdrop}>
+        <AnimatedPressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.stickerModalCard}>
+          <Text style={styles.confirmTitle}>{t('photoDiary.stickerCollectionTitle')}</Text>
+          <Text style={styles.confirmDesc}>{t('photoDiary.stickerCollectionDesc')}</Text>
+          <AnimatedPressable
+            style={styles.stickerSaveFromClipboardButton}
+            onPress={onSaveFromClipboard}
+            disabled={isSaving}>
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="clipboard-outline" size={14} color="#fff" />
+            )}
+            <Text style={styles.stickerSaveFromClipboardText}>{t('photoDiary.saveClipboardToCollection')}</Text>
+          </AnimatedPressable>
+          {isLoading ? (
+            <RNView style={styles.stickerEmptyBox}>
+              <ActivityIndicator color={accent} />
+            </RNView>
+          ) : stickers.length === 0 ? (
+            <RNView style={styles.stickerEmptyBox}>
+              <Text style={styles.stickerEmptyText}>{t('photoDiary.stickerCollectionEmpty')}</Text>
+            </RNView>
+          ) : (
+            <ScrollView style={styles.stickerGridScroll} showsVerticalScrollIndicator>
+              <RNView style={styles.stickerGrid}>
+                {stickers.map((sticker) => (
+                  <RNView key={sticker.id} style={styles.stickerGridItem}>
+                    <AnimatedPressable onPress={() => onSelect(sticker)}>
+                      <Image source={{ uri: sticker.image_url }} style={styles.stickerThumb} />
+                    </AnimatedPressable>
+                    <AnimatedPressable
+                      style={styles.stickerDeleteBadge}
+                      onPress={() => onDelete(sticker.id)}
+                      hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#fff" />
+                    </AnimatedPressable>
+                  </RNView>
+                ))}
+              </RNView>
+            </ScrollView>
+          )}
+          <AnimatedPressable style={styles.confirmCancelButton} onPress={onClose}>
+            <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+          </AnimatedPressable>
+        </ShadowCard>
+      </RNView>
+    </Modal>
   );
 }
 
@@ -2212,6 +2592,447 @@ function PhotoFocalEditorModal({
   );
 }
 
+type PunchShapeId = 'circle' | 'square' | 'triangle' | 'star' | 'stamp';
+
+const PUNCH_SHAPES: { id: PunchShapeId; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: 'circle', icon: 'ellipse-outline' },
+  { id: 'square', icon: 'square-outline' },
+  { id: 'triangle', icon: 'triangle-outline' },
+  { id: 'star', icon: 'star-outline' },
+  { id: 'stamp', icon: 'receipt-outline' },
+];
+// 펀칭기계 결과물(스티커)을 내보낼 때 쓰는 정사각형 해상도(px) — 너무 작으면 확대했을 때
+// 흐려 보이고, 너무 크면 캡처가 느려지니 적당한 값
+const PUNCH_OUTPUT_SIZE = 480;
+// 흰(또는 검정/주색) 테두리 두께 — 도형의 실제 테두리 선(stroke)을 굵게 그려서 절반(바깥쪽)만
+// 보이게 하는 방식이라, 여기 숫자의 절반이 실제로 보이는 테두리 두께가 된다
+const PUNCH_BORDER_STROKE_WIDTH = 9;
+
+// 우표처럼 가장자리가 톱니(반원 구멍)로 파인 정사각형 경로를 계산해서 만든다. 사각형 네
+// 변을 각각 n등분해, 매 칸 가운데마다 반원 하나씩을 안쪽으로 파낸 모양 — 각 변의 시작점→
+// 끝점 방향 벡터(dir)와 안쪽을 향하는 수직 벡터(normal)를 구해서, 반원 위의 점들을
+// point(t) = 중심 - r·cos(t)·dir + r·sin(t)·normal (t: 0~π)로 계산한다. 이 식은 t=0에서
+// 반원 시작점, t=π/2에서 안쪽으로 가장 파인 점, t=π에서 반원 끝점이 되도록 만든 것이라
+// 사각형의 네 변 어디에 적용해도(dir/normal만 바뀌고 식은 그대로) 항상 안쪽으로 파인다
+function buildStampPath(): string {
+  const x0 = 4;
+  const y0 = 4;
+  const x1 = 96;
+  const y1 = 96;
+  const notchesPerSide = 5;
+  const stepsPerNotch = 10;
+  // 모서리 바로 옆에는 구멍을 안 뚫고 평평하게 남겨둬서(cornerMargin), 두 변의 구멍이
+  // 모서리에서 서로 만나 뭉개지거나 모서리 자체가 둥글어 보이는 걸 막는다. 구멍 반지름도
+  // 칸 간격의 절반보다 작게(0.32배) 잡아서 구멍 사이사이에 평평한 틈을 남겨 — 이어진
+  // 물결무늬가 아니라 낱개로 뚫린 동그란 구멍처럼 보이게 한다(실제 우표 펀칭 느낌)
+  const cornerMarginRatio = 0.12;
+  const notchRadiusRatio = 0.32;
+  const corners: [number, number][] = [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+  const points: [number, number][] = [];
+  for (let edge = 0; edge < 4; edge++) {
+    const [px0, py0] = corners[edge];
+    const [px1, py1] = corners[(edge + 1) % 4];
+    const dx = px1 - px0;
+    const dy = py1 - py0;
+    const edgeLen = Math.sqrt(dx * dx + dy * dy);
+    const dirX = dx / edgeLen;
+    const dirY = dy / edgeLen;
+    const normalX = -dirY;
+    const normalY = dirX;
+    const cornerMargin = edgeLen * cornerMarginRatio;
+    const usableLen = edgeLen - cornerMargin * 2;
+    const spacing = usableLen / notchesPerSide;
+    const r = spacing * notchRadiusRatio;
+    // 변의 시작 모서리(평평하게 남겨둔 구간 끝)부터 시작
+    points.push([px0 + dirX * cornerMargin, py0 + dirY * cornerMargin]);
+    for (let i = 0; i < notchesPerSide; i++) {
+      const distFromStart = cornerMargin + (i + 0.5) * spacing;
+      const cx = px0 + dirX * distFromStart;
+      const cy = py0 + dirY * distFromStart;
+      // 구멍 앞뒤로 평평한 틈(직선)을 먼저 그은 뒤 반원을 그린다
+      points.push([cx - dirX * r, cy - dirY * r]);
+      for (let s = 1; s <= stepsPerNotch; s++) {
+        const t = (s / stepsPerNotch) * Math.PI;
+        const px = cx - r * Math.cos(t) * dirX + r * Math.sin(t) * normalX;
+        const py = cy - r * Math.cos(t) * dirY + r * Math.sin(t) * normalY;
+        points.push([px, py]);
+      }
+    }
+    points.push([px1 - dirX * cornerMargin, py1 - dirY * cornerMargin]);
+    points.push([px1, py1]);
+  }
+  return points.map(([px, py], i) => `${i === 0 ? 'M' : 'L'} ${px.toFixed(2)} ${py.toFixed(2)}`).join(' ') + ' Z';
+}
+
+const STAMP_PATH = buildStampPath();
+// 뷰박스(0~100)보다 살짝 작게 그려서, 테두리 선이 바깥쪽으로 삐져나올 여백을 항상 남겨둔다
+const PUNCH_SHAPE_SCALE = 0.8;
+
+// 모양 하나를 0~100 기준 viewBox 안에 그린다. svgProps를 주면 그 스타일(채우기/테두리)로
+// 그려서 화면에 보이게 하고(가이드 표시 또는 실제 테두리 선), 안 주면 ClipPath 안에서
+// 잘라내는 용도로만 쓰인다(칠하는 색은 클리핑에 영향이 없어 굳이 안 줘도 됨)
+function PunchShapeGeometry({
+  shape,
+  svgProps,
+}: {
+  shape: PunchShapeId;
+  svgProps?: { fill?: string; stroke?: string; strokeWidth?: number; strokeLinejoin?: 'miter' | 'round' | 'bevel' };
+}) {
+  let node: React.JSX.Element;
+  switch (shape) {
+    case 'circle':
+      node = <Circle cx={50} cy={50} r={48} {...svgProps} />;
+      break;
+    case 'square':
+      node = <Rect x={2} y={2} width={96} height={96} rx={16} {...svgProps} />;
+      break;
+    case 'triangle':
+      node = <Path d="M50 3 L97 92 L3 92 Z" {...svgProps} />;
+      break;
+    case 'stamp':
+      node = <Path d={STAMP_PATH} {...svgProps} />;
+      break;
+    case 'star':
+    default:
+      node = <Path d="M50 2 L61 36 L98 36 L68 57 L79 92 L50 71 L21 92 L32 57 L2 36 L39 36 Z" {...svgProps} />;
+      break;
+  }
+  return <G transform={`translate(50 50) scale(${PUNCH_SHAPE_SCALE}) translate(-50 -50)`}>{node}</G>;
+}
+
+// "펀칭기계" — 사진을 원/사각형/삼각형/별 모양대로 오려내서 스티커처럼 쓸 수 있게 만드는
+// 편집 화면. 이동+모서리 크기조절은 "사진 위치 조정"(PhotoFocalEditorModal)과 같은 방식을
+// 재사용하되, 프레임이 항상 정사각형(모든 펀칭 모양이 1:1 비율)이라는 점만 다르다.
+// 모양 미리보기는 react-native-svg를 reanimated의 useAnimatedProps로 구동해서 프레임과
+// 똑같은 shared value(frameSize)로 매 프레임 실제 숫자(px) width/height를 먹인다 — 예전에
+// 퍼센트(%) 크기의 SVG가 부모 크기 변화를 안정적으로 못 따라오던 문제(VignetteOverlay)를
+// 겪은 적이 있어서, 퍼센트를 아예 쓰지 않는 쪽을 택했다.
+// 확정하면(handleConfirmPress) 프레임이 가리킨 원본 이미지 속 정사각형 영역을 계산해서,
+// 화면 밖(안 보이는 자리)에 최종 결과를 SVG(ClipPath로 모양대로 자르기 + 흰 테두리 옵션)로
+// 딱 한 번 그리고, 그걸 ViewShot으로 캡처해 투명 배경 PNG 파일을 만든다 — 실제로 화면에
+// 그려진 것만 캡처할 수 있어서 이 "잠깐 그렸다 치우는" 방식이 필요하다.
+function ShapePunchModal({
+  visible,
+  uri,
+  onCancel,
+  onConfirm,
+  accent,
+  styles,
+  t,
+}: {
+  visible: boolean;
+  uri: string | null;
+  onCancel: () => void;
+  onConfirm: (uri: string) => void;
+  accent: string;
+  styles: ReturnType<typeof createStyles>;
+  t: (key: TranslationKey) => string;
+}) {
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [shape, setShape] = useState<PunchShapeId>('circle');
+  const [withBorder, setWithBorder] = useState(true);
+  const [borderColor, setBorderColor] = useState<TextColorMode>('white');
+  const [isExporting, setIsExporting] = useState(false);
+  // 캡처용으로 딱 한 번만 그리는 최종본의 위치/크기(프레임의 확정값, 미리보기 픽셀 기준) —
+  // null이면 아직 확정 전(편집 중)
+  const [exportCrop, setExportCrop] = useState<{ x: number; y: number; size: number } | null>(null);
+  const exportShotRef = useRef<ViewShot>(null);
+
+  useEffect(() => {
+    if (!visible || !uri) return;
+    setNaturalSize(null);
+    setShape('circle');
+    setWithBorder(true);
+    setBorderColor('white');
+    setExportCrop(null);
+    Image.getSize(
+      uri,
+      (width, height) => setNaturalSize({ width, height }),
+      () => setNaturalSize({ width: 4, height: 3 })
+    );
+  }, [visible, uri]);
+
+  const previewBox = Math.min(FOCAL_PREVIEW_MAX, Dimensions.get('window').width - 80);
+  let dispW = previewBox;
+  let dispH = previewBox;
+  if (naturalSize) {
+    const imgAspect = naturalSize.width / naturalSize.height;
+    if (imgAspect > 1) {
+      dispW = previewBox;
+      dispH = previewBox / imgAspect;
+    } else {
+      dispH = previewBox;
+      dispW = previewBox * imgAspect;
+    }
+  }
+  const imgOffsetX = (previewBox - dispW) / 2;
+  const imgOffsetY = (previewBox - dispH) / 2;
+
+  const frameSize = useSharedValue(Math.min(dispW, dispH) * 0.8);
+  const frameCx = useSharedValue(0);
+  const frameCy = useSharedValue(0);
+  const startSize = useSharedValue(frameSize.value);
+  const startCx = useSharedValue(0);
+  const startCy = useSharedValue(0);
+
+  useEffect(() => {
+    if (!visible || !naturalSize) return;
+    const s = Math.min(dispW, dispH) * 0.8;
+    frameSize.value = s;
+    startSize.value = s;
+    frameCx.value = 0;
+    startCx.value = 0;
+    frameCy.value = 0;
+    startCy.value = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, naturalSize, dispW, dispH]);
+
+  // 사진 범위를 벗어나서 자르는 것도 허용한다(예: 사진보다 큰 도형을 쓰거나, 사진 가장자리에
+  // 걸치게 배치) — 사진이 없는 영역은 투명하게 남아서 "사진과 겹치는 부분만" 잘려 나온다.
+  // 다만 아예 손을 놓칠 만큼 멀리 가버리면 다시 찾기 어려우니, 프레임 자기 크기의 60%까지만
+  // 밖으로 나가도록(최소 40%는 항상 겹쳐 있도록) 느슨하게만 막아둔다
+  const framePan = Gesture.Pan()
+    .onUpdate((e) => {
+      const maxOffX = (dispW - frameSize.value) / 2 + frameSize.value * 0.6;
+      const maxOffY = (dispH - frameSize.value) / 2 + frameSize.value * 0.6;
+      frameCx.value = Math.min(maxOffX, Math.max(-maxOffX, startCx.value + e.translationX));
+      frameCy.value = Math.min(maxOffY, Math.max(-maxOffY, startCy.value + e.translationY));
+    })
+    .onEnd(() => {
+      startCx.value = frameCx.value;
+      startCy.value = frameCy.value;
+    });
+
+  // 모서리 손잡이 — 가로/세로가 항상 같이 움직여서 정사각형을 유지한다(모든 펀칭 모양이
+  // 1:1 비율이라 잘라낼 영역도 항상 정사각형이어야 함). 사진보다 큰 도형도 쓸 수 있게 사진
+  // 표시 영역보다 훨씬 크게(최대 변의 1.6배)까지 키울 수 있다
+  const cornerPan = Gesture.Pan()
+    .hitSlop(RESIZE_HANDLE_HIT_SLOP)
+    .onUpdate((e) => {
+      const delta = (e.translationX + e.translationY) / 2;
+      const maxSize = Math.max(dispW, dispH) * 1.6;
+      const s = Math.min(maxSize, Math.max(MIN_FRAME_PX, startSize.value + delta));
+      frameSize.value = s;
+      const maxOffX = (dispW - s) / 2 + s * 0.6;
+      const maxOffY = (dispH - s) / 2 + s * 0.6;
+      frameCx.value = Math.min(maxOffX, Math.max(-maxOffX, frameCx.value));
+      frameCy.value = Math.min(maxOffY, Math.max(-maxOffY, frameCy.value));
+    })
+    .onEnd(() => {
+      startSize.value = frameSize.value;
+      startCx.value = frameCx.value;
+      startCy.value = frameCy.value;
+    });
+
+  // 프레임을 감싸는 View 자체의 width/height도 같이 애니메이션(퍼센트 아님, 실제 px) —
+  // 아래 AnimatedSvg의 animatedProps와 같은 frameSize를 쓰므로 항상 시각적으로 맞고,
+  // 이 View의 실제 레이아웃 크기가 정확해야 손가락 인식 범위도 눈에 보이는 크기와 맞는다
+  const frameWrapStyle = useAnimatedStyle(() => ({
+    position: 'absolute' as const,
+    left: imgOffsetX + dispW / 2 - frameSize.value / 2 + frameCx.value,
+    top: imgOffsetY + dispH / 2 - frameSize.value / 2 + frameCy.value,
+    width: frameSize.value,
+    height: frameSize.value,
+  }));
+
+  const svgAnimatedProps = useAnimatedProps(() => ({
+    width: frameSize.value,
+    height: frameSize.value,
+  }));
+
+  const handleAnimatedStyle = useAnimatedStyle(() => {
+    const left = imgOffsetX + dispW / 2 - frameSize.value / 2 + frameCx.value;
+    const top = imgOffsetY + dispH / 2 - frameSize.value / 2 + frameCy.value;
+    return {
+      position: 'absolute' as const,
+      left: left + frameSize.value - RESIZE_HANDLE_SIZE / 2,
+      top: top + frameSize.value - RESIZE_HANDLE_SIZE / 2,
+    };
+  });
+
+  function handleConfirmPress() {
+    const s = frameSize.value;
+    const frameLeft = dispW / 2 - s / 2 + frameCx.value;
+    const frameTop = dispH / 2 - s / 2 + frameCy.value;
+    setExportCrop({ x: frameLeft / dispW, y: frameTop / dispH, size: s });
+  }
+
+  // exportCrop이 채워지면(확정 버튼을 눌렀으면) 화면 밖에 최종본을 한 번 그리고 캡처한다.
+  // 그려지는 즉시(같은 틱)가 아니라 살짝 뒤(다음 프레임 이후)에 캡처해야 방금 그린 내용이
+  // 확실히 반영된 상태로 잡힌다
+  useEffect(() => {
+    if (!exportCrop || !uri) return;
+    setIsExporting(true);
+    const timer = setTimeout(async () => {
+      try {
+        if (!exportShotRef.current) return;
+        const captured = await captureRef(exportShotRef.current, { format: 'png', quality: 1, result: 'tmpfile' });
+        onConfirm(captured);
+      } catch {
+        // 실패해도 화면을 닫지 않고 편집 상태로 남겨서 다시 시도할 수 있게 한다
+      } finally {
+        setIsExporting(false);
+        setExportCrop(null);
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportCrop, uri]);
+
+  // 최종본 계산 — 프레임이 가리킨 정사각형(미리보기 픽셀 기준)을 100 단위 viewBox상의
+  // 이미지 위치/크기로 환산한다. 사진일기 캔버스의 cropToImageStyle과 같은 원리(원본 이미지
+  // 기준 0~1 비율로 어디를 보여줄지 계산)를 100 단위 viewBox로 옮긴 것
+  let exportImage: { x: number; y: number; width: number; height: number } | null = null;
+  if (exportCrop) {
+    const wFrac = exportCrop.size / dispW;
+    const hFrac = exportCrop.size / dispH;
+    exportImage = {
+      width: 100 / wFrac,
+      height: 100 / hFrac,
+      x: -(exportCrop.x / wFrac) * 100,
+      y: -(exportCrop.y / hFrac) * 100,
+    };
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      {/* Modal은 앱 루트의 GestureHandlerRootView 밖에서 그려져서, 여기서 한 번 더 감싸야
+          프레임 드래그/크기조절 제스처가 인식된다(다른 편집 모달들과 동일한 이유) */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={onCancel} />
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>{t('photoDiary.punchEditTitle')}</Text>
+            <Text style={styles.confirmDesc}>{t('photoDiary.punchEditDesc')}</Text>
+            <View style={styles.punchShapeRow}>
+              {PUNCH_SHAPES.map((s) => (
+                <AnimatedPressable
+                  key={s.id}
+                  style={[styles.punchShapeButton, shape === s.id && { backgroundColor: accent }]}
+                  onPress={() => setShape(s.id)}>
+                  <Ionicons name={s.icon} size={20} color={shape === s.id ? '#fff' : accent} />
+                </AnimatedPressable>
+              ))}
+            </View>
+            {!naturalSize || !uri ? (
+              <RNView style={[styles.focalPreviewBox, { width: previewBox, height: previewBox }]}>
+                <ActivityIndicator color={accent} />
+              </RNView>
+            ) : (
+              <RNView style={[styles.focalPreviewBox, { width: previewBox, height: previewBox }]}>
+                <Image
+                  source={{ uri }}
+                  resizeMode="contain"
+                  style={{ position: 'absolute', left: imgOffsetX, top: imgOffsetY, width: dispW, height: dispH }}
+                />
+                <GestureDetector gesture={framePan}>
+                  <Animated.View style={frameWrapStyle}>
+                    <AnimatedSvg viewBox="0 0 100 100" animatedProps={svgAnimatedProps}>
+                      <PunchShapeGeometry
+                        shape={shape}
+                        svgProps={{ fill: withAlpha(accent, 0.22), stroke: accent, strokeWidth: 3, strokeLinejoin: 'round' }}
+                      />
+                    </AnimatedSvg>
+                  </Animated.View>
+                </GestureDetector>
+                <GestureDetector gesture={cornerPan}>
+                  <Animated.View style={[styles.focalFrameHandle, { backgroundColor: accent }, handleAnimatedStyle]}>
+                    <Ionicons name="resize" size={16} color="#fff" />
+                  </Animated.View>
+                </GestureDetector>
+              </RNView>
+            )}
+            <View style={styles.punchBorderToggleRow}>
+              {/* hitSlop을 주면 바로 옆 색상 스와치 영역까지 터치 범위가 넓어져서 스와치를
+                  눌러도 이 체크박스가 대신 반응하는 문제가 있었다 — hitSlop 제거로 해결 */}
+              <AnimatedPressable style={styles.punchBorderToggleTapArea} onPress={() => setWithBorder((prev) => !prev)}>
+                <Ionicons name={withBorder ? 'checkbox' : 'square-outline'} size={18} color={accent} />
+                <Text style={styles.punchBorderToggleText}>{t('photoDiary.punchBorderToggle')}</Text>
+              </AnimatedPressable>
+              {withBorder &&
+                (['white', 'black', 'accent'] as const).map((mode) => (
+                  <AnimatedPressable
+                    key={mode}
+                    onPress={() => setBorderColor(mode)}
+                    hitSlop={8}
+                    style={[styles.punchColorSwatch, { backgroundColor: resolveTextColor(mode, accent) }]}>
+                    {/* 선택 표시를 스와치 색과 같은 테두리로 하면(기존 textColorSwatchSelected)
+                        주색을 고를 때 주색 스와치 위에 주색 테두리가 겹쳐 거의 안 보이는
+                        문제가 있었다 — 대신 스와치 밝기에 맞춰 색을 바꾸는 체크 표시로 교체 */}
+                    {borderColor === mode && (
+                      <Ionicons name="checkmark" size={12} color={mode === 'white' ? '#333333' : '#ffffff'} />
+                    )}
+                  </AnimatedPressable>
+                ))}
+            </View>
+            <View style={styles.confirmButtonRow}>
+              <AnimatedPressable style={[styles.confirmCancelButton, { flex: 1 }]} onPress={onCancel}>
+                <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.primaryConfirmButton} onPress={handleConfirmPress} disabled={!naturalSize || isExporting}>
+                {isExporting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.primaryConfirmText}>{t('photoDiary.punchConfirm')}</Text>
+                )}
+              </AnimatedPressable>
+            </View>
+          </ShadowCard>
+        </RNView>
+      </GestureHandlerRootView>
+
+      {/* 화면 밖(안 보이는 자리)에 최종본을 실제로 한 번 그려서 캡처하는 전용 뷰 — ViewShot은
+          실제로 레이아웃/렌더링된 화면만 캡처할 수 있어서 이렇게 잠깐 그렸다가 캡처 직후 사라진다 */}
+      {exportCrop && exportImage && uri && (
+        <RNView style={styles.punchExportHost} pointerEvents="none">
+          <ViewShot ref={exportShotRef} options={{ format: 'png', quality: 1 }}>
+            <Svg width={PUNCH_OUTPUT_SIZE} height={PUNCH_OUTPUT_SIZE} viewBox="0 0 100 100">
+              <Defs>
+                <ClipPath id="punchFull">
+                  <PunchShapeGeometry shape={shape} />
+                </ClipPath>
+              </Defs>
+              {/* 테두리는 사진을 줄이는 대신(예전 방식은 원마다/모서리마다 두께가 들쭉날쭉했음),
+                  도형 윤곽선 자체를 굵게 그린다 — 선의 절반은 사진 안쪽(사진에 가려 안 보임),
+                  절반은 바깥쪽(그대로 보임)이라 사진 크기는 그대로 두고 테두리만 바깥으로
+                  둘러지는 효과를 낸다. 모든 모양에서 두께가 항상 일정하다 */}
+              {withBorder && (
+                <PunchShapeGeometry
+                  shape={shape}
+                  svgProps={{
+                    fill: 'none',
+                    stroke: resolveTextColor(borderColor, accent),
+                    strokeWidth: PUNCH_BORDER_STROKE_WIDTH,
+                    // 별/삼각형처럼 뾰족한 꼭짓점은 기본(miter) 이음매가 각도가 좁을수록
+                    // 훨씬 길게 튀어나와(예: 별의 뾰족한 부분은 두께의 1.5배 넘게 삐져나감)
+                    // 캔버스 바깥으로 밀려 잘려 보였다 — round로 바꾸면 이음매가 항상
+                    // 두께의 절반까지만 둥글게 나가서 어떤 각도에서도 잘리지 않는다
+                    strokeLinejoin: 'round',
+                  }}
+                />
+              )}
+              <SvgImage
+                href={uri}
+                x={exportImage.x}
+                y={exportImage.y}
+                width={exportImage.width}
+                height={exportImage.height}
+                preserveAspectRatio="xMidYMid slice"
+                clipPath="url(#punchFull)"
+              />
+            </Svg>
+          </ViewShot>
+        </RNView>
+      )}
+    </Modal>
+  );
+}
+
 function createStyles(accent: string, fontKorean: KoreanFontValue) {
   return StyleSheet.create({
     container: {
@@ -2240,6 +3061,32 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     toastText: {
       color: '#fff',
       fontSize: 13,
+      fontWeight: '700',
+    },
+    // 메모 입력 중 키보드 위에 항상 떠 있는 "키보드 닫기" 버튼 — KeyboardAvoidingView가
+    // 키보드 높이만큼 이 컨테이너 자체를 줄여주므로, 그 안에서 하단 고정으로 두면
+    // 자연스럽게 키보드 바로 위에 붙는다
+    keyboardDismissButton: {
+      position: 'absolute',
+      bottom: 12,
+      alignSelf: 'center',
+      zIndex: 20,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: accent,
+      borderRadius: 999,
+      paddingVertical: 8,
+      paddingHorizontal: 14,
+      shadowColor: '#000',
+      shadowOpacity: 0.15,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 4,
+    },
+    keyboardDismissText: {
+      color: '#fff',
+      fontSize: 12.5,
       fontWeight: '700',
     },
     inner: {
@@ -2363,19 +3210,19 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     routineChip: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 4,
+      gap: 3,
       maxWidth: ROUTINE_COL_WIDTH,
-      paddingVertical: 7,
-      paddingHorizontal: 12,
+      paddingVertical: 3.5,
+      paddingHorizontal: 7,
       borderRadius: 999,
-      borderWidth: 1.5,
+      borderWidth: 1.2,
     },
     routineChipNeutral: {
       backgroundColor: '#f2f2f2',
       borderColor: border,
     },
     routineChipText: {
-      fontSize: 13,
+      fontSize: 11,
       fontWeight: '600',
       fontFamily: fontKorean.fontFamily,
     },
@@ -2502,6 +3349,16 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       color: accent,
       fontSize: 11.5,
       fontWeight: '600',
+    },
+    // 같은 줄의 앞 버튼(기본값/디카 필터 등)과 바로 붙어 보이지 않도록, 회전초기화 버튼에만
+    // 추가로 더 띄운다
+    rotationResetButtonSpacing: {
+      marginLeft: 14,
+    },
+    // 기본값/회전초기화 버튼 묶음 — 줄바꿈이 일어나도 이 안의 두 버튼은 항상 같이 붙어서 움직인다
+    rotationResetGroup: {
+      flexDirection: 'row',
+      alignItems: 'center',
     },
     // "루틴 색 강조" 토글 — 네이티브 Switch와 같은 모양(트랙+동그란 손잡이)을 직접 그린다
     // 터치 영역은 손잡이 높이만큼 확보(손잡이가 선보다 두꺼움) — 트랙은 그 안에서 세로 가운데,
@@ -2638,6 +3495,78 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       marginBottom: 20,
       textAlign: 'center',
     },
+    // 스티커 모음집 모달 — 다른 확인창(confirmCard)보다 세로로 넉넉해야 그리드가 잘 보임
+    stickerModalCard: {
+      padding: 24,
+      alignItems: 'stretch',
+    },
+    stickerSaveFromClipboardButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      alignSelf: 'center',
+      backgroundColor: accent,
+      borderRadius: 999,
+      paddingVertical: 8,
+      paddingHorizontal: 16,
+      marginBottom: 16,
+    },
+    stickerSaveFromClipboardText: {
+      color: '#fff',
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    stickerEmptyBox: {
+      paddingVertical: 32,
+      alignItems: 'center',
+    },
+    stickerEmptyText: {
+      fontSize: 13,
+      opacity: 0.5,
+      textAlign: 'center',
+    },
+    stickerGridScroll: {
+      maxHeight: STICKER_GRID_MAX_HEIGHT,
+      marginBottom: 16,
+    },
+    stickerGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 14,
+      // 삭제 배지가 각 칸 위/오른쪽 바깥으로 살짝 튀어나오는데, 맨 윗줄은 그 여백이 스크롤
+      // 영역 바로 위 가장자리와 겹쳐서 ScrollView가 잘라내(클리핑) 잘 안 보였다 — 그리드
+      // 자체에 여백을 둬서 배지가 스크롤 경계 안쪽에 완전히 들어오게 한다
+      padding: 8,
+    },
+    stickerGridItem: {
+      width: 74,
+      height: 74,
+    },
+    stickerThumb: {
+      width: 74,
+      height: 74,
+      borderRadius: 10,
+      backgroundColor: '#f2f2f2',
+    },
+    stickerDeleteBadge: {
+      position: 'absolute',
+      top: -8,
+      right: -8,
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      backgroundColor: accent,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1.5,
+      borderColor: '#fff',
+      shadowColor: '#000',
+      shadowOpacity: 0.25,
+      shadowRadius: 3,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 3,
+    },
     pasteEmptyIconBadge: {
       width: 52,
       height: 52,
@@ -2766,6 +3695,54 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       shadowRadius: 3,
       shadowOffset: { width: 0, height: 1 },
       elevation: 3,
+    },
+    punchShapeRow: {
+      flexDirection: 'row',
+      justifyContent: 'center',
+      gap: 12,
+      marginBottom: 4,
+    },
+    punchShapeButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: withAlpha(accent, 0.35),
+    },
+    punchBorderToggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      marginTop: 4,
+      marginBottom: 8,
+    },
+    punchBorderToggleTapArea: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    punchColorSwatch: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 1,
+      borderColor: border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    punchBorderToggleText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    // 화면 밖에서 캡처 전용으로 딱 한 번 그리는 자리 — 안 보이지만 실제로 레이아웃/렌더링은
+    // 되어야 ViewShot이 캡처할 수 있어서 opacity가 아니라 화면 바깥 좌표로 밀어둔다
+    punchExportHost: {
+      position: 'absolute',
+      left: -9999,
+      top: 0,
     },
     // 삭제(빨강)만큼 무겁지 않은 확인 액션에 쓰는 주색 버튼 — 사진 위치 조정 "완료", 임시저장
     // 삭제 확인 등 여러 곳에서 재사용
