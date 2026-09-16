@@ -3,7 +3,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { supabase } from '@/lib/supabase';
 
-export type PhotoDiaryMode = 'text' | 'routines';
+// 'routines_memo': 루틴을 실시간 연동 칩이 아니라 메모(text 블록)로 불러오는 모드 —
+// 렌더링/편집은 'text' 블록과 완전히 같지만, 담지 않은 루틴 목록·복원 등 'routines'
+// 전용 기능을 그대로 쓰기 위해 모드 자체는 구분해서 저장한다(app/photo-diary-form.tsx 참고)
+export type PhotoDiaryMode = 'text' | 'routines' | 'routines_memo';
 export type PhotoSource = 'camera' | 'library';
 export type TextColorMode = 'black' | 'white' | 'accent';
 
@@ -38,6 +41,9 @@ export type CanvasBlock =
       rotation?: number;
       pasted?: boolean;
       textColor?: TextColorMode;
+      // 'routines_memo' 모드에서 이 메모가 어떤 루틴에서 왔는지 — 있으면 "담지 않은 루틴"
+      // 목록으로 숨기기/복원 대상이 된다(app/photo-diary-form.tsx의 hideRoutineBlock 참고)
+      routineId?: string;
     }
   | {
       id: string;

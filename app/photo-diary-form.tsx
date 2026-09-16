@@ -172,6 +172,11 @@ const MAX_BLOCK_SCALE = 2.2;
 // 손가락을 올리기 어렵다는 피드백으로 기존 24 → 44 → 56으로 계속 넓힘(선택된 블록에만
 // 적용되므로 다른 블록의 터치에는 영향 없음)
 const PINCH_HIT_SLOP = 56;
+// 탭(선택) 인식 여백은 선택 여부와 무관하게 모든 메모에 "항상" 켜져 있어서, 위 PINCH_HIT_SLOP을
+// 그대로 재사용하면 루틴 메모가 촘촘히 모인 곳에서는 여러 메모의 56px 확장 영역이 그 자리
+// 전체를 뒤덮어, 그 아래(또는 근처)에 있는 사진을 눌러도 메모 쪽이 항상 터치를 가로채 사진을
+// 선택/드래그할 수 없게 되는 문제가 있었다 — 탭 전용은 훨씬 좁은 여백만 쓴다
+const TAP_HIT_SLOP = 16;
 // 사진 블록의 가로/세로 각각 허용 범위(px) — 기존 균등 확대/축소 배율 범위를 그대로 픽셀로 환산
 const MIN_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MIN_BLOCK_SCALE);
 const MIN_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MIN_BLOCK_SCALE);
@@ -460,8 +465,10 @@ function DraggableBlock({
     .numberOfTaps(1)
     .maxDuration(300)
     // 블록이 작으면(짧은 메모 등) 터치 영역도 같이 작아져서 탭이 잘 안 잡힌다는 피드백으로
-    // 인식 범위를 넓힌다
-    .hitSlop(PINCH_HIT_SLOP)
+    // 어느 정도는 넓히되, 이 탭 인식은 선택 여부와 무관하게 항상 켜져 있어서 PINCH_HIT_SLOP만큼
+    // 넓히면 촘촘한 메모들 사이에서 다른 블록(사진 등)의 터치까지 가로채 버린다 — 더 좁은
+    // TAP_HIT_SLOP을 쓴다
+    .hitSlop(TAP_HIT_SLOP)
     .onEnd((_e, success) => {
       if (success && onTap) runOnJS(onTap)();
     });
@@ -737,8 +744,12 @@ export default function PhotoDiaryFormScreen() {
     setTextColorMode(entry.text_color_mode);
     const savedBlocks = buildBlocksFromEntry(entry, routineById);
     setBlocks(savedBlocks);
+    // 'routines'는 routine 블록, 'routines_memo'는 routineId가 붙은 text 블록 — 둘 다 "이미
+    // 캔버스에 놓인 루틴"으로 쳐야 "담지 않은 루틴" 목록이 중복 없이 정확히 계산된다
     const placedRoutineIds = new Set(
-      savedBlocks.filter((b): b is Extract<CanvasBlock, { type: 'routine' }> => b.type === 'routine').map((b) => b.routineId)
+      savedBlocks
+        .map((b) => (b.type === 'routine' ? b.routineId : b.type === 'text' ? b.routineId : undefined))
+        .filter((id): id is string => !!id)
     );
     setHiddenRoutineIds(candidateRoutines.filter((r) => !placedRoutineIds.has(r.id)).map((r) => r.id));
   }, [diaryQuery.data, candidateRoutines, routineById]);
@@ -865,20 +876,38 @@ export default function PhotoDiaryFormScreen() {
   // 실제 이미지 비율을 먼저 조회해서 그 비율 그대로(잘림 없이) 시작 크기를 잡는다
   function addPhotoBlockFromUri(uri: string, source: PhotoSource, pasted = false, vintage = false) {
     const place = (width?: number, height?: number) => {
-      setBlocks((prev) => [
-        ...prev,
-        {
-          id: nextBlockId(),
-          type: 'photo',
-          uri,
-          source,
-          vintage,
-          pasted,
-          x: CANVAS_SIDE_MARGIN,
-          y: CANVAS_PHOTO_HEIGHT + 12,
-          ...(width && height ? { width, height } : { scale: 0.6 }),
-        },
-      ]);
+      const effectiveHeight = height ?? PHOTO_BLOCK_HEIGHT * 0.6;
+      setBlocks((prev) => {
+        // 사진 바로 아래 고정된 자리에 넣으면 'routines'/'routines_memo' 모드에서 이미 그
+        // 자리를 차지한 루틴 칩·메모 그리드와 겹쳐버려서, 항상 위에 그려지고 인식 범위도
+        // 넓은 메모/칩이 터치를 먼저 가져가 새 사진을 드래그/회전할 수 없게 되는 문제가
+        // 있었다 — 루틴에서 온 블록(칩 또는 routineId 붙은 메모) 개수만큼 그리드가 차지하는
+        // 높이를 계산해서, 그 아래 빈 자리에 놓는다
+        const routineBlockCount = prev.filter((b) => b.type === 'routine' || (b.type === 'text' && b.routineId)).length;
+        const gridRows = Math.ceil(routineBlockCount / 2);
+        const gridBottom =
+          routineBlockCount > 0 ? CANVAS_PHOTO_HEIGHT + 40 + gridRows * ROUTINE_ROW_HEIGHT : CANVAS_PHOTO_HEIGHT;
+        // 그리드가 이미 캔버스를 거의 다 채운 상태면(루틴이 많을 때) 그 아래 자리가 캔버스
+        // 범위를 넘어가서 사진 아랫부분(회전·크기조절 손잡이가 있는 모서리)이
+        // overflow:hidden에 잘려 안 보이고 못 누르게 된다 — 캔버스 맨 아래에서 사진 높이만큼
+        // 올라온 자리를 넘지 않도록 고정해서, 그리드와 살짝 겹치더라도 사진 전체(손잡이 포함)가
+        // 항상 화면 안에 온전히 들어오게 한다
+        const maxY = Math.max(CANVAS_PHOTO_HEIGHT + 12, canvasHeight - effectiveHeight - 12);
+        return [
+          ...prev,
+          {
+            id: nextBlockId(),
+            type: 'photo',
+            uri,
+            source,
+            vintage,
+            pasted,
+            x: CANVAS_SIDE_MARGIN,
+            y: Math.min(gridBottom + 12, maxY),
+            ...(width && height ? { width, height } : { scale: 0.6 }),
+          },
+        ];
+      });
     };
     Image.getSize(
       uri,
@@ -911,7 +940,7 @@ export default function PhotoDiaryFormScreen() {
       return;
     }
     // 루틴 캔버스에 이미 있는 대표 사진 블록만 바꿔서, 화면에 보이는 사진만 교체되고 루틴/메모는 그대로 남는다
-    if (mode === 'routines') {
+    if (mode === 'routines' || mode === 'routines_memo') {
       setBlocks((prev) => {
         const idx = prev.findIndex((b) => b.type === 'photo');
         if (idx === -1) {
@@ -1030,15 +1059,32 @@ export default function PhotoDiaryFormScreen() {
     }
   }
 
+  // 대표 사진은 처음부터 캔버스 가로 폭에 꽉 차게 시작한다("가로 꽉 채우기"와 같은 폭·높이
+  // 값 — 높이는 CANVAS_PHOTO_HEIGHT 그대로라 아래 루틴/메모 자동배치 좌표는 안 건드려도 됨)
+  function buildMainPhotoBlock() {
+    return {
+      id: nextBlockId(),
+      type: 'photo' as const,
+      uri: photoUri!,
+      source: photoSource,
+      vintage: photoVintage,
+      x: 0,
+      y: 0,
+      width: CANVAS_WIDTH,
+      height: CANVAS_PHOTO_HEIGHT,
+    };
+  }
+
   function chooseMode(nextMode: PhotoDiaryMode) {
     setMode(nextMode);
     setShowModeModal(false);
     if (!photoUri) return;
+    const mainPhoto = buildMainPhotoBlock();
     if (nextMode === 'routines') {
       const toPlace = candidateRoutines.slice(0, MAX_AUTO_ROUTINE_BLOCKS);
       const overflow = candidateRoutines.slice(MAX_AUTO_ROUTINE_BLOCKS);
       setBlocks([
-        { id: nextBlockId(), type: 'photo', uri: photoUri, source: photoSource, vintage: photoVintage, x: 0, y: 0, scale: 1 },
+        mainPhoto,
         ...toPlace.map((r, i) => ({
           id: nextBlockId(),
           type: 'routine' as const,
@@ -1051,12 +1097,52 @@ export default function PhotoDiaryFormScreen() {
       setHiddenRoutineIds(overflow.map((r) => r.id));
     } else {
       // 일기적기도 같은 자유 캔버스 — 루틴 없이 사진 하나와 바로 쓸 수 있는 빈 메모 하나로 시작한다
-      setBlocks([
-        { id: nextBlockId(), type: 'photo', uri: photoUri, source: photoSource, vintage: photoVintage, x: 0, y: 0, scale: 1 },
-        { id: nextBlockId(), type: 'text', text: '', x: 24, y: CANVAS_PHOTO_HEIGHT + 40 },
-      ]);
+      setBlocks([mainPhoto, { id: nextBlockId(), type: 'text', text: '', x: 24, y: CANVAS_PHOTO_HEIGHT + 40 }]);
       setHiddenRoutineIds([]);
     }
+  }
+
+  // "루틴 메모형식 불러오기" — 루틴을 실시간 연동되는 칩(routine 블록)이 아니라, 제목만
+  // 가져온 자유 메모(text 블록)로 들여온다. 이후로는 완전히 일반 메모와 동일하게 취급되므로
+  // (실시간 완료 상태 동기화 없음, 자유 편집/삭제) 모드 자체는 'text'로 저장한다 — "담지 않은
+  // 루틴" 복원 목록이나 루틴 칩 강조색 UI 같은 routine 전용 기능은 여기 안 걸려도 된다
+  // 메모는 칩과 달리 탭/핀치 인식 범위(PINCH_HIT_SLOP=56px)가 넓어서, 칩과 같은 간격(12px)을
+  // 쓰면 그 인식 범위가 바로 위 사진 영역까지 깊이 파고들어 사진의 터치와 뒤섞여 첫 줄 메모가
+  // 잘 안 눌리고 안 움직이는 문제가 있었다 — 이미 문제없이 쓰던 "메모 추가" 버튼과 같은 간격
+  // (40px)으로 넉넉하게 띄운다
+  const MEMO_GRID_TOP_GAP = 40;
+  // 2열 그리드 칸이 실제로 캔버스 세로 범위 안에 다 들어가는 줄 수 — 칩(routine)은 고정
+  // MAX_AUTO_ROUTINE_BLOCKS를 그대로 믿고 써도 됐지만, 화면 폭이 좁은 기기에서는 그 개수만큼의
+  // 줄이 캔버스 높이(canvasHeight)를 넘어가 마지막 줄이 클리핑(overflow:hidden)돼 안 보이는
+  // 경우가 있었다 — 메모는 이 한도를 실제 여유 공간으로 다시 계산해서 절대 넘지 않게 한다
+  const maxMemoGridSlots = Math.max(
+    2,
+    Math.floor((canvasHeight - CANVAS_PHOTO_HEIGHT - MEMO_GRID_TOP_GAP) / ROUTINE_ROW_HEIGHT) * 2
+  );
+
+  function chooseRoutineMemoMode() {
+    setMode('routines_memo');
+    setShowModeModal(false);
+    if (!photoUri) return;
+    const mainPhoto = buildMainPhotoBlock();
+    // 'routines' 모드와 같은 2열 그리드 배치를 재사용하되, 실제로 캔버스 안에 다 들어가는
+    // 개수까지만 놓는다(위 maxMemoGridSlots 참고) — 넘치는 건 "담지 않은 루틴"으로 보낸다
+    const limit = Math.min(MAX_AUTO_ROUTINE_BLOCKS, maxMemoGridSlots);
+    const toPlace = candidateRoutines.slice(0, limit);
+    const overflow = candidateRoutines.slice(limit);
+    setBlocks([
+      mainPhoto,
+      ...toPlace.map((r, i) => ({
+        id: nextBlockId(),
+        type: 'text' as const,
+        text: r.title,
+        routineId: r.id,
+        x: ROUTINE_COL_X[i % 2],
+        y: CANVAS_PHOTO_HEIGHT + MEMO_GRID_TOP_GAP + Math.floor(i / 2) * ROUTINE_ROW_HEIGHT,
+      })),
+    ]);
+    // 다 못 담은 루틴도 'routines' 모드와 동일하게 "담지 않은 루틴" 목록에서 대기시킨다
+    setHiddenRoutineIds(overflow.map((r) => r.id));
   }
 
   function hideRoutineBlock(blockId: string, routineId: string) {
@@ -1067,6 +1153,24 @@ export default function PhotoDiaryFormScreen() {
 
   function restoreRoutine(routineId: string) {
     setHiddenRoutineIds((prev) => prev.filter((id) => id !== routineId));
+    // 'routines_memo'는 그냥 메모라서, 칩처럼 정해진 격자 칸을 찾아 넣으려다 캔버스 범위를
+    // 넘겨 안 보이게 되는 대신 "메모 추가" 버튼과 같은 항상 안전한 기본 위치에 다시 넣는다.
+    // 내용은 원래 루틴 제목 그대로 채워서(예: "물먹기") 뭐였는지 안 잊게 하고, 자리만 손으로
+    // 옮기면 된다
+    if (mode === 'routines_memo') {
+      setBlocks((prev) => [
+        ...prev,
+        {
+          id: nextBlockId(),
+          type: 'text',
+          text: routineById.get(routineId)?.title ?? '',
+          routineId,
+          x: 24,
+          y: CANVAS_PHOTO_HEIGHT + 40,
+        },
+      ]);
+      return;
+    }
     setBlocks((prev) => {
       const routineBlockCount = prev.filter((b) => b.type === 'routine').length;
       return [
@@ -1498,7 +1602,7 @@ export default function PhotoDiaryFormScreen() {
                     <RNView style={[styles.templateInner, { width: CANVAS_WIDTH, height: canvasHeight, overflow: 'hidden' }]}>
                       {!blocks.some((b) => b.type !== 'photo') && (
                         <Text style={styles.emptyCanvasText}>
-                          {t(mode === 'routines' ? 'photoDiary.emptyRoutines' : 'photoDiary.emptyText')}
+                          {t(mode === 'routines' || mode === 'routines_memo' ? 'photoDiary.emptyRoutines' : 'photoDiary.emptyText')}
                         </Text>
                       )}
                       {renderBlocks.map((block) => {
@@ -1543,12 +1647,12 @@ export default function PhotoDiaryFormScreen() {
                                     w = (size?.width ?? fallbackWidth) * effectiveScale;
                                     h = (size?.height ?? fallbackHeight) * effectiveScale;
                                   }
-                                  // 루틴 칩을 캔버스 밖으로 80% 이상 밀어내면 삭제가 아니라
-                                  // "담지 않은 루틴" 목록으로 보내서, 다시 추가하면 초기 위치로
-                                  // 되돌아오게 한다(끌던 위치를 그대로 기억하지 않음)
-                                  if (block.type === 'routine') {
+                                  // 루틴(칩 또는 'routines_memo' 모드의 메모)을 캔버스 밖으로 80%
+                                  // 이상 밀어내면 삭제가 아니라 "담지 않은 루틴" 목록으로 보내서,
+                                  // 다시 추가하면 초기 위치로 되돌아오게 한다(끌던 위치는 기억 안 함)
+                                  if (block.type === 'routine' || (block.type === 'text' && block.routineId)) {
                                     if (isMostlyOutsideCanvas(x, y, w, h, CANVAS_WIDTH, canvasHeight)) {
-                                      hideRoutineBlock(block.id, block.routineId);
+                                      hideRoutineBlock(block.id, block.routineId!);
                                       return;
                                     }
                                   } else if (isMostlyOutsideCanvas(x, y, w, h, CANVAS_WIDTH, canvasHeight)) {
@@ -1692,7 +1796,13 @@ export default function PhotoDiaryFormScreen() {
                           {selectedBlock && selectedBlock.type === 'text' && (
                             <AnimatedPressable
                               style={[styles.chipDeleteBadgeLight, fitTextBadgePosition(selectedBlock)]}
-                              onPress={() => removeTextBlock(selectedBlock.id)}>
+                              onPress={() =>
+                                // 루틴에서 온 메모('routines_memo' 모드)는 완전 삭제 대신 루틴
+                                // 칩처럼 "담지 않은 루틴" 목록으로 보내서 나중에 다시 불러올 수 있게 한다
+                                selectedBlock.routineId
+                                  ? hideRoutineBlock(selectedBlock.id, selectedBlock.routineId)
+                                  : removeTextBlock(selectedBlock.id)
+                              }>
                               <Ionicons name="close" size={11} color="#fff" />
                             </AnimatedPressable>
                           )}
@@ -1870,7 +1980,7 @@ export default function PhotoDiaryFormScreen() {
                       </View>
                     )}
 
-                    {mode === 'routines' && hiddenRoutineIds.length > 0 && (
+                    {(mode === 'routines' || mode === 'routines_memo') && hiddenRoutineIds.length > 0 && (
                       <View style={styles.hiddenSection}>
                         <Text style={styles.hiddenSectionTitle}>
                           {t('photoDiary.hiddenSectionTitle')} ({hiddenRoutineIds.length})
@@ -1989,6 +2099,13 @@ export default function PhotoDiaryFormScreen() {
             <AnimatedPressable style={styles.optionRow} onPress={() => chooseMode('routines')}>
               <Ionicons name="list-outline" size={20} color={accent} />
               <Text style={[styles.optionRowText, { flex: 1 }]}>{t('photoDiary.modeRoutines')}</Text>
+              <View style={styles.recommendedBadge}>
+                <Text style={styles.recommendedBadgeText}>{t('photoDiary.recommendedBadge')}</Text>
+              </View>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.optionRow} onPress={chooseRoutineMemoMode}>
+              <Ionicons name="document-text-outline" size={20} color={accent} />
+              <Text style={[styles.optionRowText, { flex: 1 }]}>{t('photoDiary.modeRoutinesMemo')}</Text>
               <View style={styles.recommendedBadge}>
                 <Text style={styles.recommendedBadgeText}>{t('photoDiary.recommendedBadge')}</Text>
               </View>
