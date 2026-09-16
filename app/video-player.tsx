@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Linking, StyleSheet, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Image, Linking, StyleSheet, useWindowDimensions } from 'react-native';
 import YoutubePlayer from 'react-native-youtube-iframe';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -14,6 +14,9 @@ import { extractYoutubeId, fetchVideoById } from '@/lib/videos';
 export default function VideoPlayerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [loadFailed, setLoadFailed] = useState(false);
+  // 유튜브 iframe(웹뷰) 자체가 뜨기까지는 우리 쪽에서 줄일 수 없는 시간이 걸려서, 그동안
+  // 화면이 멈춘 것처럼 안 보이게 이미 갖고 있는 썸네일을 먼저 보여주고 로딩이 끝나면 걷어낸다
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
   const { width } = useWindowDimensions();
   const accent = useAccentColor();
   const { t } = useTranslation();
@@ -30,6 +33,7 @@ export default function VideoPlayerScreen() {
   const onStateChange = useCallback((state: string) => {
     if (state === 'error') setLoadFailed(true);
   }, []);
+  const onReady = useCallback(() => setIsPlayerReady(true), []);
 
   if (!video) {
     return (
@@ -45,13 +49,22 @@ export default function VideoPlayerScreen() {
   return (
     <View style={styles.container}>
       {youtubeId && !loadFailed ? (
-        <YoutubePlayer
-          height={playerHeight}
-          width={width}
-          videoId={youtubeId}
-          play={false}
-          onChangeState={onStateChange}
-        />
+        <View style={{ width, height: playerHeight }}>
+          {!isPlayerReady && (
+            <View style={[StyleSheet.absoluteFill, styles.centered]}>
+              <Image source={{ uri: video.thumbnail_url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              <ActivityIndicator color="#fff" />
+            </View>
+          )}
+          <YoutubePlayer
+            height={playerHeight}
+            width={width}
+            videoId={youtubeId}
+            play={false}
+            onChangeState={onStateChange}
+            onReady={onReady}
+          />
+        </View>
       ) : (
         <View style={[styles.player, { height: playerHeight }, styles.centered]}>
           <Text style={styles.errorText}>{t('videoPlayer.loadFailed')}</Text>

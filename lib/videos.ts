@@ -334,28 +334,26 @@ export async function createUserVideo(
   if (!videoId) throw new Error('올바른 유튜브 링크가 아니에요.');
 
   const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
 
-  // 같은 카테고리에 같은 영상을 실수로(더블탭 등) 두 번 추가하지 않도록, 추천 영상 추가와
-  // 동일하게 먼저 중복인지 확인한다. limit(1)을 쓰는 이유도 addRecommendedVideoToMyGrid와 같음
-  const { data: existingRows, error: checkError } = await supabase
-    .from('videos')
-    .select()
-    .eq('user_id', userId)
-    .eq('category_id', categoryId)
-    .eq('youtube_url', canonicalUrl)
-    .limit(1);
+  // 중복 확인(같은 카테고리에 같은 영상을 실수로 두 번 추가 방지)과 oEmbed 메타데이터 조회는
+  // 서로 무관한 요청이라 순서대로 기다리지 않고 동시에 시작한다 — 이것만으로도 왕복 한 번만큼
+  // 빨라진다. limit(1)을 쓰는 이유는 addRecommendedVideoToMyGrid와 같음
+  const [{ data: existingRows, error: checkError }, res] = await Promise.all([
+    supabase.from('videos').select().eq('user_id', userId).eq('category_id', categoryId).eq('youtube_url', canonicalUrl).limit(1),
+    fetch(oembedUrl),
+  ]);
   if (checkError) throw checkError;
   const existing = existingRows?.[0];
   if (existing) return { video: existing, alreadyAdded: true };
 
-  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
-
-  const res = await fetch(oembedUrl);
   if (!res.ok) throw new Error('영상 정보를 가져오지 못했어요. 링크를 확인해주세요.');
   const meta = await res.json();
 
-  const channelUrl = await resolveChannelUrl(canonicalUrl, meta.author_url);
-
+  // 표준 채널ID(UC...) 해석(resolveChannelUrl)은 유튜브 시청 페이지 전체를 통째로 받아와야 해서
+  // 가장 느린 단계였다 — "영상 추가" 자체를 여기에 묶어 기다리게 하지 않고, 일단 oEmbed가 준
+  // author_url로 먼저 저장해 바로 추가 완료시킨 뒤, 정확한 채널 링크는 뒤에서 조용히 보정한다
+  // (실제로 "채널 방문"을 누를 때쯤엔 이미 반영돼 있을 만큼 충분히 빠르게 끝남)
   const { data, error } = await supabase
     .from('videos')
     .insert({
@@ -364,12 +362,21 @@ export async function createUserVideo(
       youtube_url: canonicalUrl,
       thumbnail_url: meta.thumbnail_url,
       channel_name: meta.author_name,
-      channel_url: channelUrl,
+      channel_url: meta.author_url,
       user_id: userId,
       sort_order: await nextVideoSortOrder(categoryId, userId),
     })
     .select()
     .single();
   if (error) throw error;
+
+  resolveChannelUrl(canonicalUrl, meta.author_url)
+    .then((channelUrl) => {
+      if (channelUrl !== meta.author_url) {
+        return supabase.from('videos').update({ channel_url: channelUrl }).eq('id', data.id);
+      }
+    })
+    .catch(() => {});
+
   return { video: data, alreadyAdded: false };
 }
