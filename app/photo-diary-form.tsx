@@ -52,6 +52,7 @@ import {
   fetchPhotoDiary,
   savePhotoDiary,
   uploadPhotoDiaryPhoto,
+  type BackgroundType,
   type CanvasBlock,
   type PhotoDiary,
   type PhotoDiaryMode,
@@ -92,6 +93,10 @@ const ROUTINE_COL_X = [CANVAS_SIDE_MARGIN, CANVAS_SIDE_MARGIN + ROUTINE_COL_WIDT
 // 무제한으로 다 올리면 캔버스가 한없이 길어지고 사진 느낌 자체가 사라지지만, 보통의 하루
 // 루틴 개수(10개 안팎)는 여유 있게 다 들어가도록 넉넉하게 잡는다
 const MAX_AUTO_ROUTINE_BLOCKS = 10;
+// 배경 색상 기본 6종 — 흰/검정 + 기존 날짜 메모(캘린더)에 이미 쓰던 파스텔 4색을 재사용해서
+// 앱 전체 색 톤과 어긋나지 않게 한다
+const BACKGROUND_COLOR_PRESETS = ['#FFFFFF', '#1A1A1A', '#F0DBA8', '#A9D8CA', '#B4C6EA', '#CCBEE9'];
+const BACKGROUND_OPACITY_PRESETS = [0.25, 0.5, 0.75, 1];
 
 let blockIdSeq = 0;
 function nextBlockId(): string {
@@ -133,9 +138,13 @@ function buildBlocksFromEntry(entry: PhotoDiary, routineById: Map<string, Routin
 // 화면에 그리는 순서(겹침) 전용 우선순위 — 낮을수록 아래에 깔린다. 같은 층 안에서는
 // renderBlocks가 배열에 추가된 순서(최근 추가한 게 더 나중 = 더 위)로 다시 한 번 정렬한다.
 // 사진은 붙여넣었든(pasted) 아니든 같은 층으로 묶어야, "사진 추가"로 마지막에 올린 사진이
-// 먼저 있던 사진(대표 사진이든 붙여넣은 것이든) 위로 항상 올라온다
+// 먼저 있던 사진(대표 사진이든 붙여넣은 것이든) 위로 항상 올라온다.
+// 사진을 맨 위층에 두는 이유: 펀칭기계 스티커·붙여넣은 사진을 메모 위로 옮기면, 이전엔 사진이
+// 항상 맨 아래층이라 메모가 터치를 가로채 드래그가 안 됐음 — 사진/스티커는 사용자가 직접
+// 움직이며 배치하는 요소라 항상 맨 위(만졌을 때 확실히 반응)여야 자연스럽다. 대표 사진은
+// 기본 위치에서는 루틴/메모와 겹치지 않게 배치돼 있어서 평소엔 시각적으로 티가 안 난다
 function blockLayer(b: CanvasBlock): number {
-  if (b.type === 'photo') return 0;
+  if (b.type === 'photo') return 4;
   if (b.type === 'routine') return 2;
   return b.pasted ? 1 : 3;
 }
@@ -169,19 +178,24 @@ const DRAG_HOLD_MS = 150;
 const MIN_BLOCK_SCALE = 0.55;
 const MAX_BLOCK_SCALE = 2.2;
 // 선택된 블록의 핀치 인식 영역을 실제 크기보다 넓혀주는 여백 — 작은 칩/메모 위에 정확히 두
-// 손가락을 올리기 어렵다는 피드백으로 기존 24 → 44 → 56으로 계속 넓힘(선택된 블록에만
-// 적용되므로 다른 블록의 터치에는 영향 없음)
-const PINCH_HIT_SLOP = 56;
+// 손가락을 올리기 어렵다는 피드백으로 기존 24 → 44 → 56 → 72로 계속 넓힘. 탭(선택) 인식은
+// 아래 TAP_HIT_SLOP으로 따로 빼놨기 때문에, 이 값은 "이미 선택된 블록 하나"에만 걸려서 다른
+// 블록과의 터치 충돌 없이 계속 넓혀도 안전하다
+const PINCH_HIT_SLOP = 72;
 // 탭(선택) 인식 여백은 선택 여부와 무관하게 모든 메모에 "항상" 켜져 있어서, 위 PINCH_HIT_SLOP을
-// 그대로 재사용하면 루틴 메모가 촘촘히 모인 곳에서는 여러 메모의 56px 확장 영역이 그 자리
-// 전체를 뒤덮어, 그 아래(또는 근처)에 있는 사진을 눌러도 메모 쪽이 항상 터치를 가로채 사진을
+// 그대로 재사용하면 루틴 메모가 촘촘히 모인 곳에서는 여러 메모의 확장 영역이 그 자리 전체를
+// 뒤덮어, 그 아래(또는 근처)에 있는 사진을 눌러도 메모 쪽이 항상 터치를 가로채 사진을
 // 선택/드래그할 수 없게 되는 문제가 있었다 — 탭 전용은 훨씬 좁은 여백만 쓴다
-const TAP_HIT_SLOP = 16;
-// 사진 블록의 가로/세로 각각 허용 범위(px) — 기존 균등 확대/축소 배율 범위를 그대로 픽셀로 환산
-const MIN_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MIN_BLOCK_SCALE);
-const MIN_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MIN_BLOCK_SCALE);
+const TAP_HIT_SLOP = 22;
+// 사진 블록의 최대 허용 범위(px) — 기존 균등 확대/축소 배율 범위를 그대로 픽셀로 환산
 const MAX_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MAX_BLOCK_SCALE);
 const MAX_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MAX_BLOCK_SCALE);
+// 사진은 텍스트/루틴 칩과 달리 화면 밖 삭제 배지를 쓰고(작아져도 못 누르는 문제가 없음)
+// 스티커처럼 아주 작게 쓰고 싶다는 요청이 있어서, 최소 배율은 공용 MIN_BLOCK_SCALE보다
+// 훨씬 낮게 따로 둔다(에러 없이 그려지는 선에서 최대한 낮춘 값)
+const MIN_PHOTO_SCALE = 0.15;
+const MIN_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MIN_PHOTO_SCALE);
+const MIN_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MIN_PHOTO_SCALE);
 // 모서리 크기조절 손잡이의 터치 아이콘 크기 — 손가락으로 정확히 맞추기 어렵다는 피드백으로
 // 26 → 32로 키우고, 아래 hitSlop으로 눈에 보이는 크기보다 더 넓게 인식되게 한다
 const RESIZE_HANDLE_SIZE = 32;
@@ -386,8 +400,17 @@ function DraggableBlock({
     .hitSlop(pinchEnabled ? PINCH_HIT_SLOP : 0)
     .onUpdate((e) => {
       if (isBoxMode) {
-        boxW.value = Math.min(maxW, Math.max(minW, baseWidthRef.current * e.scale));
-        boxH.value = Math.min(maxH, Math.max(minH, baseHeightRef.current * e.scale));
+        // 가로/세로 각각의 최소·최대 픽셀에 독립적으로 맞춰 자르면(4:3 기준으로 정한 값이라),
+        // 정사각형(펀칭 결과 등) 같은 다른 비율의 사진은 가로와 세로가 서로 다른 배율에서
+        // 먼저 한계에 도달해버려서 핀치(원래 균등 확대·축소여야 함)인데도 비율이 일그러지고,
+        // 그 상태에서 다시 줄이면 이미 한쪽이 한계에 걸려 있어 원래 최소 크기까지 안 줄어드는
+        //것처럼 보이는 버그가 있었다 — e.scale 자체를 "이 사진의 가로/세로 둘 다 범위 안에
+        // 들어오는" 배율로 먼저 제한해서, 항상 가로세로 비율을 유지한 채로만 커지고 작아지게 한다
+        const minScale = Math.max(minW / baseWidthRef.current, minH / baseHeightRef.current);
+        const maxScale = Math.min(maxW / baseWidthRef.current, maxH / baseHeightRef.current);
+        const clampedScale = Math.min(maxScale, Math.max(minScale, e.scale));
+        boxW.value = baseWidthRef.current * clampedScale;
+        boxH.value = baseHeightRef.current * clampedScale;
         return;
       }
       // 손가락을 아주 작게 오므리면 배율이 최소치보다 한참 아래로 떨어졌다가 손을 떼는 순간
@@ -440,17 +463,30 @@ function DraggableBlock({
 
   // 회전 손잡이 드래그(사진 전용 — 루틴/메모는 위 rotateGesture로 대신함) — 절대좌표 기준으로
   // 손가락-중심 각도를 계산하는 방식은 스크롤 오프셋 등에 따라 불안정해서, 리사이즈 손잡이와
-  // 같은 원리로 "가로로 끈 만큼(px) 각도(도)가 바뀐다"는 단순한 매핑을 쓴다. 손잡이가 왼쪽
-  // 아래 모서리에 있어서, 회전 후 손잡이 자신도 같이 돌아간 위치에 그려진다는 걸 감안하면
+  // 같은 원리로 "가로로 끈 만큼(px) 각도(도)가 바뀐다"는 매핑을 쓴다. 손잡이가 왼쪽 아래
+  // 모서리에 있어서, 회전 후 손잡이 자신도 같이 돌아간 위치에 그려진다는 걸 감안하면
   // "오른쪽으로 끌수록 손잡이가 화면상 오른쪽으로 따라와야" 자연스러운데, 그러려면 각도는
   // 반시계(음수) 방향으로 줄어야 한다(회전 행렬로 좌하단 모서리 좌표를 계산해보면 시계방향
   // 회전일수록 오히려 왼쪽으로 이동함) — 그래서 부호를 반전한다(왼쪽 위였을 땐 반대로 옳았음)
+  //
+  // ⚠️ 처음엔 "회전 시작 각도 하나만 기준으로 화면 좌표를 되돌려서" 계산했는데(제스처 도중엔
+  // 그 각도로 고정), 이러면 제스처 "시작할 때"의 각도 기준으로 끝까지 밀어붙이는 셈이라 —
+  // 실제로 화면을 오른쪽으로 계속 끌어도 회전 각도가 커질수록 "그 되돌린 좌표계에서 본
+  // 방향"이 사용자가 물리적으로 끄는 방향과 어긋나기 시작해서, 90도 근처부터 거의 안 도는
+  // 것처럼 느껴지고(제자리에서 맴돎), 다음 제스처를 다시 시작하면 그 어긋난 방향이 반대로
+  // 작용해 오히려 되돌아가는 것처럼 보이는 문제가 있었다 — 매 프레임마다 "그 순간의 최신
+  // 각도"를 기준으로 아주 작은 변화량(changeX/Y, 직전 프레임 대비 델타)만 반영해서 누적하면,
+  // 한 번에 큰 각도를 되돌릴 일이 없어 항상 스스로 보정되며 부드럽게 이어진다(360도 전부 자유)
   const rotatePan = Gesture.Pan()
     .enabled(isBoxMode && rotatable && pinchEnabled)
     .hitSlop(ROTATE_HANDLE_HIT_SLOP)
-    .onUpdate((e) => {
-      // 360도 전부 자유롭게 — 더 이상 각도를 제한하지 않는다
-      rotationLive.value = baseRotationRef.current - e.translationX * ROTATE_SENSITIVITY;
+    // onUpdate가 주는 translationX/Y는 "제스처 시작점부터의 누적값"이라 매 프레임 기준 각도가
+    // 계속 바뀌면 위 문제가 생긴다 — onChange는 "바로 직전 프레임 대비 변화량"(changeX/Y)을
+    // 주므로, 매 프레임 그 순간의 최신 각도로만 아주 작은 변화를 누적할 수 있다
+    .onChange((e) => {
+      const rad = (rotationLive.value * Math.PI) / 180;
+      const localDx = e.changeX * Math.cos(rad) + e.changeY * Math.sin(rad);
+      rotationLive.value = rotationLive.value - localDx * ROTATE_SENSITIVITY;
     })
     .onEnd(() => {
       if (onRotate) runOnJS(onRotate)(rotationLive.value);
@@ -624,6 +660,18 @@ export default function PhotoDiaryFormScreen() {
     transform: [{ translateX: routineSwitchOn.value * ROUTINE_SWITCH_THUMB_TRAVEL }],
   }));
   const [textColorMode, setTextColorMode] = useState<TextColorMode>('black');
+  // 캔버스 맨 밑에 깔리는 배경(색상 또는 사진) — 그 위에 사진/루틴/메모가 놓인다
+  const [backgroundType, setBackgroundType] = useState<BackgroundType>('none');
+  const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
+  const [backgroundPhotoUri, setBackgroundPhotoUri] = useState<string | null>(null);
+  const [backgroundOpacity, setBackgroundOpacity] = useState(1);
+  // 배경 사진 중 보여줄 영역(원본 이미지 기준 0~1) — 없으면 resizeMode="cover" 기본 동작
+  const [backgroundCropX, setBackgroundCropX] = useState<number | undefined>(undefined);
+  const [backgroundCropY, setBackgroundCropY] = useState<number | undefined>(undefined);
+  const [backgroundCropW, setBackgroundCropW] = useState<number | undefined>(undefined);
+  const [backgroundCropH, setBackgroundCropH] = useState<number | undefined>(undefined);
+  const [showBackgroundModal, setShowBackgroundModal] = useState(false);
+  const [showBackgroundFocalEdit, setShowBackgroundFocalEdit] = useState(false);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   // 메모(텍스트) 블록만 별도로 관리하는 "입력창(키보드) 모드" — 탭하면 selectedBlockId와
   // 같이 이 상태도 켜져서 키보드가 뜨고, 그 상태에서도 이동/핀치/삭제는 그대로 가능하다
@@ -666,8 +714,9 @@ export default function PhotoDiaryFormScreen() {
   const [isSavingSticker, setIsSavingSticker] = useState(false);
   // 사진 선택 팝업을 "대표 사진 바꾸기"/"캔버스에 사진 추가" 중 어떤 용도로 열었는지 구분.
   // 'punch'는 "펀칭기계"(모양대로 사진 오려내기)용 — 같은 팝업(사진찍기/사진불러오기)에서
-  // 사진을 고르면 캔버스에 바로 추가하는 대신 펀칭 편집 화면으로 넘어간다
-  const [photoPickTarget, setPhotoPickTarget] = useState<'cover' | 'add' | 'punch'>('cover');
+  // 사진을 고르면 캔버스에 바로 추가하는 대신 펀칭 편집 화면으로 넘어간다. 'background'는
+  // 배경으로 쓸 사진 고르기용
+  const [photoPickTarget, setPhotoPickTarget] = useState<'cover' | 'add' | 'punch' | 'background'>('cover');
   // 펀칭기계로 고른 원본 사진(아직 모양을 안 정한 상태) — null이 아니면 편집 모달이 뜬다
   const [punchSourceUri, setPunchSourceUri] = useState<string | null>(null);
 
@@ -742,6 +791,14 @@ export default function PhotoDiaryFormScreen() {
     setMode(entry.mode);
     setRoutineColorEnabled(entry.routine_color_enabled);
     setTextColorMode(entry.text_color_mode);
+    setBackgroundType(entry.background_type);
+    setBackgroundColor(entry.background_color);
+    setBackgroundPhotoUri(entry.background_photo_url);
+    setBackgroundOpacity(entry.background_opacity);
+    setBackgroundCropX(entry.background_crop_x ?? undefined);
+    setBackgroundCropY(entry.background_crop_y ?? undefined);
+    setBackgroundCropW(entry.background_crop_w ?? undefined);
+    setBackgroundCropH(entry.background_crop_h ?? undefined);
     const savedBlocks = buildBlocksFromEntry(entry, routineById);
     setBlocks(savedBlocks);
     // 'routines'는 routine 블록, 'routines_memo'는 routineId가 붙은 text 블록 — 둘 다 "이미
@@ -755,8 +812,14 @@ export default function PhotoDiaryFormScreen() {
   }, [diaryQuery.data, candidateRoutines, routineById]);
 
   useEffect(() => {
-    if (diaryQuery.isError) setErrorMessage(t('photoDiary.errorLoad'));
-  }, [diaryQuery.isError]);
+    if (diaryQuery.isError) {
+      setErrorMessage(t('photoDiary.errorLoad'));
+      return;
+    }
+    // 이전에 이 로드 실패 메시지가 떠 있었는데 재조회가 성공하면(예: DB 스키마 문제를 고친
+    // 뒤) 자동으로 걷어낸다 — 저장/삭제 등 다른 액션이 띄워둔 메시지는 그대로 둔다
+    setErrorMessage((prev) => (prev === t('photoDiary.errorLoad') ? null : prev));
+  }, [diaryQuery.isError, t]);
 
   // 카메라 등 외부 화면을 여는 동안 안드로이드가 앱 프로세스를 강제 종료했다가 재시작하면
   // (사진 촬영 후 오늘 탭으로 튕기던 문제) 이 화면의 로컬 state가 전부 날아간다 — 서버 저장
@@ -782,6 +845,14 @@ export default function PhotoDiaryFormScreen() {
         if (Array.isArray(draft.hiddenRoutineIds)) setHiddenRoutineIds(draft.hiddenRoutineIds);
         if (typeof draft.routineColorEnabled === 'boolean') setRoutineColorEnabled(draft.routineColorEnabled);
         if (draft.textColorMode) setTextColorMode(draft.textColorMode);
+        if (draft.backgroundType) setBackgroundType(draft.backgroundType);
+        if (draft.backgroundColor !== undefined) setBackgroundColor(draft.backgroundColor);
+        if (draft.backgroundPhotoUri !== undefined) setBackgroundPhotoUri(draft.backgroundPhotoUri);
+        if (typeof draft.backgroundOpacity === 'number') setBackgroundOpacity(draft.backgroundOpacity);
+        if (typeof draft.backgroundCropX === 'number') setBackgroundCropX(draft.backgroundCropX);
+        if (typeof draft.backgroundCropY === 'number') setBackgroundCropY(draft.backgroundCropY);
+        if (typeof draft.backgroundCropW === 'number') setBackgroundCropW(draft.backgroundCropW);
+        if (typeof draft.backgroundCropH === 'number') setBackgroundCropH(draft.backgroundCropH);
         // 사진은 찍었는데 "무엇을 적을까요" 모드를 고르기 전에 앱이 재시작된 경우, 모드가
         // 없는 채로 photoUri만 복원되면 저장/임시저장삭제 버튼이 전부 mode를 요구해서 하나도
         // 안 뜨는 막다른 화면이 됐었다 — 모드 선택 모달을 다시 띄워서 이어갈 수 있게 한다
@@ -796,9 +867,42 @@ export default function PhotoDiaryFormScreen() {
     // mode가 정해지기 전(사진만 찍고 "무엇을 적을까요"를 아직 안 고른 상태)은 애매한
     // 중간 상태라 그 시점부턴 저장 안 하고, 모드를 고른 뒤부터만 임시저장을 시작한다
     if (!draftKey || !photoUri || !mode || !draftRestoredRef.current) return;
-    const draft = { photoUri, photoSource, mode, blocks, hiddenRoutineIds, routineColorEnabled, textColorMode };
+    const draft = {
+      photoUri,
+      photoSource,
+      mode,
+      blocks,
+      hiddenRoutineIds,
+      routineColorEnabled,
+      textColorMode,
+      backgroundType,
+      backgroundColor,
+      backgroundPhotoUri,
+      backgroundOpacity,
+      backgroundCropX,
+      backgroundCropY,
+      backgroundCropW,
+      backgroundCropH,
+    };
     AsyncStorage.setItem(draftKey, JSON.stringify(draft)).catch(() => {});
-  }, [draftKey, photoUri, photoSource, mode, blocks, hiddenRoutineIds, routineColorEnabled, textColorMode]);
+  }, [
+    draftKey,
+    photoUri,
+    photoSource,
+    mode,
+    blocks,
+    hiddenRoutineIds,
+    routineColorEnabled,
+    textColorMode,
+    backgroundType,
+    backgroundColor,
+    backgroundPhotoUri,
+    backgroundOpacity,
+    backgroundCropX,
+    backgroundCropY,
+    backgroundCropW,
+    backgroundCropH,
+  ]);
 
   // 사진일기를 처음 써보는 사용자에게 사용법을 한 번만 자동으로 보여준다 — "일기 적기"든
   // "루틴 고르기"든 어느 쪽을 먼저 쓰든 상관없이 캔버스에 처음 들어온 그 순간 한 번만
@@ -869,6 +973,11 @@ export default function PhotoDiaryFormScreen() {
     setShowSourceModal(true);
   }
 
+  function openBackgroundPhotoPicker() {
+    setPhotoPickTarget('background');
+    setShowSourceModal(true);
+  }
+
   // 캔버스에 사진을 하나 더 추가 — 대표 사진보다 조금 작게 시작해서 서로 구분되게 하고,
   // 이후 선택해서 자유롭게 드래그/핀치줌으로 옮기고 키울 수 있다
   // 기본(4:3) 박스로 시작하면, 정사각형(펀칭 결과)이나 세로로 긴 사진처럼 비율이 다른
@@ -927,6 +1036,16 @@ export default function PhotoDiaryFormScreen() {
     }
     if (photoPickTarget === 'add') {
       addPhotoBlockFromUri(uri, source, false, vintage);
+      return;
+    }
+    if (photoPickTarget === 'background') {
+      setBackgroundPhotoUri(uri);
+      setBackgroundType('photo');
+      // 새 사진이라 이전 사진 기준 위치·크기 값은 안 맞으므로 같이 초기화(기본 cover로 시작)
+      setBackgroundCropX(undefined);
+      setBackgroundCropY(undefined);
+      setBackgroundCropW(undefined);
+      setBackgroundCropH(undefined);
       return;
     }
     setPhotoUri(uri);
@@ -1389,6 +1508,14 @@ export default function PhotoDiaryFormScreen() {
       const coverPhotoUrl = firstPhoto?.uri ?? photoUri;
       const coverPhotoSource = firstPhoto?.source ?? photoSource;
 
+      // 배경 사진도 로컬이면 업로드 — 저장/공유 이미지에도 반영되므로 캔버스 사진과 같은 방식
+      const finalBackgroundPhotoUrl =
+        backgroundType === 'photo' && backgroundPhotoUri
+          ? isLocalUri(backgroundPhotoUri)
+            ? await uploadPhotoDiaryPhoto(userId, backgroundPhotoUri)
+            : backgroundPhotoUri
+          : null;
+
       if (!coverPhotoUrl) return;
 
       const saved = await savePhotoDiary(
@@ -1401,12 +1528,21 @@ export default function PhotoDiaryFormScreen() {
           blocks: finalBlocks,
           routineColorEnabled,
           textColorMode,
+          backgroundType,
+          backgroundColor,
+          backgroundPhotoUrl: finalBackgroundPhotoUrl,
+          backgroundOpacity,
+          backgroundCropX: backgroundCropX ?? null,
+          backgroundCropY: backgroundCropY ?? null,
+          backgroundCropW: backgroundCropW ?? null,
+          backgroundCropH: backgroundCropH ?? null,
         },
         entryId
       );
       setEntryId(saved.id);
       setPhotoUri(saved.photo_url);
       setBlocks(finalBlocks);
+      if (finalBackgroundPhotoUrl) setBackgroundPhotoUri(finalBackgroundPhotoUrl);
       if (draftKey) AsyncStorage.removeItem(draftKey).catch(() => {});
       // 캘린더의 카메라 아이콘 등이 서버 재조회 타이밍을 기다리지 않고 바로 반영되게 캐시 무효화
       queryClient.invalidateQueries({ queryKey: ['photo-diary-dates'] });
@@ -1431,6 +1567,14 @@ export default function PhotoDiaryFormScreen() {
       setMode(entry.mode);
       setRoutineColorEnabled(entry.routine_color_enabled);
       setTextColorMode(entry.text_color_mode);
+      setBackgroundType(entry.background_type);
+      setBackgroundColor(entry.background_color);
+      setBackgroundPhotoUri(entry.background_photo_url);
+      setBackgroundOpacity(entry.background_opacity);
+      setBackgroundCropX(entry.background_crop_x ?? undefined);
+      setBackgroundCropY(entry.background_crop_y ?? undefined);
+      setBackgroundCropW(entry.background_crop_w ?? undefined);
+      setBackgroundCropH(entry.background_crop_h ?? undefined);
       const savedBlocks = buildBlocksFromEntry(entry, routineById);
       setBlocks(savedBlocks);
       const placedRoutineIds = new Set(
@@ -1445,6 +1589,14 @@ export default function PhotoDiaryFormScreen() {
       setHiddenRoutineIds([]);
       setRoutineColorEnabled(true);
       setTextColorMode('black');
+      setBackgroundType('none');
+      setBackgroundColor(null);
+      setBackgroundPhotoUri(null);
+      setBackgroundOpacity(1);
+      setBackgroundCropX(undefined);
+      setBackgroundCropY(undefined);
+      setBackgroundCropW(undefined);
+      setBackgroundCropH(undefined);
     }
   }
 
@@ -1600,6 +1752,31 @@ export default function PhotoDiaryFormScreen() {
                 <RNView style={styles.templateFrame}>
                   <ViewShot ref={shotRef} style={styles.template} options={{ format: 'jpg', quality: 0.9 }}>
                     <RNView style={[styles.templateInner, { width: CANVAS_WIDTH, height: canvasHeight, overflow: 'hidden' }]}>
+                      {/* 캔버스 맨 밑 배경 — 사진/루틴/메모보다 먼저(=더 아래) 그려서 그 위에 전부 올라오게 한다 */}
+                      {backgroundType === 'color' && backgroundColor && (
+                        <RNView
+                          pointerEvents="none"
+                          style={[
+                            StyleSheet.absoluteFill,
+                            { backgroundColor, opacity: backgroundOpacity },
+                          ]}
+                        />
+                      )}
+                      {backgroundType === 'photo' && backgroundPhotoUri && (
+                        <RNView
+                          pointerEvents="none"
+                          style={[StyleSheet.absoluteFill, { opacity: backgroundOpacity, overflow: 'hidden' }]}>
+                          <Image
+                            source={{ uri: backgroundPhotoUri }}
+                            resizeMode="cover"
+                            style={
+                              backgroundCropW && backgroundCropH
+                                ? cropToImageStyle(backgroundCropX, backgroundCropY, backgroundCropW, backgroundCropH)
+                                : StyleSheet.absoluteFill
+                            }
+                          />
+                        </RNView>
+                      )}
                       {!blocks.some((b) => b.type !== 'photo') && (
                         <Text style={styles.emptyCanvasText}>
                           {t(mode === 'routines' || mode === 'routines_memo' ? 'photoDiary.emptyRoutines' : 'photoDiary.emptyText')}
@@ -1905,6 +2082,13 @@ export default function PhotoDiaryFormScreen() {
                         <Ionicons name="camera-outline" size={13} color={accent} />
                         <Text style={styles.changePhotoInlineText}>{t('photoDiary.changePhoto')}</Text>
                       </AnimatedPressable>
+                      <AnimatedPressable
+                        style={styles.changePhotoInlineButton}
+                        onPress={() => setShowBackgroundModal(true)}
+                        disabled={isBusy}>
+                        <Ionicons name="color-palette-outline" size={13} color={accent} />
+                        <Text style={styles.changePhotoInlineText}>{t('photoDiary.backgroundButton')}</Text>
+                      </AnimatedPressable>
                     </View>
 
                     {selectedBlockSupportsColor && selectedBlock && (
@@ -2080,6 +2264,81 @@ export default function PhotoDiaryFormScreen() {
             )}
             <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowSourceModal(false)}>
               <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+            </AnimatedPressable>
+          </ShadowCard>
+        </RNView>
+      </Modal>
+
+      {/* 캔버스 맨 밑에 깔리는 배경(색상 또는 사진) 설정 — 사진/루틴/메모는 항상 이 위에 그려진다 */}
+      <Modal visible={showBackgroundModal} transparent animationType="fade" onRequestClose={() => setShowBackgroundModal(false)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowBackgroundModal(false)} />
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>{t('photoDiary.backgroundModalTitle')}</Text>
+            <Text style={styles.colorToggleLabel}>{t('photoDiary.backgroundColorLabel')}</Text>
+            <View style={styles.punchShapeRow}>
+              {BACKGROUND_COLOR_PRESETS.map((c) => (
+                <AnimatedPressable
+                  key={c}
+                  hitSlop={4}
+                  onPress={() => {
+                    setBackgroundColor(c);
+                    setBackgroundType('color');
+                  }}
+                  style={[styles.punchColorSwatch, { backgroundColor: c }]}>
+                  {backgroundType === 'color' && backgroundColor === c && (
+                    <Ionicons name="checkmark" size={12} color={c === '#1A1A1A' ? '#ffffff' : '#333333'} />
+                  )}
+                </AnimatedPressable>
+              ))}
+            </View>
+            <AnimatedPressable style={styles.optionRow} onPress={openBackgroundPhotoPicker} disabled={isBusy}>
+              <Ionicons name="image-outline" size={20} color={accent} />
+              <Text style={styles.optionRowText}>{t('photoDiary.backgroundPhotoOption')}</Text>
+            </AnimatedPressable>
+            {backgroundType === 'photo' && backgroundPhotoUri && (
+              <AnimatedPressable
+                style={styles.optionRow}
+                onPress={() => {
+                  setShowBackgroundModal(false);
+                  setShowBackgroundFocalEdit(true);
+                }}>
+                <Ionicons name="move-outline" size={20} color={accent} />
+                <Text style={styles.optionRowText}>{t('photoDiary.backgroundAdjustOption')}</Text>
+              </AnimatedPressable>
+            )}
+            {backgroundType !== 'none' && (
+              <>
+                <Text style={[styles.colorToggleLabel, { marginBottom: 10 }]}>{t('photoDiary.backgroundOpacityLabel')}</Text>
+                <View style={styles.punchShapeRow}>
+                  {BACKGROUND_OPACITY_PRESETS.map((v) => (
+                    <AnimatedPressable
+                      key={v}
+                      onPress={() => setBackgroundOpacity(v)}
+                      style={[
+                        styles.punchBorderToggleTapArea,
+                        styles.opacityPresetButton,
+                        backgroundOpacity === v && { borderColor: accent, backgroundColor: withAlpha(accent, 0.12) },
+                      ]}>
+                      <Text style={[styles.punchBorderToggleText, backgroundOpacity === v && { color: accent }]}>
+                        {Math.round(v * 100)}%
+                      </Text>
+                    </AnimatedPressable>
+                  ))}
+                </View>
+                <AnimatedPressable
+                  style={{ marginVertical: 10 }}
+                  onPress={() => {
+                    setBackgroundType('none');
+                    setBackgroundColor(null);
+                    setBackgroundPhotoUri(null);
+                  }}>
+                  <Text style={[styles.discardDraftLinkText, { color: accent }]}>{t('photoDiary.backgroundRemove')}</Text>
+                </AnimatedPressable>
+              </>
+            )}
+            <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowBackgroundModal(false)}>
+              <Text style={styles.confirmCancelText}>{t('today.close')}</Text>
             </AnimatedPressable>
           </ShadowCard>
         </RNView>
@@ -2337,6 +2596,30 @@ export default function PhotoDiaryFormScreen() {
           t={t}
         />
       )}
+
+      {backgroundType === 'photo' && backgroundPhotoUri && (
+        <PhotoFocalEditorModal
+          visible={showBackgroundFocalEdit}
+          uri={backgroundPhotoUri}
+          aspect={CANVAS_WIDTH / canvasHeight}
+          lockAspect
+          initialCropX={backgroundCropX}
+          initialCropY={backgroundCropY}
+          initialCropW={backgroundCropW}
+          initialCropH={backgroundCropH}
+          onCancel={() => setShowBackgroundFocalEdit(false)}
+          onConfirm={(cropX, cropY, cropW, cropH) => {
+            setBackgroundCropX(cropX);
+            setBackgroundCropY(cropY);
+            setBackgroundCropW(cropW);
+            setBackgroundCropH(cropH);
+            setShowBackgroundFocalEdit(false);
+          }}
+          accent={accent}
+          styles={styles}
+          t={t}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -2500,6 +2783,7 @@ function PhotoFocalEditorModal({
   initialCropY,
   initialCropW,
   initialCropH,
+  lockAspect = false,
   onCancel,
   onConfirm,
   accent,
@@ -2514,6 +2798,10 @@ function PhotoFocalEditorModal({
   initialCropY?: number;
   initialCropW?: number;
   initialCropH?: number;
+  // true면 모서리 손잡이가 가로/세로를 독립적으로 바꾸지 않고 aspect 비율을 유지한 채
+  // 균등하게만 커지거나 작아진다(줌) — 배경처럼 담는 그릇(캔버스)의 모양이 고정이라 프레임
+  // 모양 자체는 절대 안 바뀌어야 할 때 씀
+  lockAspect?: boolean;
   onCancel: () => void;
   // cropX/Y/W/H(원본 이미지 기준 0~1)와 그 프레임의 가로세로 비율(frameAspect)을 함께 넘긴다 —
   // 프레임 모양을 바꾸면 사진 박스의 모양도 같이 바뀌어야 왜곡 없이 반영되기 때문
@@ -2614,13 +2902,30 @@ function PhotoFocalEditorModal({
       startCy.value = frameCy.value;
     });
 
-  // 모서리 손잡이를 끌면 가로/세로가 각각 따로 커지거나 작아진다(모양 자체도 바뀜) — 캔버스의
-  // 사진 크기조절 손잡이와 같은 방식·같은 hitSlop
+  // 모서리 손잡이를 끌면 기본은 가로/세로가 각각 따로 커지거나 작아진다(모양 자체도 바뀜) —
+  // 캔버스의 사진 크기조절 손잡이와 같은 방식·같은 hitSlop. lockAspect가 켜져 있으면(배경용)
+  // 모양은 그대로 두고 균등하게만 줄이고 키운다(펀칭기계 프레임과 같은 방식)
   const cornerPan = Gesture.Pan()
     .hitSlop(RESIZE_HANDLE_HIT_SLOP)
     .onUpdate((e) => {
-      const w = Math.min(dispW, Math.max(MIN_FRAME_PX, startW.value + e.translationX));
-      const h = Math.min(dispH, Math.max(MIN_FRAME_PX, startH.value + e.translationY));
+      let w: number;
+      let h: number;
+      if (lockAspect) {
+        const delta = (e.translationX + e.translationY) / 2;
+        w = Math.min(dispW, Math.max(MIN_FRAME_PX, startW.value + delta));
+        h = w / aspect;
+        if (h > dispH) {
+          h = dispH;
+          w = h * aspect;
+        }
+        if (h < MIN_FRAME_PX) {
+          h = MIN_FRAME_PX;
+          w = h * aspect;
+        }
+      } else {
+        w = Math.min(dispW, Math.max(MIN_FRAME_PX, startW.value + e.translationX));
+        h = Math.min(dispH, Math.max(MIN_FRAME_PX, startH.value + e.translationY));
+      }
       frameW.value = w;
       frameH.value = h;
       const maxOffX = (dispW - w) / 2;
@@ -3849,6 +4154,14 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       borderColor: border,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    // 배경 투명도 선택 버튼(25/50/75/100%) — 색상 스와치와 달리 텍스트라 테두리 박스로 감쌈
+    opacityPresetButton: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: cardRadius,
+      borderWidth: 1,
+      borderColor: border,
     },
     punchBorderToggleText: {
       fontSize: 13,
