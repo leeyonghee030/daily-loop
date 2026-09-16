@@ -1,6 +1,6 @@
 -- 스토어 스크린샷용 데모 데이터 시딩 스크립트
 -- 대상 계정(leeyonghee030@gmail.com)의 기존 루틴/기록/일기/메모/개인영상/커스텀카테고리를
--- 전부 지우고, 화면이 예쁘게 나오도록 설계된 샘플 루틴 7개 + 완료기록을 새로 채운다.
+-- 전부 지우고, 화면이 예쁘게 나오도록 설계된 샘플 루틴 10개 + 완료기록을 새로 채운다.
 -- (계정 자체나 슬롯 설정, 관리자 기본 영상/카테고리는 건드리지 않음)
 
 do $$
@@ -127,7 +127,46 @@ begin
     insert into public.routine_completions (routine_id, completed_date) values (v_routine_id, d);
   end loop;
 
-  -- 8) "내 영상" 그리드 — 카테고리 6개에 1개씩만 채워서 "사용자가 직접 추가한" 느낌으로
+  -- 8) 이불 정리 — 체크, 시각 체크(is_instant), 매일, 45일 연속(오늘은 미완료) — "역대 최고
+  -- 스트릭" 배지가 눈에 띄게 나오도록 일부러 길게 잡음. created_at도 그만큼 더 앞당김
+  insert into public.routines
+    (user_id, title, block_type, repeat_type, scheduled_time_start, scheduled_time_end, is_instant, sort_order, created_at)
+  values
+    (v_user_id, '이불 정리', 'check', 'daily', '07:00', '07:00', true, 7, now() - interval '60 days')
+  returning id into v_routine_id;
+  for d in select generate_series(v_today - 45, v_today - 1, interval '1 day')::date loop
+    insert into public.routine_completions (routine_id, completed_date) values (v_routine_id, d);
+  end loop;
+
+  -- 9) 폰 그만 보고 자기 — 체크, 슬롯(자기전), 매일, 필수 아님, 최근 5일 중 1일만 빠짐(현실감)
+  insert into public.routines
+    (user_id, title, block_type, repeat_type, slot_id, sort_order, created_at)
+  values
+    (v_user_id, '폰 그만 보고 자기', 'check', 'daily', v_slot_sleep, 8, now() - interval '30 days')
+  returning id into v_routine_id;
+  for d in select generate_series(v_today - 5, v_today - 1, interval '1 day')::date loop
+    if d <> v_today - 3 then
+      insert into public.routine_completions (routine_id, completed_date) values (v_routine_id, d);
+    end if;
+  end loop;
+
+  -- 10) 요가 20분 — 트래킹(분), 정확한 시각, 화목토만, 최근 3회 완료
+  insert into public.routines
+    (user_id, title, block_type, repeat_type, repeat_days, scheduled_time_start, scheduled_time_end, tracking_unit, sort_order, created_at)
+  values
+    (v_user_id, '요가 20분', 'tracking', 'custom', array[2,4,6]::smallint[], '20:00', '20:20', '분', 9, now() - interval '30 days')
+  returning id into v_routine_id;
+  d := v_today - 1;
+  cnt := 0;
+  while cnt < 3 loop
+    if extract(isodow from d) in (2, 4, 6) then
+      insert into public.routine_completions (routine_id, completed_date, tracking_value) values (v_routine_id, d, 20);
+      cnt := cnt + 1;
+    end if;
+    d := d - 1;
+  end loop;
+
+  -- 11) "내 영상" 그리드 — 카테고리 6개에 1개씩만 채워서 "사용자가 직접 추가한" 느낌으로
   -- (관리자 기본 영상과 같은 콘텐츠지만 user_id를 채워 내 그리드용 개인 사본으로 넣음)
   insert into public.videos (user_id, category_id, title, youtube_url, thumbnail_url, channel_name, channel_url)
   select v_user_id, v.category_id, v.title, v.youtube_url, v.thumbnail_url, v.channel_name, v.channel_url
