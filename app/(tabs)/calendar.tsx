@@ -335,15 +335,16 @@ export default function CalendarScreen() {
   async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
     const applyUpdate = (prev: MonthData | undefined, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
       if (!prev) return prev;
-      const completionsByRoutine = new Map(prev.completionsByRoutine);
-      const routineMap = new Map(completionsByRoutine.get(routineId) ?? []);
+      const routineMap = { ...(prev.completionsByRoutine[routineId] ?? {}) };
       if (result) {
-        routineMap.set(result.completed_date, result);
+        routineMap[result.completed_date] = result;
       } else if (existingCompletionId) {
-        routineMap.delete(formatLocalDate(new Date()));
+        delete routineMap[formatLocalDate(new Date())];
       }
-      completionsByRoutine.set(routineId, routineMap);
-      return { ...prev, completionsByRoutine };
+      return {
+        ...prev,
+        completionsByRoutine: { ...prev.completionsByRoutine, [routineId]: routineMap },
+      };
     };
 
     try {
@@ -419,7 +420,7 @@ export default function CalendarScreen() {
       const isSelected = selectedDate === dateStr;
       const isDisabled = state === 'disabled';
       // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
-      const isHoliday = !isDisabled && (monthData?.holidayDates.has(dateStr) ?? false);
+      const isHoliday = !isDisabled && !!monthData?.holidayDates[dateStr];
 
       return (
         <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>

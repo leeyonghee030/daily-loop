@@ -348,7 +348,7 @@ erDiagram
 
 서로 무관한 캐시라서 영상을 지워도 이미 열려있던 미리보기엔 반영이 안 될 수 있음. 다만 영상 "수정"(제목 변경 등) 기능 자체가 없어서(`lib/videos.ts`엔 `createUserVideo`/`deleteUserVideo`만 있고 `updateVideo`는 없음) 실사용 영향은 "보고 있던 영상이 방금 다른 화면에서 삭제됨" 정도의 낮은 빈도 엣지케이스.
 
-**주의**: `Set`/`Map` 타입을 담는 쿼리(`today-skips`, `month-data`, `week-data`)는 AsyncStorage 오프라인 캐시에 저장됐다 복원되면서 JSON 직렬화로 깨지는 사고가 있었음 — `lib/query-client.ts`의 `NO_PERSIST_QUERY_ROOTS`에 이미 세 개 다 등록돼 있음. 새로 Map/Set을 담는 쿼리를 추가하면 반드시 여기에도 추가할 것.
+**주의**: `Set`/`Map` 타입을 담는 쿼리는 AsyncStorage 오프라인 캐시에 저장됐다 복원되면서 JSON 직렬화로 깨지는 사고가 있었음 — `lib/query-client.ts`의 `NO_PERSIST_QUERY_ROOTS`에 등록해서 디스크 저장 대상에서 뺀다. 현재는 `today-skips`만 해당(`Set` 사용). `month-data`/`week-data`(`MonthData`)는 예전엔 여기 있었으나 2026-09-16에 Map/Set을 일반 객체로 바꿔서 캐시 저장 대상에 포함됨 — 캘린더 탭도 이제 다른 탭처럼 마지막 값을 즉시 보여주고 뒤에서 갱신함. 새로 Map/Set을 담는 쿼리를 추가하면 반드시 `NO_PERSIST_QUERY_ROOTS`에도 추가할 것.
 
 ---
 

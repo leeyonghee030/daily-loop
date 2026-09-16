@@ -34,14 +34,15 @@ const asyncStoragePersister = createAsyncStoragePersister({
   key: 'DAILYLOOP_QUERY_CACHE_V2',
 });
 
-// 캘린더의 month-data/week-data, "내 루틴"의 today-skips 쿼리는 값 안에 Map/Set을 담고
-// 있는데, 이 persister는 AsyncStorage에 저장하려고 JSON.stringify를 거친다 — Map/Set은
-// JSON으로 직렬화하면 빈 객체 {}가 되어버려서, 앱을 재시작해 복원된 뒤 그 값에 .get()/.has()를
-// 부르는 순간 "not a function" 에러로 튕겨 나가는 버그가 있었음(캘린더에서 실제 발생 확인,
-// today-skips도 같은 이유로 "내 루틴" 탭이 안 열리는 버그가 있었음).
-// 이 쿼리들은 세션 내 메모리 캐시(react-query 기본 동작)만 쓰고, 디스크 저장 대상에서 제외한다.
+// "내 루틴"의 today-skips 쿼리는 값 안에 Set을 담고 있는데, 이 persister는 AsyncStorage에
+// 저장하려고 JSON.stringify를 거친다 — Set은 직렬화하면 빈 객체 {}가 되어버려서, 앱을 재시작해
+// 복원된 뒤 그 값에 .has()를 부르는 순간 "not a function" 에러로 튕겨 나가는 버그가 있었음.
+// 이 쿼리는 세션 내 메모리 캐시(react-query 기본 동작)만 쓰고, 디스크 저장 대상에서 제외한다.
+// (캘린더의 month-data/week-data도 예전엔 같은 이유로 여기 있었으나, 2026-09-16에 MonthData를
+// Map/Set 대신 일반 객체로 바꿔서 정상적으로 캐시 저장 대상에 포함시킴 — 앱을 켤 때마다 캘린더가
+// 매번 새로 불러와야 했던 로딩 지연이 해결됨)
 // 앞으로 값에 Map/Set을 담는 새 쿼리를 추가하면 반드시 여기 목록에 추가할 것
-const NO_PERSIST_QUERY_ROOTS = new Set(['month-data', 'week-data', 'today-skips']);
+const NO_PERSIST_QUERY_ROOTS = new Set(['today-skips']);
 
 export const persistOptions = {
   persister: asyncStoragePersister,

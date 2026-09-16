@@ -637,11 +637,15 @@ export type DayRoutine = {
   completion: RoutineCompletion | null;
 };
 
+// Map/Set이 아니라 일반 객체로 두는 이유: react-query의 오프라인 캐시(AsyncStorage)가
+// JSON.stringify를 거치는데 Map/Set은 직렬화하면 빈 객체가 되어버려서 캘린더가 앱을 열 때마다
+// 캐시 없이 매번 새로 불러와야 했음(2026-09-16). 일반 객체는 JSON으로 안전하게 오가므로
+// 다른 화면처럼 마지막 값을 즉시 보여주고 뒤에서 조용히 갱신하는 캐시 재사용이 가능해짐.
 export type MonthData = {
   routines: Routine[];
-  completionsByRoutine: Map<string, Map<string, RoutineCompletion>>;
-  skipDatesByRoutine: Map<string, Set<string>>;
-  holidayDates: Set<string>;
+  completionsByRoutine: Record<string, Record<string, RoutineCompletion>>;
+  skipDatesByRoutine: Record<string, Record<string, true>>;
+  holidayDates: Record<string, true>;
 };
 
 async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string): Promise<MonthData> {
@@ -678,17 +682,16 @@ async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: stri
   if (skipError) throw skipError;
   if (holidayError) throw holidayError;
 
-  const completionsByRoutine = new Map<string, Map<string, RoutineCompletion>>();
+  const completionsByRoutine: Record<string, Record<string, RoutineCompletion>> = {};
   for (const row of completionRows ?? []) {
-    if (!completionsByRoutine.has(row.routine_id)) completionsByRoutine.set(row.routine_id, new Map());
-    completionsByRoutine.get(row.routine_id)!.set(row.completed_date, row);
+    (completionsByRoutine[row.routine_id] ??= {})[row.completed_date] = row;
   }
-  const skipDatesByRoutine = new Map<string, Set<string>>();
+  const skipDatesByRoutine: Record<string, Record<string, true>> = {};
   for (const row of skipRows ?? []) {
-    if (!skipDatesByRoutine.has(row.routine_id)) skipDatesByRoutine.set(row.routine_id, new Set());
-    skipDatesByRoutine.get(row.routine_id)!.add(row.skip_date);
+    (skipDatesByRoutine[row.routine_id] ??= {})[row.skip_date] = true;
   }
-  const holidayDates = new Set((holidayRows ?? []).map((row) => row.date));
+  const holidayDates: Record<string, true> = {};
+  for (const row of holidayRows ?? []) holidayDates[row.date] = true;
 
   return { routines: (routines ?? []) as Routine[], completionsByRoutine, skipDatesByRoutine, holidayDates };
 }
@@ -710,16 +713,16 @@ export async function fetchWeekData(userId: string, weekStartStr: string): Promi
 export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {
   const d = new Date(`${dateStr}T00:00:00`);
   const dow = d.getDay();
-  const isHoliday = month.holidayDates.has(dateStr);
+  const isHoliday = !!month.holidayDates[dateStr];
 
   return sortRoutines(
     month.routines.filter((r) => {
-      if (month.skipDatesByRoutine.get(r.id)?.has(dateStr)) return false;
+      if (month.skipDatesByRoutine[r.id]?.[dateStr]) return false;
       return matchesToday(r, dateStr, dow, isHoliday);
     })
   ).map((routine) => ({
     routine,
-    completion: month.completionsByRoutine.get(routine.id)?.get(dateStr) ?? null,
+    completion: month.completionsByRoutine[routine.id]?.[dateStr] ?? null,
   }));
 }
 
