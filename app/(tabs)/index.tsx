@@ -36,10 +36,7 @@ import {
 } from '@/lib/notifications';
 import {
   effectiveTimeRange,
-  emojiForStreak,
   fetchStats,
-  fetchStreakConfigs,
-  fetchStreaks,
   fetchTodayRoutines,
   formatLocalDate,
   saveTrackingValue,
@@ -922,23 +919,6 @@ export default function TodayScreen() {
     setTrackingInputs(inputMap);
   }, [todayQuery.data]);
 
-  // 스트릭은 배지 장식용이라 필수 정보가 아님 — 오늘 목록 쿼리가 끝난 뒤에만 이어서 돈다
-  // (enabled). 목록이 뜨는 걸 기다리게 하지 않아서 첫 로딩 체감 속도가 그대로 유지된다.
-  const streaksQuery = useQuery({
-    queryKey: ['streaks', userId, routines.map((r) => r.id), todayDateStr],
-    queryFn: () => fetchStreaks(routines, todayDateStr),
-    enabled: !!todayQuery.data,
-  });
-  const streaks = streaksQuery.data ?? {};
-
-  // 스트릭 등급(이모지) 설정은 자주 안 바뀌는 참조 데이터라 1시간 정도는 캐시된 값을 그대로 씀
-  const streakConfigsQuery = useQuery({
-    queryKey: ['streak-configs'],
-    queryFn: fetchStreakConfigs,
-    staleTime: 60 * 60 * 1000,
-  });
-  const streakConfigs = streakConfigsQuery.data ?? [];
-
   // LLM 남은 횟수: 화면에 들어올 때마다 갱신(배너 표시용)
   const llmQuotaQuery = useQuery({
     queryKey: ['llm-quota', userId],
@@ -1080,7 +1060,6 @@ export default function TodayScreen() {
         if (result) nextCompletions.push(result);
         return { ...old, completions: nextCompletions };
       });
-      queryClient.invalidateQueries({ queryKey: ['streaks', userId] });
       if (userId) syncReminderAlarm(userId).catch(() => {});
     },
     onError: (_err, _vars, context) => {
@@ -1146,7 +1125,6 @@ export default function TodayScreen() {
         nextCompletions.push(result);
         return { ...old, completions: nextCompletions };
       });
-      queryClient.invalidateQueries({ queryKey: ['streaks', userId] });
       if (userId) syncReminderAlarm(userId).catch(() => {});
     },
     onError: (_err, _vars, context) => {
@@ -1483,16 +1461,6 @@ export default function TodayScreen() {
             {t('today.completedLabel')} {routines.filter((r) => completions[r.id]).length}/{routines.length} (
             {Math.round((routines.filter((r) => completions[r.id]).length / routines.length) * 100)}%)
           </Text>
-          {(() => {
-            const bestStreak = Math.max(0, ...Object.values(streaks));
-            const bestEmoji = emojiForStreak(bestStreak, streakConfigs);
-            return bestEmoji ? (
-              <Text style={styles.summaryText}>
-                {t('today.bestStreakLabel')} {bestEmoji} {bestStreak}
-                {t('today.daySuffix')}
-              </Text>
-            ) : null;
-          })()}
         </View>
       )}
 
