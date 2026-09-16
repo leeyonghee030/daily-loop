@@ -74,6 +74,8 @@ export type CanvasBlock =
       pasted?: boolean;
     };
 
+export type BackgroundType = 'none' | 'color' | 'photo';
+
 export type PhotoDiary = {
   id: string;
   entry_date: string;
@@ -84,11 +86,19 @@ export type PhotoDiary = {
   blocks: CanvasBlock[] | null;
   routine_color_enabled: boolean;
   text_color_mode: TextColorMode;
+  background_type: BackgroundType;
+  background_color: string | null;
+  background_photo_url: string | null;
+  background_opacity: number;
+  background_crop_x: number | null;
+  background_crop_y: number | null;
+  background_crop_w: number | null;
+  background_crop_h: number | null;
   updated_at: string;
 };
 
 const SELECT_COLUMNS =
-  'id, entry_date, photo_url, photo_source, mode, content, blocks, routine_color_enabled, text_color_mode, updated_at';
+  'id, entry_date, photo_url, photo_source, mode, content, blocks, routine_color_enabled, text_color_mode, background_type, background_color, background_photo_url, background_opacity, background_crop_x, background_crop_y, background_crop_w, background_crop_h, updated_at';
 
 export async function fetchPhotoDiary(userId: string, date: string): Promise<PhotoDiary | null> {
   const { data, error } = await supabase
@@ -112,6 +122,14 @@ export type SavePhotoDiaryInput = {
   blocks: CanvasBlock[];
   routineColorEnabled: boolean;
   textColorMode: TextColorMode;
+  backgroundType: BackgroundType;
+  backgroundColor: string | null;
+  backgroundPhotoUrl: string | null;
+  backgroundOpacity: number;
+  backgroundCropX: number | null;
+  backgroundCropY: number | null;
+  backgroundCropW: number | null;
+  backgroundCropH: number | null;
 };
 
 export async function savePhotoDiary(
@@ -128,6 +146,14 @@ export async function savePhotoDiary(
     blocks: input.blocks,
     routine_color_enabled: input.routineColorEnabled,
     text_color_mode: input.textColorMode,
+    background_type: input.backgroundType,
+    background_color: input.backgroundColor,
+    background_photo_url: input.backgroundPhotoUrl,
+    background_opacity: input.backgroundOpacity,
+    background_crop_x: input.backgroundCropX,
+    background_crop_y: input.backgroundCropY,
+    background_crop_w: input.backgroundCropW,
+    background_crop_h: input.backgroundCropH,
   };
 
   if (existingId) {
