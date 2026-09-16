@@ -40,7 +40,7 @@ const INTENT_FILLER_SUFFIX =
   /(가야되는거|가야하는거|가야할거|해야되는거|해야하는거|해야할거|하는거|할거|해야지|하고싶어|하고싶다|할래|해볼까|할까|가서)\s*$/;
 
 // 문장 끝의 "확인/체크"(+ 하기/해서 등 어미) — 이 앱은 루틴 자체가 확인·체크하는 기능이라 군더더기로 본다
-const CHECK_VERB_SUFFIX = /(확인|체크)(하기|해서|하고|하며|하자|할래|해줘|해주세요|해줄래|한다|했다)?\s*$/;
+const CHECK_VERB_SUFFIX = /(확인|체크)(하기|해서|하고|하며|하자|할래|할게요|할게|해줘|해주세요|해줄래|한다|했다)?\s*$/;
 
 const TITLE_TRAILING_FILLERS = [META_COMMAND_SUFFIX, INTENT_FILLER_SUFFIX, CHECK_VERB_SUFFIX];
 

@@ -280,11 +280,16 @@ export default function RoutineFormScreen() {
     }
     if (params.isRequired === 'true') setIsRequired(true);
     if (params.scheduledTime) {
-      // LLM은 시작 시각만 주므로 정확한 시각 모드로 두고 종료는 +1시간
-      setTimeMode('exact');
       const start = timeToDate(params.scheduledTime);
       setStartTime(start);
-      setEndTime(new Date(start.getTime() + 60 * 60 * 1000));
+      if (params.blockType === 'tracking') {
+        // 트래킹(숫자)은 지속 시간이 있는 활동이라 정확한 시각(범위) 모드로 두고 종료는 +1시간
+        setTimeMode('exact');
+        setEndTime(new Date(start.getTime() + 60 * 60 * 1000));
+      } else {
+        // 체크 타입은 지속 시간을 알 수 없으니 "그 순간에만 체크"하는 시각 체크 모드로 둔다
+        setTimeMode('instant');
+      }
     }
   }, [isEditing, params]);
 
