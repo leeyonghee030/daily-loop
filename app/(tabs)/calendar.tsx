@@ -2,7 +2,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, Modal, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { Animated, Dimensions, Modal, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -45,6 +45,7 @@ import {
   fetchStats,
   formatLocalDate,
   routinesForDate,
+  fetchAllRoutinesForCalendar,
   fetchMonthData,
   fetchWeekData,
   toggleCheckCompletion,
@@ -102,6 +103,54 @@ function addDaysToDateStr(dateStr: string, days: number): string {
   const d = new Date(`${dateStr}T00:00:00`);
   d.setDate(d.getDate() + days);
   return formatLocalDate(d);
+}
+
+// 월간뷰는 CalendarList가 스와이프 대비로 여러 달을 미리 그려두는데, 정작 공휴일/메모/일기/완료상태는
+// "지금 보고 있는 딱 1개 달"만 불러오고 있어서, 스와이프로 옆 달(이미 한 번 봤던 달이어도)로 넘어가는
+// 순간 화면은 이미 넘어갔는데 상태 갱신이 살짝 늦게 따라오는 찰나에 표시가 비었다가 다시 채워지는
+// 버그가 있었음(2026-09-17 발견). 아래 3개 merge 함수는 "지금 막 불러온 달의 날짜 범위"만 최신값으로
+// 덮어쓰고, 그 범위 밖(이전에 봤던 다른 달)의 누적값은 그대로 보존해서 한 번 본 달은 계속 채워진
+// 상태로 남아있게 한다
+function mergeRangeRecord<T>(
+  prev: Record<string, T>,
+  incoming: Record<string, T>,
+  rangeStart: string,
+  rangeEnd: string
+): Record<string, T> {
+  const kept: Record<string, T> = {};
+  for (const key in prev) {
+    if (key < rangeStart || key > rangeEnd) kept[key] = prev[key];
+  }
+  return { ...kept, ...incoming };
+}
+
+function mergeRangeNestedRecord<T>(
+  prev: Record<string, Record<string, T>>,
+  incoming: Record<string, Record<string, T>>,
+  rangeStart: string,
+  rangeEnd: string
+): Record<string, Record<string, T>> {
+  const routineIds = new Set([...Object.keys(prev), ...Object.keys(incoming)]);
+  const next: Record<string, Record<string, T>> = {};
+  for (const id of routineIds) {
+    const merged: Record<string, T> = {};
+    const oldMap = prev[id] ?? {};
+    for (const date in oldMap) {
+      if (date < rangeStart || date > rangeEnd) merged[date] = oldMap[date];
+    }
+    Object.assign(merged, incoming[id] ?? {});
+    if (Object.keys(merged).length > 0) next[id] = merged;
+  }
+  return next;
+}
+
+function mergeRangeSet(prev: Set<string>, incoming: string[], rangeStart: string, rangeEnd: string): Set<string> {
+  const next = new Set<string>();
+  for (const d of prev) {
+    if (d < rangeStart || d > rangeEnd) next.add(d);
+  }
+  for (const d of incoming) next.add(d);
+  return next;
 }
 
 
@@ -162,18 +211,24 @@ export default function CalendarScreen() {
   // enabled에 viewMode 조건을 넣어서, 지금 화면에 안 보이는 뷰(월/주)는 백그라운드에서
   // 계속 요청하지 않게 한다 — 이게 빠져 있으면 항상 월+주 데이터를 둘 다 불러오게 되어
   // 예전(둘 중 활성화된 뷰만 load)보다 네트워크 요청이 오히려 늘어나는 회귀가 생김
+  // 달이 바뀌어도 루틴 목록 자체는 거의 그대로라, 여기서 한 번만 받아 month/week 쿼리가
+  // 재사용한다 — 예전엔 달을 넘길 때마다 이 목록까지 매번 새로 받아와서(서버 왕복 2회 직렬 대기)
+  // 새 달로 이동할 때 체감 로딩이 2초 가까이 걸렸음(2026-09-17)
+  const calendarRoutinesQuery = useQuery({
+    queryKey: ['calendar-routines', userId],
+    queryFn: () => fetchAllRoutinesForCalendar(userId!),
+    enabled: !!userId,
+  });
   const monthQuery = useQuery({
     queryKey: ['month-data', userId, year, month],
-    queryFn: () => fetchMonthData(userId!, year, month),
+    queryFn: () => fetchMonthData(userId!, year, month, calendarRoutinesQuery.data),
     enabled: !!userId && viewMode === 'month',
   });
   const weekQuery = useQuery({
     queryKey: ['week-data', userId, weekStart],
-    queryFn: () => fetchWeekData(userId!, weekStart),
+    queryFn: () => fetchWeekData(userId!, weekStart, calendarRoutinesQuery.data),
     enabled: !!userId && viewMode === 'week',
   });
-  const activeData = viewMode === 'week' ? (weekQuery.data ?? null) : (monthQuery.data ?? null);
-
   // 메모/일기 표시는 부가 정보 — 월/주 각각 자기 범위만큼만 따로 쿼리한다(예전엔 전역
   // Map/Set에 "새로 불러온 범위만 교체"하는 방식으로 손으로 병합했었는데, 이제 범위별로
   // 쿼리 키가 다르니 react-query가 알아서 캐시를 나눠서 관리해준다)
@@ -214,17 +269,69 @@ export default function CalendarScreen() {
     enabled: !!userId && viewMode === 'week',
   });
 
-  const monthMemosByDate = useMemo(() => groupMemosByDate(monthMemosQuery.data ?? []), [monthMemosQuery.data]);
-  const monthDiaryDates = useMemo(() => new Set(monthDiaryQuery.data ?? []), [monthDiaryQuery.data]);
-  const monthPhotoDiaryDates = useMemo(() => new Set(monthPhotoDiaryQuery.data ?? []), [monthPhotoDiaryQuery.data]);
   const weekMemosByDate = useMemo(() => groupMemosByDate(weekMemosQuery.data ?? []), [weekMemosQuery.data]);
   const weekDiaryDates = useMemo(() => new Set(weekDiaryQuery.data ?? []), [weekDiaryQuery.data]);
   const weekPhotoDiaryDates = useMemo(() => new Set(weekPhotoDiaryQuery.data ?? []), [weekPhotoDiaryQuery.data]);
-  const activeMemosByDate = viewMode === 'week' ? weekMemosByDate : monthMemosByDate;
+
+  // 월간뷰 전용 누적 캐시 — 스와이프로 지나간 달의 데이터도 계속 들고 있어서 다시 그 달을
+  // 지나갈 때 비어 보이지 않게 한다(위 mergeRange* 함수 설명 참고).
+  // useEffect로 한 박자 늦게 합치면(=데이터 도착 렌더 → effect → 또 한 번의 렌더) 그 사이에
+  // CalendarList가 미리 그려둔 최대 24개월치 날짜 칸이 매번 두 번씩 다시 그려져서 오히려
+  // 채워지는 속도가 느려짐 — useMemo 안에서 ref를 직접 갱신해 데이터가 도착한 바로 그 렌더에서
+  // 한 번에 반영되게 한다
+  const monthAccumRef = useRef<MonthData>({
+    routines: [],
+    completionsByRoutine: {},
+    skipDatesByRoutine: {},
+    holidayDates: {},
+  });
+  const monthAccum = useMemo(() => {
+    const data = monthQuery.data;
+    if (data) {
+      monthAccumRef.current = {
+        routines: data.routines,
+        completionsByRoutine: mergeRangeNestedRecord(monthAccumRef.current.completionsByRoutine, data.completionsByRoutine, monthStart, monthEnd),
+        skipDatesByRoutine: mergeRangeNestedRecord(monthAccumRef.current.skipDatesByRoutine, data.skipDatesByRoutine, monthStart, monthEnd),
+        holidayDates: mergeRangeRecord(monthAccumRef.current.holidayDates, data.holidayDates, monthStart, monthEnd),
+      };
+    }
+    return monthAccumRef.current;
+  }, [monthQuery.data, monthStart, monthEnd]);
+
+  const monthMemosAccumRef = useRef<Record<string, DateMemo[]>>({});
+  const monthMemosAccum = useMemo(() => {
+    const data = monthMemosQuery.data;
+    if (data) {
+      const kept: Record<string, DateMemo[]> = {};
+      for (const date in monthMemosAccumRef.current) {
+        if (date < monthStart || date > monthEnd) kept[date] = monthMemosAccumRef.current[date];
+      }
+      monthMemosAccumRef.current = { ...kept, ...groupMemosByDate(data) };
+    }
+    return monthMemosAccumRef.current;
+  }, [monthMemosQuery.data, monthStart, monthEnd]);
+
+  const monthDiaryAccumRef = useRef<Set<string>>(new Set());
+  const monthDiaryAccum = useMemo(() => {
+    const data = monthDiaryQuery.data;
+    if (data) monthDiaryAccumRef.current = mergeRangeSet(monthDiaryAccumRef.current, data, monthStart, monthEnd);
+    return monthDiaryAccumRef.current;
+  }, [monthDiaryQuery.data, monthStart, monthEnd]);
+
+  const monthPhotoDiaryAccumRef = useRef<Set<string>>(new Set());
+  const monthPhotoDiaryAccum = useMemo(() => {
+    const data = monthPhotoDiaryQuery.data;
+    if (data) monthPhotoDiaryAccumRef.current = mergeRangeSet(monthPhotoDiaryAccumRef.current, data, monthStart, monthEnd);
+    return monthPhotoDiaryAccumRef.current;
+  }, [monthPhotoDiaryQuery.data, monthStart, monthEnd]);
+
+  const activeMemosByDate = viewMode === 'week' ? weekMemosByDate : monthMemosAccum;
+  const activeData = viewMode === 'week' ? (weekQuery.data ?? null) : monthAccum;
 
   // 탭에 돌아올 때마다 지금 보고 있는 뷰(월 또는 주)의 데이터만 다시 불러온다 — 예전
   // useFocusEffect(if viewMode==='month' load(...) else loadWeek(...))와 동일한 범위
   const refetchActive = useCallback(() => {
+    calendarRoutinesQuery.refetch();
     if (viewMode === 'month') {
       monthQuery.refetch();
       monthMemosQuery.refetch();
@@ -239,6 +346,7 @@ export default function CalendarScreen() {
     statsQuery.refetch();
   }, [
     viewMode,
+    calendarRoutinesQuery.refetch,
     monthQuery.refetch,
     monthMemosQuery.refetch,
     monthDiaryQuery.refetch,
@@ -289,6 +397,16 @@ export default function CalendarScreen() {
 
   // 주간뷰 좌우 스와이프도 같은 이유로 원복 — 화살표(‹ ›) 버튼으로만 주 이동
   const weekScrollRef = useRef<ScrollView>(null);
+
+  // 주간뷰 가로 스크롤 커스텀 막대 — 기본 ScrollView 스크롤바는 색을 못 바꿔서(iOS는 흑/백만,
+  // 안드로이드는 아예 불가) 직접 그린다. 칸 7개 폭은 고정값이라 콘텐츠 전체 폭은 계산으로
+  // 바로 나오고, 보이는 영역 폭만 onLayout으로 측정한다.
+  // 스크롤 위치는 매 프레임 바뀌는 값이라 useState로 들고 있으면 스크롤할 때마다 화면 전체가
+  // 다시 그려져서 살짝 끊기는 느낌이 났음(2026-09-17) — Animated.Value로 바꿔서 네이티브
+  // 쪽에서 곧바로 막대 위치에 반영되게 하고, 리액트 리렌더 자체가 안 일어나게 한다
+  const weekScrollXAnim = useRef(new Animated.Value(0)).current;
+  const [weekViewportWidth, setWeekViewportWidth] = useState(0);
+  const weekContentWidth = WEEK_COLUMN_WIDTH * 7;
 
   // 요일 칸들이 실제로 화면에 그려지기 전에 scrollTo를 호출하면(useEffect가 너무 일찍 실행되면)
   // 아직 스크롤 가능한 콘텐츠 폭이 확보되지 않아 명령이 조용히 무시됨 — onContentSizeChange로
@@ -414,21 +532,20 @@ export default function CalendarScreen() {
     ({ date, state }: { date?: DateData; state?: string }) => {
       if (!date) return <View />;
       const dateStr = date.dateString;
-      const monthData = monthQuery.data;
-      const status = monthData && dateStr <= todayStr ? computeDayStatus(dateStr, monthData) : null;
-      const memos = (monthMemosByDate[dateStr] ?? []).slice(0, 5);
+      const status = dateStr <= todayStr ? computeDayStatus(dateStr, monthAccum) : null;
+      const memos = (monthMemosAccum[dateStr] ?? []).slice(0, 5);
       const isSelected = selectedDate === dateStr;
       const isDisabled = state === 'disabled';
       // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
-      const isHoliday = !isDisabled && !!monthData?.holidayDates[dateStr];
+      const isHoliday = !isDisabled && !!monthAccum.holidayDates[dateStr];
 
       return (
         <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
           <View style={styles.diaryIconSlot}>
-            {monthPhotoDiaryDates.has(dateStr) ? (
+            {monthPhotoDiaryAccum.has(dateStr) ? (
               <Ionicons name="camera-outline" size={10} color={textMuted} />
             ) : (
-              monthDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
+              monthDiaryAccum.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
             )}
           </View>
           <View
@@ -467,7 +584,7 @@ export default function CalendarScreen() {
         </AnimatedPressable>
       );
     },
-    [monthQuery.data, monthMemosByDate, monthDiaryDates, selectedDate, theme, todayStr, accent, styles]
+    [monthAccum, monthMemosAccum, monthDiaryAccum, monthPhotoDiaryAccum, selectedDate, theme, todayStr, accent, styles]
   );
 
   const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
@@ -484,6 +601,13 @@ export default function CalendarScreen() {
   }
   const weekEndLabel = weekDates.length > 0 ? weekDates[6].slice(5).replace('-', '/') : '';
   const weekStartLabel = weekStart.slice(5).replace('-', '/');
+
+  // 커스텀 가로 스크롤 막대의 크기 — 보이는 영역 폭 대비 전체 콘텐츠 폭 비율로 길이를 정한다.
+  // 위치(translateX)는 아래 JSX에서 weekScrollXAnim을 그대로 interpolate해서 구한다(리렌더 없이
+  // 네이티브에서 바로 반영되게 하기 위해 여기서 숫자로 미리 계산해두지 않는다)
+  const weekThumbWidth = Math.max(24, weekViewportWidth * (weekViewportWidth / weekContentWidth));
+  const weekMaxScrollX = Math.max(1, weekContentWidth - weekViewportWidth);
+  const weekThumbMaxTranslate = Math.max(0, weekViewportWidth - weekThumbWidth);
 
   return (
     <View style={styles.container}>
@@ -561,11 +685,15 @@ export default function CalendarScreen() {
             </AnimatedPressable>
           </View>
 
-          <ScrollView
+          <Animated.ScrollView
             ref={weekScrollRef}
             horizontal
-            showsHorizontalScrollIndicator
-            persistentScrollbar
+            showsHorizontalScrollIndicator={false}
+            onLayout={(e) => setWeekViewportWidth(e.nativeEvent.layout.width)}
+            onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: weekScrollXAnim } } }], {
+              useNativeDriver: true,
+            })}
+            scrollEventThrottle={16}
             onContentSizeChange={scrollWeekToToday}>
             {weekDates.map((dateStr) => {
               const isFuture = dateStr > todayStr;
@@ -623,7 +751,28 @@ export default function CalendarScreen() {
                   </AnimatedPressable>
                 );
               })}
-          </ScrollView>
+          </Animated.ScrollView>
+          {weekViewportWidth > 0 && weekContentWidth > weekViewportWidth && (
+            <View style={styles.weekScrollTrack} pointerEvents="none">
+              <Animated.View
+                style={[
+                  styles.weekScrollThumb,
+                  {
+                    width: weekThumbWidth,
+                    transform: [
+                      {
+                        translateX: weekScrollXAnim.interpolate({
+                          inputRange: [0, weekMaxScrollX],
+                          outputRange: [0, weekThumbMaxTranslate],
+                          extrapolate: 'clamp',
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            </View>
+          )}
         </View>
       )}
 
@@ -855,6 +1004,20 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   weekContainer: {
     paddingHorizontal: 20,
+  },
+  weekScrollTrack: {
+    height: 3,
+    marginTop: 4,
+    borderRadius: 1.5,
+    overflow: 'hidden',
+  },
+  weekScrollThumb: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: withAlpha(accent, 0.5),
   },
   weekHeader: {
     flexDirection: 'row',

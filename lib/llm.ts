@@ -43,12 +43,17 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
 
   const repeatType: ParsedRoutineDraft['repeatType'] = d.repeatType ?? 'once';
   const scheduledTime: string | null = d.scheduledTime ?? null;
+  const VALID_SLOT_TYPES = ['morning', 'lunch', 'evening', 'before_sleep'];
+  // scheduledTime이 있으면 정확한 시각/시각체크 모드로 들어가서 슬롯을 안 쓰니 항상 null로 둔다
+  const slotType: ParsedRoutineDraft['slotType'] =
+    !scheduledTime && VALID_SLOT_TYPES.includes(d.slotType) ? d.slotType : null;
 
   const draft: ParsedRoutineDraft = {
     title: (d.title ?? text).toString().trim(),
     repeatType,
     repeatDays: repeatType === 'custom' ? (d.repeatDays ?? null) : null,
     scheduledTime,
+    slotType,
     isRequired: !!d.isRequired,
     blockType: d.blockType === 'tracking' ? 'tracking' : 'check',
     trackingUnit: d.blockType === 'tracking' ? (d.trackingUnit ?? null) : null,

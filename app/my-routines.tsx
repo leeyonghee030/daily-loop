@@ -840,7 +840,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   toolbarButtonDangerText: {
     fontSize: 13,
-    color: '#FF6B6B',
+    color: accent,
     fontWeight: '600',
   },
   dragHint: {
@@ -917,16 +917,16 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 13,
     fontWeight: 'bold',
   },
+  // 오늘 탭 스와이프 "오늘삭제"와 같은 스타일(주색 꽉 채움)로 통일
   deleteButton: {
-    borderWidth: 1,
-    borderColor: '#FF6B6B',
+    backgroundColor: accent,
     borderRadius: cardRadius,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   deleteButtonText: {
     fontSize: 12,
-    color: '#FF6B6B',
+    color: '#fff',
     fontWeight: '600',
   },
   unskipButton: {

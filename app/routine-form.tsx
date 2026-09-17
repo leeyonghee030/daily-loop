@@ -128,6 +128,7 @@ export default function RoutineFormScreen() {
     repeatType?: string;
     repeatDays?: string;
     scheduledTime?: string;
+    slotType?: string;
     isRequired?: string;
     blockType?: string;
     trackingUnit?: string;
@@ -194,11 +195,21 @@ export default function RoutineFormScreen() {
   });
   const slots = slotsQuery.data ?? [];
 
+  // "말로 루틴 추가"가 "저녁"처럼 대략적 시간대 단어만 찾았을 때(params.slotType) 그 슬롯을
+  // 기본값으로 우선 선택한다 — 안 그러면 항상 "아침"으로만 채워져서 "매일 저녁 명상" 같은
+  // 문장도 슬롯이 아침으로 잘못 들어가는 문제가 있었음(2026-09-17)
   useEffect(() => {
     const fetched = slotsQuery.data;
     if (!fetched) return;
-    setSlotId((prev) => prev ?? fetched.find((s) => s.slot_type === 'morning')?.id ?? fetched[0]?.id ?? null);
-  }, [slotsQuery.data]);
+    setSlotId(
+      (prev) =>
+        prev ??
+        fetched.find((s) => s.slot_type === params.slotType)?.id ??
+        fetched.find((s) => s.slot_type === 'morning')?.id ??
+        fetched[0]?.id ??
+        null
+    );
+  }, [slotsQuery.data, params.slotType]);
 
   useEffect(() => {
     if (slotsQuery.isError) setErrorMessage(t('favoriteForm.errorLoadSlots'));

@@ -306,9 +306,9 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   editButtonText: {
     fontSize: 13,
   },
+  // 오늘 탭 스와이프 "오늘삭제"와 같은 스타일(주색 꽉 채움)로 통일
   deleteButton: {
-    borderWidth: 1,
-    borderColor: '#FF6B6B',
+    backgroundColor: accent,
     borderRadius: cardRadius,
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -316,7 +316,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   deleteButtonText: {
     fontSize: 13,
-    color: '#FF6B6B',
+    color: '#fff',
   },
   bulkSectionLabel: {
     fontSize: 11,

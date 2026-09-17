@@ -1,10 +1,13 @@
-import type { BlockType, RepeatType } from '@/lib/routines';
+import type { BlockType, RepeatType, SlotType } from '@/lib/routines';
 
 export type ParsedRoutineDraft = {
   title: string;
   repeatType: RepeatType;
   repeatDays: number[] | null;
   scheduledTime: string | null;
+  // 구체적 시각(숫자)은 없지만 "아침/점심/저녁/자기전" 같은 대략적 시간대 단어만 있을 때 채워짐.
+  // scheduledTime이 있으면 항상 null(그땐 정확한 시각/시각체크 모드로 들어가서 슬롯을 안 씀)
+  slotType: SlotType | null;
   isRequired: boolean;
   blockType: BlockType;
   trackingUnit: string | null;
@@ -97,6 +100,23 @@ function parseTime(text: string): { scheduledTime: string | null; matched: boole
   return { scheduledTime: `${hh}:${mm}`, matched: true, matchedText: match[0] };
 }
 
+// 숫자 시각 없이 "아침/점심/저녁/자기전" 같은 대략적 시간대 단어만 있을 때 어느 슬롯에
+// 넣을지 판단한다 — parseRoutineInput에서 parseTime이 실패했을 때만 호출한다(안 그러면
+// "아침 7시"처럼 이미 정확한 시각으로 처리된 문장까지 슬롯으로 다시 잡아버림).
+// 이게 없으면 "매일 저녁 명상"처럼 시간대 단어만 있는 문장은 슬롯이 항상 기본값(아침)으로
+// 잘못 채워지는 문제가 있었음(2026-09-17)
+function parseSlotType(text: string): { slotType: SlotType | null; matchedText: string | null } {
+  const beforeSleep = text.match(/자기\s*전|취침\s*전|자정|한밤중|밤/);
+  if (beforeSleep) return { slotType: 'before_sleep', matchedText: beforeSleep[0] };
+  const evening = text.match(/저녁|오후|해질녘|노을질때|해질때쯤/);
+  if (evening) return { slotType: 'evening', matchedText: evening[0] };
+  const lunch = text.match(/점심|정오|한낮/);
+  if (lunch) return { slotType: 'lunch', matchedText: lunch[0] };
+  const morning = text.match(/아침|오전|새벽/);
+  if (morning) return { slotType: 'morning', matchedText: morning[0] };
+  return { slotType: null, matchedText: null };
+}
+
 function parseRequired(text: string): { isRequired: boolean; matchedText: string | null } {
   const match = text.match(/꼭|반드시|필수로|무조건/);
   return { isRequired: !!match, matchedText: match ? match[0] : null };
@@ -153,15 +173,17 @@ export function parseRoutineInput(text: string): ParsedRoutineDraft {
   const { scheduledTime, matched: matchedTime, matchedText: timeMatch } = parseTime(text);
   const { isRequired, matchedText: requiredMatch } = parseRequired(text);
   const { blockType, trackingUnit, matchedText: trackingMatch } = parseTracking(text);
+  const { slotType, matchedText: slotMatch } = matchedTime ? { slotType: null, matchedText: null } : parseSlotType(text);
 
   const needsLlmFallback = !matchedRepeat && !matchedTime && !isRequired && blockType === 'check';
-  const title = buildTitle(text, [repeatMatch, timeMatch, requiredMatch, trackingMatch]);
+  const title = buildTitle(text, [repeatMatch, timeMatch, requiredMatch, trackingMatch, slotMatch]);
 
   return {
     title,
     repeatType,
     repeatDays,
     scheduledTime,
+    slotType,
     isRequired,
     blockType,
     trackingUnit,

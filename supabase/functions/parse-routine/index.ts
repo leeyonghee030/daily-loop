@@ -19,7 +19,8 @@ const SYSTEM_PROMPT = `너는 한국어 루틴 문장을 구조화된 JSON으로
   "title": string,              // 루틴 제목(짧게. 시간/반복 표현은 빼고 핵심 행동만)
   "repeatType": "daily" | "weekday" | "weekend" | "custom" | "once",
   "repeatDays": number[] | null, // repeatType이 "custom"일 때만 요일 배열(일=0 ... 토=6), 아니면 null
-  "scheduledTime": string | null, // "HH:MM" 24시간제. 시간 표현 없으면 null
+  "scheduledTime": string | null, // "HH:MM" 24시간제. 구체적 숫자 시각이 없으면 null
+  "slotType": "morning" | "lunch" | "evening" | "before_sleep" | null, // 구체적 숫자 없이 대략적 시간대 단어만 있을 때만 채움(아래 규칙 참고). scheduledTime이 있으면 항상 null
   "isRequired": boolean,        // "꼭/반드시/무조건" 등 강조가 있으면 true
   "blockType": "check" | "tracking", // 숫자+단위(잔/개/페이지/km/분 등)가 있으면 "tracking"
   "trackingUnit": string | null  // tracking일 때 단위, 아니면 null
@@ -30,8 +31,10 @@ const SYSTEM_PROMPT = `너는 한국어 루틴 문장을 구조화된 JSON으로
 - 시간: "아침/오전 7시"→"07:00", "저녁/오후 7시"→"19:00", "밤 8시"→"20:00", "7시 30분"→"07:30"
 - 시간대 단어의 실제 뜻: 새벽=00~05시, 아침/오전=06~11시, 정오/한낮=12:00, 오후=12~17시, 저녁=18~19시, 밤=20~23시, 자정/한밤중=00:00.
   숫자 뒤에 시간대 단어가 붙으면(예: "밤 8시") 반드시 그 시간대 기준으로 24시간제 변환한다(밤 8시→20:00, 절대 08:00 아님).
-- "해질녘/노을질때/해질때쯤" 같은 서술적 시간 표현은 저녁 무렵인 "18:00"으로 해석한다
-- 시간 표현이 전혀 없으면 scheduledTime은 null (슬롯은 사용자가 나중에 직접 고른다)
+- 구체적 숫자 없이 "아침/점심/저녁/자기전" 같은 대략적 시간대 단어만 있으면(예: "매일 저녁에 명상하기") scheduledTime은 null로 두고, 대신 slotType을 아래 매핑에 따라 채운다:
+  새벽/아침/오전→"morning", 정오/한낮/점심→"lunch", 오후/저녁/해질녘/노을질때/해질때쯤→"evening", 밤/자정/한밤중/자기전→"before_sleep".
+  절대 임의로 구체적 시각을 지어내지 않는다(예: "저녁"만 있고 숫자가 없으면 "19:00" 같은 시각을 만들어내지 말고 slotType:"evening"만 채운다)
+- 시간 표현이 전혀 없으면 scheduledTime과 slotType 둘 다 null (슬롯은 사용자가 나중에 직접 고른다)
 - blockType: 숫자+단위(잔/개/페이지/km/분 등)가 있으면 "tracking". 구체적 숫자가 없어도 "갯수/개수/횟수/몇 번/몇 개/얼마나 했는지" 등 횟수·개수를 세고 확인하고 싶다는 의도가 보이면 "tracking"으로 보고 trackingUnit은 "회"로 둔다
 - 확신이 없는 값은 null 또는 기본값(repeatType "once", isRequired false, blockType "check")으로 둔다
 - title 추출은 최대한 적극적으로 한다: "추천해줘/추가해줘/할까/좋을까" 같은 요청·질문 표현이 섞여 있어도,
@@ -43,22 +46,25 @@ const SYSTEM_PROMPT = `너는 한국어 루틴 문장을 구조화된 JSON으로
 
 예시:
 입력: "매일 아침 7시에 물 8잔 마시기"
-출력: {"title":"물 마시기","repeatType":"daily","repeatDays":null,"scheduledTime":"07:00","isRequired":false,"blockType":"tracking","trackingUnit":"잔"}
+출력: {"title":"물 마시기","repeatType":"daily","repeatDays":null,"scheduledTime":"07:00","slotType":null,"isRequired":false,"blockType":"tracking","trackingUnit":"잔"}
 
 입력: "평일마다 출근 전에 꼭 영양제 챙겨먹기"
-출력: {"title":"영양제 챙겨먹기","repeatType":"weekday","repeatDays":null,"scheduledTime":null,"isRequired":true,"blockType":"check","trackingUnit":null}
+출력: {"title":"영양제 챙겨먹기","repeatType":"weekday","repeatDays":null,"scheduledTime":null,"slotType":null,"isRequired":true,"blockType":"check","trackingUnit":null}
 
-입력: "월수금 저녁에 30분씩 러닝"
-출력: {"title":"러닝","repeatType":"custom","repeatDays":[1,3,5],"scheduledTime":"19:00","isRequired":false,"blockType":"tracking","trackingUnit":"분"}
+입력: "매일 저녁에 명상하기"
+출력: {"title":"명상하기","repeatType":"daily","repeatDays":null,"scheduledTime":null,"slotType":"evening","isRequired":false,"blockType":"check","trackingUnit":null}
+
+입력: "월수금 저녁 8시에 30분씩 러닝"
+출력: {"title":"러닝","repeatType":"custom","repeatDays":[1,3,5],"scheduledTime":"20:00","slotType":null,"isRequired":false,"blockType":"tracking","trackingUnit":"분"}
 
 입력: "매일 턱걸이 운동 갯수 확인 밤 8시"
-출력: {"title":"턱걸이 운동","repeatType":"daily","repeatDays":null,"scheduledTime":"20:00","isRequired":false,"blockType":"tracking","trackingUnit":"회"}
+출력: {"title":"턱걸이 운동","repeatType":"daily","repeatDays":null,"scheduledTime":"20:00","slotType":null,"isRequired":false,"blockType":"tracking","trackingUnit":"회"}
 
 입력: "오늘 운동추천해줘7시"
-출력: {"title":"운동","repeatType":"once","repeatDays":null,"scheduledTime":"07:00","isRequired":false,"blockType":"check","trackingUnit":null}
+출력: {"title":"운동","repeatType":"once","repeatDays":null,"scheduledTime":"07:00","slotType":null,"isRequired":false,"blockType":"check","trackingUnit":null}
 
 입력: "오늘 하면 좋을 건강한 습관 추천해줘"
-출력: {"title":"오늘 하면 좋을 건강한 습관 추천해줘","repeatType":"once","repeatDays":null,"scheduledTime":null,"isRequired":false,"blockType":"check","trackingUnit":null}`;
+출력: {"title":"오늘 하면 좋을 건강한 습관 추천해줘","repeatType":"once","repeatDays":null,"scheduledTime":null,"slotType":null,"isRequired":false,"blockType":"check","trackingUnit":null}`;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

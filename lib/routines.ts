@@ -648,16 +648,21 @@ export type MonthData = {
   holidayDates: Record<string, true>;
 };
 
-async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string): Promise<MonthData> {
-  // 삭제된 루틴도 같이 가져온다 — 삭제 전 과거 날짜는 여전히 그 루틴이 예정돼 있었던 게 맞으므로.
-  // matchesToday()가 deleted_at을 보고 날짜별로 알아서 걸러준다
-  const { data: routines, error: routinesError } = await supabase
-    .from('routines')
-    .select('*, slots(*)')
-    .eq('user_id', userId);
-  if (routinesError) throw routinesError;
+// 캘린더 전용 — 삭제된 루틴도 같이 가져온다(삭제 전 과거 날짜는 여전히 그 루틴이 예정돼 있었던
+// 게 맞으므로, matchesToday()가 deleted_at을 보고 날짜별로 알아서 걸러준다). 달이 바뀌어도
+// 이 목록 자체는 거의 그대로라, calendar.tsx에서 한 번만 받아 세션 내내 재사용한다
+export async function fetchAllRoutinesForCalendar(userId: string): Promise<Routine[]> {
+  const { data, error } = await supabase.from('routines').select('*, slots(*)').eq('user_id', userId);
+  if (error) throw error;
+  return (data ?? []) as Routine[];
+}
 
-  const ids = (routines ?? []).map((r) => r.id);
+// routines를 안 넘기면(예: notifications.ts처럼 세션 캐시가 없는 1회성 호출) 직접 받아온다 —
+// calendar.tsx는 매번 fetchAllRoutinesForCalendar로 캐시된 목록을 넘겨서 이 fetch를 건너뛴다
+async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string, routines?: Routine[]): Promise<MonthData> {
+  const resolvedRoutines = routines ?? (await fetchAllRoutinesForCalendar(userId));
+
+  const ids = resolvedRoutines.map((r) => r.id);
   const [{ data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
     await Promise.all([
       ids.length > 0
@@ -693,21 +698,21 @@ async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: stri
   const holidayDates: Record<string, true> = {};
   for (const row of holidayRows ?? []) holidayDates[row.date] = true;
 
-  return { routines: (routines ?? []) as Routine[], completionsByRoutine, skipDatesByRoutine, holidayDates };
+  return { routines: resolvedRoutines, completionsByRoutine, skipDatesByRoutine, holidayDates };
 }
 
-export async function fetchMonthData(userId: string, year: number, month: number): Promise<MonthData> {
+export async function fetchMonthData(userId: string, year: number, month: number, routines?: Routine[]): Promise<MonthData> {
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
   const monthEnd = formatLocalDate(new Date(year, month, 0));
-  return fetchRangeData(userId, monthStart, monthEnd);
+  return fetchRangeData(userId, monthStart, monthEnd, routines);
 }
 
 // weekStartStr(일요일 등 주 시작일)부터 6일 뒤까지 한 주치 데이터
-export async function fetchWeekData(userId: string, weekStartStr: string): Promise<MonthData> {
+export async function fetchWeekData(userId: string, weekStartStr: string, routines?: Routine[]): Promise<MonthData> {
   const start = new Date(`${weekStartStr}T00:00:00`);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
-  return fetchRangeData(userId, weekStartStr, formatLocalDate(end));
+  return fetchRangeData(userId, weekStartStr, formatLocalDate(end), routines);
 }
 
 export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {

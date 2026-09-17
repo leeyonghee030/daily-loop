@@ -4083,7 +4083,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
       justifyContent: 'center',
       paddingVertical: 12,
       borderRadius: cardRadius,
-      backgroundColor: '#FF6B6B',
+      backgroundColor: accent,
     },
     confirmDeleteText: {
       fontSize: 14,

@@ -251,6 +251,19 @@ function parseRequired(text: string): { isRequired: boolean; matchedText: string
   return { isRequired: !!match, matchedText: match ? match[0] : null };
 }
 
+// 숫자 시각 없이 "morning/evening/night" 같은 대략적 시간대 단어만 있을 때 어느 슬롯에
+// 넣을지 판단한다(한국어판 parseSlotType과 동일한 목적, 2026-09-17) — parseTime이 실패했을
+// 때만 호출한다
+function parseSlotType(text: string): { slotType: ParsedRoutineDraft['slotType']; matchedText: string | null } {
+  const beforeSleep = text.match(/\bnight\b|\bbefore\s+bed\b|\bbedtime\b/i);
+  if (beforeSleep) return { slotType: 'before_sleep', matchedText: beforeSleep[0] };
+  const evening = text.match(/\bevening\b|\bafternoon\b/i);
+  if (evening) return { slotType: 'evening', matchedText: evening[0] };
+  const morning = text.match(/\bmorning\b/i);
+  if (morning) return { slotType: 'morning', matchedText: morning[0] };
+  return { slotType: null, matchedText: null };
+}
+
 const TRACKING_UNITS = [
   'cups?', 'times?', 'reps?', 'pages?', 'km', 'minutes?', 'mins?',
   'hours?', 'hrs?', 'seconds?', 'secs?', 'laps?', 'glass(?:es)?', 'sets?', 'rounds?',
@@ -315,15 +328,17 @@ export function parseRoutineInputEn(rawText: string): ParsedRoutineDraft {
   } = parseRepeat(text, matchedTime, timeMatch);
   const { isRequired, matchedText: requiredMatch } = parseRequired(text);
   const { blockType, trackingUnit, matchedText: trackingMatch } = parseTracking(text);
+  const { slotType, matchedText: slotMatch } = matchedTime ? { slotType: null, matchedText: null } : parseSlotType(text);
 
   const needsLlmFallback = !matchedRepeat && !matchedTime && !isRequired && blockType === 'check';
-  const title = buildTitle(text, [repeatMatch, repeatExtraMatch, timeMatch, requiredMatch, trackingMatch]);
+  const title = buildTitle(text, [repeatMatch, repeatExtraMatch, timeMatch, requiredMatch, trackingMatch, slotMatch]);
 
   return {
     title,
     repeatType,
     repeatDays,
     scheduledTime,
+    slotType,
     isRequired,
     blockType,
     trackingUnit,

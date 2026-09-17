@@ -35,6 +35,7 @@ function draftToParams(draft: ParsedRoutineDraft): Record<string, string> {
   };
   if (draft.repeatDays && draft.repeatDays.length > 0) params.repeatDays = draft.repeatDays.join(',');
   if (draft.scheduledTime) params.scheduledTime = draft.scheduledTime;
+  if (draft.slotType) params.slotType = draft.slotType;
   if (draft.trackingUnit) params.trackingUnit = draft.trackingUnit;
   return params;
 }

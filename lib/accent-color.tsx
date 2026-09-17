@@ -11,9 +11,12 @@ export type AccentPreset = { id: string; label: string; color: string };
 export const ACCENT_PRESETS: AccentPreset[] = [
   { id: 'cloud', label: '구름색', color: DEFAULT_ACCENT },
   { id: 'black', label: '검정', color: '#4A4A4A' },
-  { id: 'yellow', label: '은은한 노랑', color: '#ECD99E' },
-  { id: 'sage', label: '세이지 그린', color: '#93C2A8' },
-  { id: 'rose', label: '로즈', color: '#E1BDCB' },
+  // 노랑/세이지/로즈는 실제로 버튼·배지 등 큰 면적에 진하게 칠해지면 원래 색상표에서보다
+  // 훨씬 쨍해 보인다는 피드백으로, 흰색 쪽으로 더 옅게 눌러서 은은하게 조정함(2026-09-17).
+  // 세이지는 그 다음 피드백으로 밝기는 유지한 채 채도만 더 올림(탁하게 보이지 않게)
+  { id: 'yellow', label: '은은한 노랑', color: '#F4E6C0' },
+  { id: 'sage', label: '세이지 그린', color: '#C0E1D1' },
+  { id: 'rose', label: '로즈', color: '#EBD2DC' },
 ];
 
 export const ACCENT_LABEL_KEYS: Record<string, TranslationKey> = {

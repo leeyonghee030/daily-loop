@@ -4,9 +4,8 @@ import { useRouter } from 'expo-router';
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import {
   ActivityIndicator,
+  Dimensions,
   Keyboard,
-  KeyboardAvoidingView,
-  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -86,6 +85,7 @@ function timeLabel(routine: Routine, t: (key: TranslationKey) => string): string
 
 const HOUR_HEIGHT = 56;
 const ROW_HEIGHT = 34;
+const EXPANDED_ROW_GAP = 4;
 
 function toMinutes(time: string): number {
   const [h, m] = time.split(':').map(Number);
@@ -438,17 +438,35 @@ function TimelineView({
             );
           }
 
+          // 펼친 목록은 각자 실제 소요시간(예: 2시간짜리 슬롯이면 112px)만큼 칸을 그대로 쓰면
+          // 글자 한 줄 아래로 빈 공간이 크게 남아서 3개만 펼쳐도 화면이 길게 늘어나 보임 —
+          // 어차피 펼친 상태에선 "목록"으로 보여주는 거지 실제 길이를 나타낼 필요가 없으니,
+          // 전부 같은 작은 높이로 보여준다. 다 같은 슬롯 시작 시각이라 시간 표시는 중복이니
+          // 아예 안 보여주고, 칸 사이에 일정한 여백을 둔다.
+          // 이 목록은 실제 시간 위치와 무관한 자리라, 밑에 원래 그 시각에 있던 다른 블록이
+          // 깔려있을 수 있음 — 칸 사이 여백 틈으로 그 블록의 테두리 색이 살짝 비쳐 보이던
+          // 버그가 있었음(2026-09-17). 목록 전체 범위를 불투명한 배경판 하나로 먼저 깔아서
+          // 그 뒤에 뭐가 있든 절대 안 비치게 막는다
+          const expandedTotalHeight =
+            sortedItems.length * ROW_HEIGHT + (sortedItems.length - 1) * EXPANDED_ROW_GAP;
           return (
             <Fragment key={clusterId}>
+              <View
+                pointerEvents="none"
+                style={[
+                  timelineStyles.block,
+                  timelineStyles.blockExpanded,
+                  { top: clusterTop, height: expandedTotalHeight, left: '0%', width: '100%' },
+                ]}
+              />
               {sortedItems.map((block, index) => {
-                const offsetTop =
-                  clusterTop + sortedItems.slice(0, index).reduce((sum, b) => sum + b.height, 0);
+                const offsetTop = clusterTop + index * (ROW_HEIGHT + EXPANDED_ROW_GAP);
                 return renderBlock(block, {
                   top: offsetTop,
-                  height: block.height,
+                  height: ROW_HEIGHT,
                   left: '0%',
                   width: '100%',
-                  showTime: true,
+                  showTime: false,
                   expanded: true,
                 });
               })}
@@ -572,9 +590,9 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255, 87, 34, 0.4)',
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: withAlpha(accent, 0.35),
     zIndex: 5,
   },
   blockNow: {
@@ -662,6 +680,7 @@ type ListRowProps = {
   styles: ReturnType<typeof createStyles>;
   swipeRefsRef: MutableRefObject<Record<string, Swipeable | null>>;
   swipeAutoCloseTimersRef: MutableRefObject<Record<string, ReturnType<typeof setTimeout>>>;
+  trackingInputRefsRef: MutableRefObject<Record<string, TextInput | null>>;
   onEdit: (routine: Routine) => void;
   onToggleCheck: (routine: Routine) => void;
   onSkipToday: (routine: Routine) => void;
@@ -691,6 +710,7 @@ const ListRow = memo(function ListRow({
   styles,
   swipeRefsRef,
   swipeAutoCloseTimersRef,
+  trackingInputRefsRef,
   onEdit,
   onToggleCheck,
   onSkipToday,
@@ -786,6 +806,9 @@ const ListRow = memo(function ListRow({
             <>
               <View style={styles.trackingRow}>
                 <TextInput
+                  ref={(instance) => {
+                    trackingInputRefsRef.current[item.id] = instance;
+                  }}
                   style={styles.trackingInput}
                   keyboardType="numeric"
                   value={trackingInputValue}
@@ -845,6 +868,17 @@ export default function TodayScreen() {
   // 트래킹 입력창에 포커스된 루틴 id — 키보드가 완전히 올라온 뒤(keyboardDidShow) 그 시점에
   // 맞춰 다시 한번 스크롤하기 위해 기억해둔다(아래 scrollRowIntoView 설명 참고)
   const focusedTrackingIdRef = useRef<string | null>(null);
+  // 트래킹 입력창이 리스트 아래쪽에 있으면, 그 아래에 스크롤할 콘텐츠 자체가 모자라서 아무리
+  // scrollTo를 불러도 이미 스크롤 끝(바닥)이라 더 못 올라가는 문제가 있었음(2026-09-17) —
+  // 키보드가 떠 있는 동안만 그 키보드 높이만큼 리스트 맨 아래에 빈 여백을 깔아서, 어떤 행이든
+  // 항상 화면 위쪽까지 끌어올릴 수 있는 여지를 만들어준다
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // 지금 스크롤이 얼마나 내려가 있는지 — 트래킹 입력창을 키보드 위로 올릴 때, "얼마나 더
+  // 내려야(스크롤해야) 하는지"를 실제 화면 좌표 기준으로 계산하기 위해 필요하다
+  const listScrollYRef = useRef(0);
+  // 트래킹 입력창(TextInput) 인스턴스 — 포커스됐을 때 measureInWindow로 화면상 실제 위치를
+  // 재서, 키보드에 가려지는 만큼만 정확히 스크롤한다(아래 scrollTrackingInputAboveKeyboard 참고)
+  const trackingInputRefsRef = useRef<Record<string, TextInput | null>>({});
   // 스와이프로 연 행을 액션(수정/기록삭제) 후, 또는 아무 것도 안 누르고 방치했을 때, 또는
   // 다른 탭 갔다 돌아왔을 때 직접 닫기 위한 인스턴스 저장소
   const swipeRefsRef = useRef<Record<string, Swipeable | null>>({});
@@ -1155,40 +1189,71 @@ export default function TodayScreen() {
     setEditingTrackingIds((prev) => new Set(prev).add(routine.id));
   }, []);
 
-  // 트래킹 입력창이 화면 아래쪽에 있으면 키보드가 뜨는 순간 화면(또는 그 행)이 키보드에 가려져
-  // 저장 버튼을 못 누르던 버그 — 입력창에 포커스가 잡히면 그 행을 스크롤 뷰 위쪽 가까이로
-  // 당겨온다. 키보드는 화면 "아래"만 가리므로, 위쪽 근처로 당겨두면 키보드 높이와 무관하게
-  // 행과 저장 버튼이 항상 보이는 영역에 남는다.
-  // 포커스되는 순간 바로 한 번 시도하는 것만으로는 부족했음 — ScrollView가 원래 갖고 있는
-  // "포커스된 입력칸을 키보드 위로 자동 스크롤"하는 기본 동작이 키보드가 다 올라온 뒤에
-  // 한 번 더 끼어들어서, 우리가 옮겨둔 위치를 다시 아래로 밀어버리는 문제가 있었음 — 그래서
-  // keyboardDidShow(키보드가 완전히 다 올라온 시점) 때 한 번 더 강제로 맞춰서 마지막에
-  // 우리가 원하는 위치로 확정시킨다
+  // 수정 화면에서 돌아왔을 때/방금 체크한 트래킹 행을 다시 보여줄 때 등, 키보드와 무관하게
+  // "이 루틴이 화면에 보이게 위쪽 근처로 당겨오는" 일반적인 용도 — rowLayoutsRef(콘텐츠 안에서
+  // 대략 어디쯤인지)로 충분함
   const scrollRowIntoView = useCallback(function scrollRowIntoView(routineId: string, attemptsLeft = 6): void {
     const y = rowLayoutsRef.current[routineId];
     if (y === undefined) {
-      // 화면 복귀 직후처럼 아직 그 행의 레이아웃이 안 잡혔을 수 있어 잠깐 재시도한다
       if (attemptsLeft > 0) setTimeout(() => scrollRowIntoView(routineId, attemptsLeft - 1), 60);
       return;
     }
     listScrollRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
   }, []);
 
-  useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidShow', () => {
-      const id = focusedTrackingIdRef.current;
-      if (id) scrollRowIntoView(id);
+  // 트래킹 입력창이 화면 아래쪽에 있으면 키보드가 뜨는 순간 그 행이 가려져 숫자 입력하는
+  // 모습을 못 보던 버그. 처음엔 "그 행이 콘텐츠 안에서 대략 어디쯤인지"(rowLayoutsRef, 위에서
+  // 아래로 몇 px인지)로 추정해서 스크롤했는데, 그 행이 리스트 맨 아래쪽이라 애초에 그만큼
+  // 스크롤할 여백 자체가 없거나(스크롤이 바닥에 막혀서 더 못 올라감), 추정이 살짝 어긋나면
+  // 여전히 가려지는 경우가 있었음(2026-09-17) — 대신 입력창 자체를 measureInWindow로 재서
+  // "지금 실제 화면 어디에 떠 있는지"를 직접 확인하고, 키보드가 가리는 만큼만 정확히
+  // 계산해서 스크롤한다(추정이 아니라 실측이라 리스트 어느 위치에 있어도 확실히 동작함).
+  // 아래 spacer(키보드 높이만큼 리스트 맨 아래에 까는 빈 공간)와 같이 써야, 맨 아래 행도
+  // 실제로 그만큼 스크롤할 여백이 생겨서 이 계산대로 움직일 수 있다
+  function scrollTrackingInputAboveKeyboard(routineId: string, keyboardHeightNow: number, attemptsLeft = 6): void {
+    const node = trackingInputRefsRef.current[routineId];
+    if (!node) return;
+    node.measureInWindow((_x, y, _width, height) => {
+      if (y === 0 && height === 0) {
+        // 레이아웃이 아직 안 잡혔을 수 있어 잠깐 재시도한다(예: 막 펼쳐진 직후)
+        if (attemptsLeft > 0) {
+          setTimeout(() => scrollTrackingInputAboveKeyboard(routineId, keyboardHeightNow, attemptsLeft - 1), 60);
+        }
+        return;
+      }
+      const screenHeight = Dimensions.get('window').height;
+      const visibleBottom = screenHeight - keyboardHeightNow - 24; // 키보드 바로 위 여유
+      const overlap = y + height - visibleBottom;
+      if (overlap > 0) {
+        listScrollRef.current?.scrollTo({ y: Math.max(0, listScrollYRef.current + overlap), animated: true });
+      }
     });
-    return () => sub.remove();
-  }, [scrollRowIntoView]);
+  }
 
-  const handleFocusTracking = useCallback(
-    (routineId: string) => {
-      focusedTrackingIdRef.current = routineId;
-      scrollRowIntoView(routineId);
-    },
-    [scrollRowIntoView]
-  );
+  // keyboardDidShow(키보드가 다 올라온 시점) 딱 한 번만 반응한다 — 예전엔 여기에
+  // keyboardDidChangeFrame(안드로이드에서 오히려 keyboardDidShow와 겹쳐 두 번 불리는 경우가
+  // 있었음)도 같이 듣고 있어서, 같은 키보드가 뜨는 동안 보정이 두 번 일어나며 "타이핑 중에
+  // 한 번 더 움직이는" 것처럼 보였음(2026-09-17)
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      const height = e.endCoordinates?.height ?? 0;
+      setKeyboardHeight(height);
+      const id = focusedTrackingIdRef.current;
+      if (!id) return;
+      // 아래 여백(spacer)이 막 추가된 직후라 아직 네이티브 레이아웃에 반영 전일 수 있어서,
+      // 짧게 시간을 두고 스크롤 가능한 콘텐츠 높이가 실제로 늘어난 뒤에 측정·스크롤한다
+      setTimeout(() => scrollTrackingInputAboveKeyboard(id, height), 80);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const handleFocusTracking = useCallback((routineId: string) => {
+    focusedTrackingIdRef.current = routineId;
+  }, []);
 
   const handleBlurTracking = useCallback((routineId: string) => {
     if (focusedTrackingIdRef.current === routineId) focusedTrackingIdRef.current = null;
@@ -1278,10 +1343,12 @@ export default function TodayScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}>
+    // 트래킹 입력창(이 화면의 유일한 입력창)은 이미 위에서 직접 측정해서 스크롤로 키보드
+    // 위로 올리는 걸 전부 처리하고 있어서, KeyboardAvoidingView까지 같이 쓰면 키보드 프레임이
+    // 또 바뀔 때(예: 자동완성 줄) 둘이 동시에 반응해서 "우리가 이미 맞춰둔 위치가 한 번 더
+    // 움직이는" 이중 보정처럼 보였음(2026-09-17) — 이 화면은 KeyboardAvoidingView 없이 우리
+    // 로직만으로 처리한다
+    <View style={styles.container}>
       <View style={styles.header}>
         <AnimatedPressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
           <Text style={styles.addButtonText}>{t('today.addRoutine')}</Text>
@@ -1389,6 +1456,10 @@ export default function TodayScreen() {
         contentContainerStyle={routines.length === 0 ? styles.emptyContainer : undefined}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
         keyboardShouldPersistTaps="handled"
+        onScroll={(e) => {
+          listScrollYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         onContentSizeChange={scrollListToNow}>
         {routines.length === 0 ? (
           <Text style={styles.emptyText}>{t('today.empty')}</Text>
@@ -1434,6 +1505,7 @@ export default function TodayScreen() {
                       styles={styles}
                       swipeRefsRef={swipeRefsRef}
                       swipeAutoCloseTimersRef={swipeAutoCloseTimersRef}
+                      trackingInputRefsRef={trackingInputRefsRef}
                       onEdit={handleEditRoutine}
                       onToggleCheck={handleToggleCheck}
                       onSkipToday={handleSkipToday}
@@ -1452,6 +1524,7 @@ export default function TodayScreen() {
             });
           })()
         )}
+        {keyboardHeight > 0 && <View style={{ height: keyboardHeight }} />}
       </ScrollView>
       )}
 
@@ -1464,7 +1537,7 @@ export default function TodayScreen() {
         </View>
       )}
 
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -1492,6 +1565,10 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   llmBannerOuter: {
     marginHorizontal: 20,
     marginBottom: 12,
+    // 이 배너만 배경을 진하게 채운 포인트색 카드라 공용 그림자(cardShadow)를 그대로 쓰면
+    // 특히 연한 테마색(노랑 등)에서 유독 그림자만 진해 보임 — 이 카드만 옅게 낮춘다
+    shadowOpacity: 0,
+    elevation: 0,
   },
   // 배경이 흰 카드가 아니라 포인트색으로 꽉 채워진 배너라, 테두리는 회색 대신 진한 톤으로 덮어씀
   llmBannerContent: {
@@ -1707,6 +1784,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     paddingHorizontal: 8,
     paddingVertical: 4,
     width: 44,
+    fontFamily: fontKorean.fontFamily,
   },
   trackingDoneBadge: {
     fontSize: 12,
@@ -1771,8 +1849,11 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     flexDirection: 'row',
     gap: 6,
   },
+  // 스와이프하면 "수정"이 먼저(앞쪽) 보이는데, 꽉 채운 진한 색이 제일 먼저 무겁게 보인다는
+  // 피드백으로 "오늘삭제"와 스타일을 맞바꿨다(2026-09-17) — 앞쪽인 수정은 옅게, 뒤쪽인
+  // 삭제는 진하게
   editAction: {
-    backgroundColor: accent,
+    backgroundColor: withAlpha(accent, 0.15),
     justifyContent: 'center',
     alignItems: 'center',
     width: 64,
@@ -1780,7 +1861,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     marginVertical: 2,
   },
   editActionText: {
-    color: '#fff',
+    color: accent,
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1801,7 +1882,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: accent,
   },
   deleteAction: {
-    backgroundColor: '#FF6B6B',
+    backgroundColor: accent,
     justifyContent: 'center',
     alignItems: 'center',
     width: 64,
