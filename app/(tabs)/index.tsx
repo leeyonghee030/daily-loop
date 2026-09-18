@@ -159,6 +159,13 @@ type TimelineBlock = { key: string; top: number; height: number; start: string; 
 
 const SLOT_HINT_DISMISSED_KEY = 'timeline_slot_hint_dismissed';
 const SLOT_HINT_LAST_SHOWN_KEY = 'timeline_slot_hint_last_shown_date';
+// 트래킹 입력창을 키보드 위로 올릴 때 미리 얹어두는 안전 여백 — 안드로이드는 키보드가 뜬
+// 직후(자동완성 줄 없음)와 첫 글자를 입력해 자동완성 줄이 붙은 직후 사이에 실제 키보드 높이가
+// 다시 커진다. 매번 "그때그때 실제 높이"로만 보정하면 이 성장분만큼 한 번 더 스크롤이 튀어서
+// "숫자를 처음 입력할 때만 한 번 튀는" 것처럼 보인다 — 처음 계산할 때부터 이 여백을 미리
+// 얹어두면, 나중에 진짜로 키보드가 커져도 이미 그만큼 여유를 두고 있어서 추가로 스크롤할 필요가
+// 없어진다(대부분의 안드로이드 자동완성 줄 높이가 이 값 이내라 가정한 여유값)
+const KEYBOARD_GROWTH_SAFETY_MARGIN = 56;
 
 // 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
 function TimelineView({
@@ -879,6 +886,10 @@ export default function TodayScreen() {
   // 트래킹 입력창(TextInput) 인스턴스 — 포커스됐을 때 measureInWindow로 화면상 실제 위치를
   // 재서, 키보드에 가려지는 만큼만 정확히 스크롤한다(아래 scrollTrackingInputAboveKeyboard 참고)
   const trackingInputRefsRef = useRef<Record<string, TextInput | null>>({});
+  // keyboardDidShow 보정을 잠깐 미뤄뒀다가 한 번만 실행하기 위한 타이머(아래 useEffect 참고) —
+  // 안드로이드에서 숫자 키보드가 뜬 직후 타이핑을 시작하면 자동완성 줄이 붙으면서 키보드
+  // 높이가 살짝 다시 바뀌어 keyboardDidShow가 한 번 더 발생하는 경우가 있어서 필요하다
+  const keyboardScrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 스와이프로 연 행을 액션(수정/기록삭제) 후, 또는 아무 것도 안 누르고 방치했을 때, 또는
   // 다른 탭 갔다 돌아왔을 때 직접 닫기 위한 인스턴스 저장소
   const swipeRefsRef = useRef<Record<string, Swipeable | null>>({});
@@ -1030,6 +1041,16 @@ export default function TodayScreen() {
   // 레이아웃이 잡힐 때까지 스스로 기다리게 한다(탭을 갔다 왔을 때는 이미 레이아웃이 있어서
   // 바로 성공하니 체감상 지연은 없음)
   function scrollListToNow(attemptsLeft = 6) {
+    // ⚠️ 트래킹 입력창에 포커스가 있는 동안(키보드가 떠 있는 동안)은 절대 이 "지금 시각"
+    // 위치로 재정렬하면 안 된다 — 원인을 오래 못 찾았던 "숫자 입력하면 튀는" 버그의 진짜
+    // 정체가 바로 이 함수였다: 이 ScrollView엔 onContentSizeChange={scrollListToNow}가 걸려
+    // 있어서, 키보드가 뜨거나(우리가 까는 spacer 높이 변경) 커질 때마다(자동완성 줄이 붙어
+    // keyboardDidChangeFrame이 옴) 콘텐츠 크기가 바뀌고, 그때마다 이 함수가 같이 불려서
+    // 트래킹 입력창과는 전혀 무관한 "지금 시각" 루틴 위치로 스크롤을 덮어써 버리고 있었다.
+    // scrollTrackingInputAboveKeyboard가 자기 자리를 맞춰놔도 그 직후(또는 그 전에) 이
+    // 함수가 끼어들어 엉뚱한 곳으로 옮겨버리는 것 — 포커스된 트래킹 입력창이 있으면 아예
+    // 건너뛴다
+    if (focusedTrackingIdRef.current) return;
     const targetIndex = computeNowIndex(routines);
     if (targetIndex <= 0) return;
     const targetId = routines[targetIndex].id;
@@ -1222,7 +1243,10 @@ export default function TodayScreen() {
         return;
       }
       const screenHeight = Dimensions.get('window').height;
-      const visibleBottom = screenHeight - keyboardHeightNow - 24; // 키보드 바로 위 여유
+      // KEYBOARD_GROWTH_SAFETY_MARGIN만큼 미리 여유를 더 두고 계산한다(위 상수 설명 참고) —
+      // 이 여유 덕분에 나중에 자동완성 줄이 붙어 keyboardDidChangeFrame이 한 번 더 와도
+      // overlap이 이미 0 이하라 다시 스크롤하지 않고 조용히 넘어간다
+      const visibleBottom = screenHeight - keyboardHeightNow - KEYBOARD_GROWTH_SAFETY_MARGIN - 24; // 키보드 바로 위 여유
       const overlap = y + height - visibleBottom;
       if (overlap > 0) {
         listScrollRef.current?.scrollTo({ y: Math.max(0, listScrollYRef.current + overlap), animated: true });
@@ -1234,20 +1258,39 @@ export default function TodayScreen() {
   // keyboardDidChangeFrame(안드로이드에서 오히려 keyboardDidShow와 겹쳐 두 번 불리는 경우가
   // 있었음)도 같이 듣고 있어서, 같은 키보드가 뜨는 동안 보정이 두 번 일어나며 "타이핑 중에
   // 한 번 더 움직이는" 것처럼 보였음(2026-09-17)
+  //
+  // ⚠️ 위 수정(keyboardDidChangeFrame 아예 안 듣기) 후에도, 그리고 keyboardDidShow만 디바운스한
+  // 후에도 "숫자를 적으면 그제서야 한 번 더 튀는" 문제가 남아있었음 — 원인 재추적 결과,
+  // 키보드가 이미 다 떠 있는 상태에서 첫 글자를 입력하면 안드로이드 자동완성/추천 줄이 그제서야
+  // 붙으면서 키보드 실제 높이가 커지는데, 이건 "다시 뜨는" 게 아니라 "이미 떠 있는 키보드의
+  // 프레임이 바뀌는" 것이라 keyboardDidShow가 아니라 keyboardDidChangeFrame으로 온다. 그런데
+  // 이 이벤트를 아예 안 듣게 해놨으니 그 프레임 변화를 우리 스크롤 보정이 못 따라가서, 실제
+  // 키보드가 커진 만큼 입력창이 도로 가려지고(OS가 화면을 강제로 눌러 올리며) "튀는" 것처럼
+  // 보였던 것 — keyboardDidChangeFrame을 다시 듣되, keyboardDidShow와 같은 디바운스 타이머를
+  // 공유해서 두 이벤트가 거의 동시에 올 땐 자연히 하나로 합쳐지고, 타이핑 중 나중에 따로 오는
+  // 진짜 프레임 변화는 여전히 반영되게 한다
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      const height = e.endCoordinates?.height ?? 0;
+    const handleKeyboardHeight = (height: number) => {
       setKeyboardHeight(height);
       const id = focusedTrackingIdRef.current;
-      if (!id) return;
-      // 아래 여백(spacer)이 막 추가된 직후라 아직 네이티브 레이아웃에 반영 전일 수 있어서,
-      // 짧게 시간을 두고 스크롤 가능한 콘텐츠 높이가 실제로 늘어난 뒤에 측정·스크롤한다
-      setTimeout(() => scrollTrackingInputAboveKeyboard(id, height), 80);
-    });
+      if (!id || height <= 0) return;
+      if (keyboardScrollSettleTimerRef.current) clearTimeout(keyboardScrollSettleTimerRef.current);
+      keyboardScrollSettleTimerRef.current = setTimeout(() => {
+        keyboardScrollSettleTimerRef.current = null;
+        // 디바운스 대기 중 이미 다른 입력창으로 포커스가 옮겨갔으면 건너뛴다(엉뚱한 위치로 스크롤 방지)
+        if (focusedTrackingIdRef.current === id) scrollTrackingInputAboveKeyboard(id, height);
+      }, 150);
+    };
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => handleKeyboardHeight(e.endCoordinates?.height ?? 0));
+    const changeFrameSub = Keyboard.addListener('keyboardDidChangeFrame', (e) =>
+      handleKeyboardHeight(e.endCoordinates?.height ?? 0)
+    );
     const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
     return () => {
       showSub.remove();
+      changeFrameSub.remove();
       hideSub.remove();
+      if (keyboardScrollSettleTimerRef.current) clearTimeout(keyboardScrollSettleTimerRef.current);
     };
   }, []);
 
@@ -1524,7 +1567,10 @@ export default function TodayScreen() {
             });
           })()
         )}
-        {keyboardHeight > 0 && <View style={{ height: keyboardHeight }} />}
+        {/* KEYBOARD_GROWTH_SAFETY_MARGIN만큼 미리 여유를 더 얹은 목표 위치까지 스크롤할 수 있어야
+            하므로, 그만큼 더 큰 여백을 깔아둔다(안 그러면 맨 아래 행일 때 스크롤이 바닥에 막혀
+            의도한 여유만큼 못 올라간다) */}
+        {keyboardHeight > 0 && <View style={{ height: keyboardHeight + KEYBOARD_GROWTH_SAFETY_MARGIN }} />}
       </ScrollView>
       )}
 

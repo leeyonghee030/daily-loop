@@ -18,8 +18,10 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  StyleProp,
   StyleSheet,
   TextInput,
+  TextStyle,
   View as RNView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -82,12 +84,32 @@ const CANVAS_PHOTO_HEIGHT = Math.round(CANVAS_WIDTH * (3 / 4));
 const PHOTO_BLOCK_WIDTH = Math.round(CANVAS_WIDTH * 0.86);
 const PHOTO_BLOCK_HEIGHT = Math.round(PHOTO_BLOCK_WIDTH * (3 / 4));
 const ROUTINE_ROW_HEIGHT = 44;
+// routines_memo 모드의 메모 그리드는 루틴 칩 그리드와 같은 2열 배치를 재사용하지만, 칩과 달리
+// 항상 켜져 있는 탭 hitSlop(TAP_HIT_SLOP)을 쓰는 메모 특성상 ROUTINE_ROW_HEIGHT(44, 칩 기준)만큼
+// 촘촘하면 위아래 줄의 인식 범위가 서로 겹쳐 버린다 — 메모 그리드는 한 줄당 더 여유를 둔다.
+// (64px로 처음 넓혔을 땐 이웃 줄과 안 겹치게 하려고 핀치 인식 여백을 너무 좁게(14px) 줄여야
+// 했는데, 그러면 이번엔 두 손가락을 오므릴 자리 자체가 좁아서 핀치가 잘 안 잡혔다 — 인식
+// 여백을 다시 넉넉히 쓸 수 있도록 줄 간격을 한 번 더 넓힌다)
+const MEMO_GRID_ROW_HEIGHT = 80;
 // 루틴 칩을 왼쪽에 한 줄로만 쌓으면 개수가 많을 때 고정된 캔버스 높이를 넘어가서 화면 밖으로
 // 잘리고 클릭도 안 되는 문제가 있었음 — 왼쪽/오른쪽 2열로 나눠 배치해서 같은 개수를 절반 높이로 담는다
 const CANVAS_SIDE_MARGIN = 16;
 const ROUTINE_COL_GAP = 12;
 const ROUTINE_COL_WIDTH = (CANVAS_WIDTH - CANVAS_SIDE_MARGIN * 2 - ROUTINE_COL_GAP) / 2;
 const ROUTINE_COL_X = [CANVAS_SIDE_MARGIN, CANVAS_SIDE_MARGIN + ROUTINE_COL_WIDTH + ROUTINE_COL_GAP];
+// 메모 그리드는 칩과 같은 ROUTINE_COL_GAP(12px)을 그대로 쓰면, 메모 한 칸의 핀치 인식 여백만
+// 합쳐도 12px 틈보다 훨씬 넓어서 양옆 칸의 인식 범위가 서로 깊이 파고들어("왼쪽 칸을 눌렀는데
+// 오른쪽 칸이 반응하는" 것처럼 보임) 버린다 — 메모 그리드 전용으로 훨씬 넓은 틈을 둔다.
+// (처음엔 32px로만 넓히고 인식 여백을 14px까지 줄였더니 충돌은 없어졌지만 이번엔 핀치 자체가
+// 잘 안 잡혔다 — 인식 여백을 다시 넉넉히(22px) 쓸 수 있도록 틈도 같이 더 넓힌다)
+const MEMO_GRID_COL_GAP = 48;
+const MEMO_GRID_COL_WIDTH = (CANVAS_WIDTH - CANVAS_SIDE_MARGIN * 2 - MEMO_GRID_COL_GAP) / 2;
+const MEMO_GRID_COL_X = [CANVAS_SIDE_MARGIN, CANVAS_SIDE_MARGIN + MEMO_GRID_COL_WIDTH + MEMO_GRID_COL_GAP];
+// 그리드 메모 전용 hitSlop — 위 간격(48px 틈, 76px 줄 간격)의 절반보다 확실히 좁게 잡아서
+// 이웃 칸과는 안 겹치면서도, 자유 메모의 hitSlop(핀치 72px/탭 22px)에 최대한 가깝게 넉넉히
+// 줘서 두 손가락을 편하게 오므릴 수 있는 자리를 확보한다
+const MEMO_GRID_PINCH_HIT_SLOP = 22;
+const MEMO_GRID_TAP_HIT_SLOP = 10;
 // 루틴이 아무리 많아도 사진 위에는 처음부터 이 개수까지만 자동으로 올리고, 그 이상은 "담지
 // 않은 루틴" 목록으로 보내서 사용자가 원하는 것만 "다시 추가"로 골라 담게 한다 — 완전히
 // 무제한으로 다 올리면 캔버스가 한없이 길어지고 사진 느낌 자체가 사라지지만, 보통의 하루
@@ -173,10 +195,39 @@ function isMostlyOutsideCanvas(
   return visibleFraction < visibleThreshold;
 }
 
+// 사진 바로 아래에 자리한 루틴 그리드(칩 또는 routineId 붙은 메모)가 차지하는 세로 범위의
+// 맨 아래 y좌표 — 사진/메모를 새로 추가할 때 이 자리와 겹치지 않게 놓는 데 쓴다
+// (addPhotoBlockFromUri에서 먼저 쓰던 계산을 addTextNote/restoreRoutine도 같이 쓰도록 공용화함)
+function computeRoutineGridBottom(blocks: CanvasBlock[]): number {
+  // 한 사진일기는 'routines'(칩) 또는 'routines_memo'(메모) 둘 중 하나만 쓰므로 실제로는 아래
+  // 둘 중 하나만 0보다 크지만, 방어적으로 각자의 행 높이(MEMO_GRID_ROW_HEIGHT가 더 넓음)로 계산한다
+  const chipCount = blocks.filter((b) => b.type === 'routine').length;
+  const memoCount = blocks.filter((b) => b.type === 'text' && b.routineId).length;
+  if (chipCount === 0 && memoCount === 0) return CANVAS_PHOTO_HEIGHT;
+  const chipBottom = chipCount === 0 ? CANVAS_PHOTO_HEIGHT : CANVAS_PHOTO_HEIGHT + 40 + Math.ceil(chipCount / 2) * ROUTINE_ROW_HEIGHT;
+  const memoBottom = memoCount === 0 ? CANVAS_PHOTO_HEIGHT : CANVAS_PHOTO_HEIGHT + 40 + Math.ceil(memoCount / 2) * MEMO_GRID_ROW_HEIGHT;
+  return Math.max(chipBottom, memoBottom);
+}
+
+// 자유 메모(메모 추가 버튼, "다시 추가"로 복원한 routines_memo 메모)를 놓을 y좌표 — 그리드가
+// 없으면 예전과 같은 기본 간격(40)을 그대로 쓰고, 그리드가 이미 있으면(routines_memo로
+// 불러온 뒤) 그 자리와 겹치지 않도록 그리드 아래로 내려서 놓는다. 캔버스보다 아래로 내려가지
+// 않게 최소한의 높이(40)만큼은 항상 남겨둔다
+function computeFreeMemoY(blocks: CanvasBlock[], canvasHeight: number): number {
+  const gridBottom = computeRoutineGridBottom(blocks);
+  const hasGrid = gridBottom > CANVAS_PHOTO_HEIGHT;
+  return Math.min(gridBottom + (hasGrid ? 12 : 40), canvasHeight - 40);
+}
+
 const DRAG_HOLD_MS = 150;
 // 너무 작아지면 삭제 배지를 누르거나 다시 확대하기 어려워진다는 피드백으로 0.4 → 0.55로 올림
 const MIN_BLOCK_SCALE = 0.55;
 const MAX_BLOCK_SCALE = 2.2;
+// 그리드 메모는 hitSlop을 자유 메모만큼 넓게 못 준다(이웃 칸과 겹치니까) — 그 상태로
+// MIN_BLOCK_SCALE(0.55)까지 작아지면, 줄어든 hitSlop만으로는 다시 확대할 손가락 두 개
+// 놓을 자리가 부족해져서 "작게 한 다음엔 확대가 잘 안 되는" 문제가 생긴다. 그리드 메모는
+// 아예 그만큼 작아지지 못하게 최소 배율 자체를 높게 잡는다
+const MEMO_GRID_MIN_SCALE = 0.85;
 // 선택된 블록의 핀치 인식 영역을 실제 크기보다 넓혀주는 여백 — 작은 칩/메모 위에 정확히 두
 // 손가락을 올리기 어렵다는 피드백으로 기존 24 → 44 → 56 → 72로 계속 넓힘. 탭(선택) 인식은
 // 아래 TAP_HIT_SLOP으로 따로 빼놨기 때문에, 이 값은 "이미 선택된 블록 하나"에만 걸려서 다른
@@ -279,6 +330,10 @@ function DraggableBlock({
   maxSize,
   handleColor = '#888',
   pinchEnabled = true,
+  pinchHitSlop = PINCH_HIT_SLOP,
+  tapHitSlop = TAP_HIT_SLOP,
+  scaleMin = MIN_BLOCK_SCALE,
+  scaleMax = MAX_BLOCK_SCALE,
   onMove,
   onScale,
   onResize,
@@ -306,6 +361,16 @@ function DraggableBlock({
   maxSize?: BlockSize;
   handleColor?: string;
   pinchEnabled?: boolean;
+  // 촘촘한 2열 그리드(routines_memo)에 놓인 메모는 기본 hitSlop을 그대로 쓰면 바로 옆/위아래
+  // 칸까지 인식 범위가 넘어가 서로 터치를 가로채는 문제가 있어서, 그리드 메모에 한해 호출하는
+  // 쪽에서 더 좁은 값을 넘겨준다(기본값은 기존 동작 그대로 유지)
+  pinchHitSlop?: number;
+  tapHitSlop?: number;
+  // 'transform' 모드 전용 — 그리드 메모는 hitSlop을 넓게 못 주는 대신(이웃 칸과 겹치니까),
+  // 너무 작게 줄어들면 그 좁은 hitSlop만으로는 다시 확대하기 어려워진다 — 최소 배율 자체를
+  // 더 높게 잡아서(scaleMin) 손가락 두 개가 놓일 만한 크기 밑으로는 안 줄어들게 막는다
+  scaleMin?: number;
+  scaleMax?: number;
   onMove: (x: number, y: number, scale?: number) => void;
   onScale?: (scale: number) => void;
   // sizeMode가 'box'일 때 핀치(균등)나 모서리 손잡이(개별)로 크기가 바뀐 뒤 호출됨
@@ -380,7 +445,7 @@ function DraggableBlock({
     .maxPointers(2)
     // 루틴/메모가 작게 줄어들면(최소 배율 근처) 블록 자체의 터치 영역도 같이 작아져서 두
     // 손가락을 다 그 좁은 영역 안에 올리기 어려워진다 — pinch와 같은 hitSlop으로 인식 범위를 넓힌다
-    .hitSlop(PINCH_HIT_SLOP)
+    .hitSlop(pinchHitSlop)
     .onUpdate((e) => {
       translateX.value = e.translationX;
       translateY.value = e.translationY;
@@ -397,7 +462,7 @@ function DraggableBlock({
 
   const pinch = Gesture.Pinch()
     .enabled(pinchEnabled)
-    .hitSlop(pinchEnabled ? PINCH_HIT_SLOP : 0)
+    .hitSlop(pinchEnabled ? pinchHitSlop : 0)
     .onUpdate((e) => {
       if (isBoxMode) {
         // 가로/세로 각각의 최소·최대 픽셀에 독립적으로 맞춰 자르면(4:3 기준으로 정한 값이라),
@@ -417,7 +482,7 @@ function DraggableBlock({
       // 최소치로 갑자기 튀어오르는(고무줄) 느낌이 있어서, 움직이는 동안에도 최종 배율과 같은
       // 범위로 미리 제한해 미리보기와 실제 결과가 항상 일치하게 한다
       const proposedScale = baseScaleRef.current * e.scale;
-      const clampedScale = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, proposedScale));
+      const clampedScale = Math.min(scaleMax, Math.max(scaleMin, proposedScale));
       gestureScale.value = clampedScale / baseScaleRef.current;
     })
     .onEnd((e) => {
@@ -426,7 +491,7 @@ function DraggableBlock({
         return;
       }
       const proposedScale = baseScaleRef.current * e.scale;
-      const next = Math.min(MAX_BLOCK_SCALE, Math.max(MIN_BLOCK_SCALE, proposedScale));
+      const next = Math.min(scaleMax, Math.max(scaleMin, proposedScale));
       if (onScale) runOnJS(onScale)(next);
       gestureScale.value = 1;
     });
@@ -437,7 +502,7 @@ function DraggableBlock({
   const rotateGesture = Gesture.Rotation()
     .enabled(rotatable && pinchEnabled && !isBoxMode)
     // 위 twoFingerPan과 같은 이유 — 블록이 작을 때도 회전 인식이 잘 되도록 인식 범위를 넓힌다
-    .hitSlop(PINCH_HIT_SLOP)
+    .hitSlop(pinchHitSlop)
     .onUpdate((e) => {
       // 360도 전부 자유롭게 — 더 이상 각도를 제한하지 않는다
       rotationLive.value = baseRotationRef.current + (e.rotation * 180) / Math.PI;
@@ -503,8 +568,8 @@ function DraggableBlock({
     // 블록이 작으면(짧은 메모 등) 터치 영역도 같이 작아져서 탭이 잘 안 잡힌다는 피드백으로
     // 어느 정도는 넓히되, 이 탭 인식은 선택 여부와 무관하게 항상 켜져 있어서 PINCH_HIT_SLOP만큼
     // 넓히면 촘촘한 메모들 사이에서 다른 블록(사진 등)의 터치까지 가로채 버린다 — 더 좁은
-    // TAP_HIT_SLOP을 쓴다
-    .hitSlop(TAP_HIT_SLOP)
+    // TAP_HIT_SLOP을 쓴다(호출하는 쪽에서 더 좁혀서 넘겨줄 수도 있음 — tapHitSlop 참고)
+    .hitSlop(tapHitSlop)
     .onEnd((_e, success) => {
       if (success && onTap) runOnJS(onTap)();
     });
@@ -625,6 +690,70 @@ function VignetteOverlay({ width, height }: { width: number; height: number }) {
   );
 }
 
+// 메모 입력창 전용 — 예전엔 onChangeText마다 바로 부모의 blocks 상태(setBlocks)를 바꿨는데,
+// blocks는 캔버스에 있는 사진/루틴/메모를 전부 담은 배열이라 한 글자 칠 때마다 그 배열
+// 전체가 새로 만들어지고, 그 여파로 캔버스에 있는 다른 블록들(제스처 설정까지 포함)까지
+// 전부 같이 다시 그려졌다 — 빨리 입력하면 한 글자마다 이 무거운 재렌더링이 연달아 밀리면서
+// "깜빡깜빡하고 렉 걸린" 것처럼 보였다.
+// ⚠️ 처음엔 "150ms 동안 타이핑이 멈추면 그때만 반영"하는 디바운스로 완화했는데, 빠르게 치면
+// 그래도 타자 사이사이 150ms 넘는 틈이 종종 생겨서 그때마다 여전히 그 무거운 재렌더링이
+// 일어나 "한 번씩 깜빡"이는 게 남아있었다 — 아예 타이핑 중엔 부모 state(blocks)를 전혀
+// 건드리지 않도록 바꿨다: 화면엔 이 입력창의 로컬 state로만 즉시 반영하고, blocks 쪽 반영은
+// 편집을 완전히 끝낼 때(다른 곳 탭, 키보드 닫기, 저장)만 한다 — 이때는 캔버스가 다시 그려져도
+// 이미 입력이 끝난 뒤라 깜빡임이 안 보인다. 매 글자마다 pendingMemoDraftRef(리렌더 없는
+// ref)에도 같이 적어둬서, 편집을 끝내는 지점(dismissKeyboardAndSelection 등)에서 그 값을
+// 그대로 꺼내 커밋할 수 있게 한다 — 네이티브 onBlur 타이밍에 의존하지 않는 게 핵심
+function MemoEditInput({
+  blockId,
+  text,
+  style,
+  placeholder,
+  placeholderTextColor,
+  onCommit,
+  onDraftChange,
+}: {
+  blockId: string;
+  text: string;
+  style: StyleProp<TextStyle>;
+  placeholder: string;
+  placeholderTextColor: string;
+  onCommit: (id: string, text: string) => void;
+  // 매 글자마다 즉시 불림(state 아닌 ref에만 씀, 리렌더링 없음) — 편집을 끝내는 지점에서
+  // 이 값으로 blocks를 최종 반영한다(pendingMemoDraftRef 참고)
+  onDraftChange: (id: string, text: string) => void;
+}) {
+  const [draft, setDraft] = useState(text);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // 편집 중인 메모가 바뀌면(다른 메모를 열면 이 컴포넌트는 다른 blockId로 새로 마운트되므로
+  // 실제로는 거의 안 타지만, 방어적으로) 그 메모의 최신 값으로 초안을 리셋한다
+  useEffect(() => {
+    setDraft(text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockId]);
+
+  return (
+    <TextInput
+      autoFocus
+      style={style}
+      value={draft}
+      onChangeText={(v) => {
+        setDraft(v);
+        onDraftChange(blockId, v);
+      }}
+      // 네이티브 blur는 이 컴포넌트가 상태 변화(editingBlockId=null)로 언마운트되는 타이밍과
+      // 경합할 수 있어(먼저 언마운트되면 아예 안 불릴 수 있음) 전적으로 믿을 수 없다 — 그래도
+      // 걸리면 이득이니 보조 안전장치로만 남겨둔다(진짜 커밋은 위 onDraftChange의
+      // pendingMemoDraftRef를 편집 종료 지점에서 직접 꺼내 쓴다)
+      onBlur={() => onCommit(blockId, draftRef.current)}
+      placeholder={placeholder}
+      placeholderTextColor={placeholderTextColor}
+      multiline
+    />
+  );
+}
+
 export default function PhotoDiaryFormScreen() {
   const { date } = useLocalSearchParams<{ date: string }>();
   const router = useRouter();
@@ -683,6 +812,12 @@ export default function PhotoDiaryFormScreen() {
   const lastTapRef = useRef<Map<string, number>>(new Map());
   // 블록별 실제 렌더링 크기(캔버스 밖으로 얼마나 나갔는지 정확히 계산하는 용도) — onLayout으로 채움
   const blockSizeRef = useRef<Map<string, BlockSize>>(new Map());
+  // MemoEditInput은 빠른 타이핑 중 렉을 막으려고 blocks 상태 갱신을 150ms 디바운스한다 —
+  // 그 사이(디바운스가 아직 안 불린 순간)에 "저장" 버튼을 눌러버리면 방금 친 마지막 몇 글자가
+  // blocks에는 아직 반영 안 된 채로 저장될 수 있다. 매 글자마다 이 ref에도 같이 적어두고,
+  // handleSave에서 저장 직전에 한 번 더 합쳐서 이 손실 가능성을 없앤다(ref라 쓰기 자체는
+  // 리렌더링을 안 일으켜서 렉 완화 효과는 그대로 유지됨)
+  const pendingMemoDraftRef = useRef<{ id: string; text: string } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastOpacity = useSharedValue(0);
   const toastAnimatedStyle = useAnimatedStyle(() => ({ opacity: toastOpacity.value }));
@@ -991,11 +1126,8 @@ export default function PhotoDiaryFormScreen() {
         // 자리를 차지한 루틴 칩·메모 그리드와 겹쳐버려서, 항상 위에 그려지고 인식 범위도
         // 넓은 메모/칩이 터치를 먼저 가져가 새 사진을 드래그/회전할 수 없게 되는 문제가
         // 있었다 — 루틴에서 온 블록(칩 또는 routineId 붙은 메모) 개수만큼 그리드가 차지하는
-        // 높이를 계산해서, 그 아래 빈 자리에 놓는다
-        const routineBlockCount = prev.filter((b) => b.type === 'routine' || (b.type === 'text' && b.routineId)).length;
-        const gridRows = Math.ceil(routineBlockCount / 2);
-        const gridBottom =
-          routineBlockCount > 0 ? CANVAS_PHOTO_HEIGHT + 40 + gridRows * ROUTINE_ROW_HEIGHT : CANVAS_PHOTO_HEIGHT;
+        // 높이를 계산해서, 그 아래 빈 자리에 놓는다(computeRoutineGridBottom 참고)
+        const gridBottom = computeRoutineGridBottom(prev);
         // 그리드가 이미 캔버스를 거의 다 채운 상태면(루틴이 많을 때) 그 아래 자리가 캔버스
         // 범위를 넘어가서 사진 아랫부분(회전·크기조절 손잡이가 있는 모서리)이
         // overflow:hidden에 잘려 안 보이고 못 누르게 된다 — 캔버스 맨 아래에서 사진 높이만큼
@@ -1225,18 +1357,18 @@ export default function PhotoDiaryFormScreen() {
   // 가져온 자유 메모(text 블록)로 들여온다. 이후로는 완전히 일반 메모와 동일하게 취급되므로
   // (실시간 완료 상태 동기화 없음, 자유 편집/삭제) 모드 자체는 'text'로 저장한다 — "담지 않은
   // 루틴" 복원 목록이나 루틴 칩 강조색 UI 같은 routine 전용 기능은 여기 안 걸려도 된다
-  // 메모는 칩과 달리 탭/핀치 인식 범위(PINCH_HIT_SLOP=56px)가 넓어서, 칩과 같은 간격(12px)을
-  // 쓰면 그 인식 범위가 바로 위 사진 영역까지 깊이 파고들어 사진의 터치와 뒤섞여 첫 줄 메모가
-  // 잘 안 눌리고 안 움직이는 문제가 있었다 — 이미 문제없이 쓰던 "메모 추가" 버튼과 같은 간격
-  // (40px)으로 넉넉하게 띄운다
+  // 메모는 칩과 달리 탭/핀치 인식 범위가 넓어서, 칩과 같은 간격(12px)을 쓰면 그 인식 범위가
+  // 바로 위 사진 영역까지 깊이 파고들어 사진의 터치와 뒤섞여 첫 줄 메모가 잘 안 눌리고 안
+  // 움직이는 문제가 있었다 — 이미 문제없이 쓰던 "메모 추가" 버튼과 같은 간격(40px)으로 넉넉하게 띄운다
   const MEMO_GRID_TOP_GAP = 40;
   // 2열 그리드 칸이 실제로 캔버스 세로 범위 안에 다 들어가는 줄 수 — 칩(routine)은 고정
   // MAX_AUTO_ROUTINE_BLOCKS를 그대로 믿고 써도 됐지만, 화면 폭이 좁은 기기에서는 그 개수만큼의
   // 줄이 캔버스 높이(canvasHeight)를 넘어가 마지막 줄이 클리핑(overflow:hidden)돼 안 보이는
-  // 경우가 있었다 — 메모는 이 한도를 실제 여유 공간으로 다시 계산해서 절대 넘지 않게 한다
+  // 경우가 있었다 — 메모는 이 한도를 실제 여유 공간으로 다시 계산해서 절대 넘지 않게 한다.
+  // 줄 간격도 칩용 ROUTINE_ROW_HEIGHT(44) 대신 더 넓은 MEMO_GRID_ROW_HEIGHT를 쓴다(위 상수 설명 참고)
   const maxMemoGridSlots = Math.max(
     2,
-    Math.floor((canvasHeight - CANVAS_PHOTO_HEIGHT - MEMO_GRID_TOP_GAP) / ROUTINE_ROW_HEIGHT) * 2
+    Math.floor((canvasHeight - CANVAS_PHOTO_HEIGHT - MEMO_GRID_TOP_GAP) / MEMO_GRID_ROW_HEIGHT) * 2
   );
 
   function chooseRoutineMemoMode() {
@@ -1256,8 +1388,8 @@ export default function PhotoDiaryFormScreen() {
         type: 'text' as const,
         text: r.title,
         routineId: r.id,
-        x: ROUTINE_COL_X[i % 2],
-        y: CANVAS_PHOTO_HEIGHT + MEMO_GRID_TOP_GAP + Math.floor(i / 2) * ROUTINE_ROW_HEIGHT,
+        x: MEMO_GRID_COL_X[i % 2],
+        y: CANVAS_PHOTO_HEIGHT + MEMO_GRID_TOP_GAP + Math.floor(i / 2) * MEMO_GRID_ROW_HEIGHT,
       })),
     ]);
     // 다 못 담은 루틴도 'routines' 모드와 동일하게 "담지 않은 루틴" 목록에서 대기시킨다
@@ -1273,9 +1405,13 @@ export default function PhotoDiaryFormScreen() {
   function restoreRoutine(routineId: string) {
     setHiddenRoutineIds((prev) => prev.filter((id) => id !== routineId));
     // 'routines_memo'는 그냥 메모라서, 칩처럼 정해진 격자 칸을 찾아 넣으려다 캔버스 범위를
-    // 넘겨 안 보이게 되는 대신 "메모 추가" 버튼과 같은 항상 안전한 기본 위치에 다시 넣는다.
-    // 내용은 원래 루틴 제목 그대로 채워서(예: "물먹기") 뭐였는지 안 잊게 하고, 자리만 손으로
-    // 옮기면 된다
+    // 넘겨 안 보이게 되는 대신 항상 안전한 위치에 다시 넣는다. 예전엔 이 자리를 "메모 추가"
+    // 버튼과 같은 고정 좌표(24, 사진높이+40)로 뒀는데, 이게 하필 'routines_memo' 그리드의
+    // 첫 칸(16, 사진높이+40)과 거의 겹쳐서 — 그리드가 이미 채워진 상태에서 메모를 복원하면
+    // 기존 메모 위에 그대로 포개져, 탭/핀치 인식이 서로 엉키는(선택된 다른 메모가 반응하며
+    // 더블탭처럼 보이는) 버그가 있었다 — 사진 추가와 동일하게 지금 그리드가 차지한 자리
+    // 아래로 놓아서 겹치지 않게 한다. 내용은 원래 루틴 제목 그대로 채워서(예: "물먹기")
+    // 뭐였는지 안 잊게 하고, 자리만 손으로 옮기면 된다
     if (mode === 'routines_memo') {
       setBlocks((prev) => [
         ...prev,
@@ -1285,7 +1421,7 @@ export default function PhotoDiaryFormScreen() {
           text: routineById.get(routineId)?.title ?? '',
           routineId,
           x: 24,
-          y: CANVAS_PHOTO_HEIGHT + 40,
+          y: computeFreeMemoY(prev, canvasHeight),
         },
       ]);
       return;
@@ -1306,7 +1442,13 @@ export default function PhotoDiaryFormScreen() {
   }
 
   function addTextNote() {
-    setBlocks((prev) => [...prev, { id: nextBlockId(), type: 'text', text: '', x: 24, y: CANVAS_PHOTO_HEIGHT + 40 }]);
+    // routines_memo 그리드가 이미 채워진 상태에서 새 메모를 추가하면 그 고정 자리(24, 사진높이+40)가
+    // 그리드 첫 칸과 거의 겹쳐서 탭/핀치 인식이 서로 엉키는 버그가 있었다 — computeFreeMemoY로
+    // 그리드가 있으면 그 아래, 없으면 기존 위치 그대로 놓는다(restoreRoutine과 동일한 이유)
+    setBlocks((prev) => [
+      ...prev,
+      { id: nextBlockId(), type: 'text', text: '', x: 24, y: computeFreeMemoY(prev, canvasHeight) },
+    ]);
     showToast(t('photoDiary.noteAddedToast'));
   }
 
@@ -1409,6 +1551,8 @@ export default function PhotoDiaryFormScreen() {
   }
 
   function updateTextBlockText(id: string, text: string) {
+    // 이 글자로 이미 blocks에 반영되니, handleSave가 굳이 한 번 더 합칠 필요 없게 pending을 비운다
+    if (pendingMemoDraftRef.current?.id === id) pendingMemoDraftRef.current = null;
     setBlocks((prev) => prev.map((b) => (b.id === id && b.type === 'text' ? { ...b, text } : b)));
   }
 
@@ -1495,9 +1639,16 @@ export default function PhotoDiaryFormScreen() {
     setIsSaving(true);
     setErrorMessage(null);
     try {
+      // 메모를 빨리 입력한 직후 그 디바운스 커밋(150ms)이 아직 안 끝난 채로 "저장"을 누르면
+      // blocks엔 마지막 몇 글자가 아직 안 반영돼 있을 수 있다 — pendingMemoDraftRef(매 글자마다
+      // 즉시 갱신됨)가 있으면 저장 직전에 한 번 더 덮어써서 최신 글자가 누락되지 않게 한다
+      const pendingDraft = pendingMemoDraftRef.current;
+      const blocksToSave = pendingDraft
+        ? blocks.map((b) => (b.id === pendingDraft.id && b.type === 'text' ? { ...b, text: pendingDraft.text } : b))
+        : blocks;
       // 캔버스 안 사진 블록 중 로컬(아직 업로드 전)인 것들을 전부 업로드하고 URL로 치환
       const finalBlocks = await Promise.all(
-        blocks.map(async (b) => {
+        blocksToSave.map(async (b) => {
           if (b.type === 'photo' && isLocalUri(b.uri)) {
             return { ...b, uri: await uploadPhotoDiaryPhoto(userId, b.uri) };
           }
@@ -1653,6 +1804,9 @@ export default function PhotoDiaryFormScreen() {
   }
 
   function dismissKeyboardAndSelection() {
+    // 편집 중이던 메모가 있으면 blocks에 반영 안 된 채로 언마운트되기 전에 커밋한다
+    // (네이티브 onBlur 타이밍을 못 믿는 이유는 MemoEditInput 주석 참고)
+    if (pendingMemoDraftRef.current) updateTextBlockText(pendingMemoDraftRef.current.id, pendingMemoDraftRef.current.text);
     Keyboard.dismiss();
     setSelectedBlockId(null);
     setEditingBlockId(null);
@@ -1710,6 +1864,9 @@ export default function PhotoDiaryFormScreen() {
         <AnimatedPressable
           style={styles.keyboardDismissButton}
           onPress={() => {
+            if (pendingMemoDraftRef.current) {
+              updateTextBlockText(pendingMemoDraftRef.current.id, pendingMemoDraftRef.current.text);
+            }
             Keyboard.dismiss();
             setEditingBlockId(null);
           }}
@@ -1789,6 +1946,12 @@ export default function PhotoDiaryFormScreen() {
                               block.type !== 'photo'
                                 ? resolveTextColor(block.textColor ?? textColorMode, accent)
                                 : resolvedTextColor;
+                            // routines_memo 모드로 불러온(또는 그 후 "다시 추가"로 복원한) 메모는
+                            // 2열 그리드에 촘촘히 붙어있어서, 자유 메모와 같은 넓은 hitSlop을 그대로
+                            // 쓰면 바로 옆/위아래 칸까지 터치를 가로채 확대 인식이 잘 안 되거나
+                            // 다른 메모를 눌렀는데 이미 선택돼 있던 메모가 반응해 더블탭처럼
+                            // 보이는 문제가 있었다 — 훨씬 좁은 hitSlop을 쓴다
+                            const isGridMemo = block.type === 'text' && !!block.routineId;
                             return (
                               <DraggableBlock
                                 key={block.id}
@@ -1805,6 +1968,9 @@ export default function PhotoDiaryFormScreen() {
                                 onRotate={(r) => updateBlockRotation(block.id, r)}
                                 handleColor={accent}
                                 pinchEnabled={isSelected}
+                                pinchHitSlop={isGridMemo ? MEMO_GRID_PINCH_HIT_SLOP : undefined}
+                                tapHitSlop={isGridMemo ? MEMO_GRID_TAP_HIT_SLOP : undefined}
+                                scaleMin={isGridMemo ? MEMO_GRID_MIN_SCALE : undefined}
                                 onLayoutSize={(size) => blockSizeRef.current.set(block.id, size)}
                                 onMove={(x, y, nextScale) => {
                                   let w: number;
@@ -1926,16 +2092,22 @@ export default function PhotoDiaryFormScreen() {
                                     onHide={() => hideRoutineBlock(block.id, block.routineId)}
                                   />
                                 ) : (
-                                  <RNView style={styles.textChipWrap}>
+                                  // 그리드 메모는 자유 메모와 같은 넓은 maxWidth를 그대로 쓰면 긴
+                                  // 루틴 제목이 자기 칸(열) 폭을 넘어 옆 칸까지 실제로 겹쳐 버려서,
+                                  // 터치 영역이 아니라 텍스트 자체가 다른 메모와 물리적으로 겹치는
+                                  // 문제가 있었다 — 그리드 메모만 칸 폭 안으로 줄바꿈되게 제한한다
+                                  <RNView style={[styles.textChipWrap, isGridMemo && { maxWidth: MEMO_GRID_COL_WIDTH }]}>
                                     {isEditing ? (
-                                      <TextInput
-                                        autoFocus
+                                      <MemoEditInput
+                                        blockId={block.id}
+                                        text={block.text}
                                         style={[styles.textChip, { color: blockTextColor }]}
-                                        value={block.text}
-                                        onChangeText={(v) => updateTextBlockText(block.id, v)}
+                                        onCommit={updateTextBlockText}
+                                        onDraftChange={(id, v) => {
+                                          pendingMemoDraftRef.current = { id, text: v };
+                                        }}
                                         placeholder={t('photoDiary.notePlaceholder')}
                                         placeholderTextColor={withAlpha(blockTextColor, 0.5)}
-                                        multiline
                                       />
                                     ) : (
                                       // 처음 탭하면 선택만 되고(이동/확대축소/회전/삭제/색상
