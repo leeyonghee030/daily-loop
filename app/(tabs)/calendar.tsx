@@ -49,9 +49,11 @@ import {
   fetchMonthData,
   fetchWeekData,
   toggleCheckCompletion,
+  saveTrackingValue,
   SLOT_LABEL_KEYS,
   type DayStatus,
   type MonthData,
+  type RoutineCompletion,
 } from '@/lib/routines';
 
 const STATUS_COLORS: Record<DayStatus, string> = {
@@ -182,6 +184,9 @@ export default function CalendarScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [memoText, setMemoText] = useState('');
   const [memoColor, setMemoColor] = useState<MemoColor>('yellow');
+  // 날짜 상세 시트에서 트래킹형 루틴을 탭하면 숫자 입력창으로 바뀌는데, 그 입력창 상태
+  const [editingTrackingRoutineId, setEditingTrackingRoutineId] = useState<string | null>(null);
+  const [trackingDraft, setTrackingDraft] = useState('');
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
 
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -407,6 +412,16 @@ export default function CalendarScreen() {
   const weekScrollXAnim = useRef(new Animated.Value(0)).current;
   const [weekViewportWidth, setWeekViewportWidth] = useState(0);
   const weekContentWidth = WEEK_COLUMN_WIDTH * 7;
+  // 월간뷰(CalendarList)가 실제로 차지하는 높이를 재서, 주간뷰 칸도 정확히 그 높이에
+  // 맞춘다 — "화면 남는 공간을 다 채우기"(flex:1)로 했더니 월간뷰보다 훨씬 길게(범례가
+  // 화면 맨 아래로 밀려남) 늘어나 버려서, 월간뷰의 실측값 하나로 통일하는 쪽으로 바꿨다.
+  // 아직 월간뷰를 한 번도 안 봤으면(0) 기존 고정값과 비슷한 값으로 대체
+  // 달마다 셀 내용(메모 표시 등)이 비동기로 늦게 채워지면서 월간뷰(CalendarList) 높이가
+  // 계속 바뀌어 그 아래 범례("다완료/일부완료/필수놓침")가 자꾸 움직이던 문제 — 높이를
+  // 이 고정값으로 못박아서(월간뷰 박스에 그대로 적용) 안 움직이게 하고, 주간뷰 칸 높이도
+  // 같은 값 기준으로 계산해서 범례 위치가 두 모드에서 항상 똑같게 맞춘다
+  const MONTH_CALENDAR_HEIGHT = 430;
+  const weekColumnTargetHeight = MONTH_CALENDAR_HEIGHT - 40;
 
   // 요일 칸들이 실제로 화면에 그려지기 전에 scrollTo를 호출하면(useEffect가 너무 일찍 실행되면)
   // 아직 스크롤 가능한 콘텐츠 폭이 확보되지 않아 명령이 조용히 무시됨 — onContentSizeChange로
@@ -450,14 +465,20 @@ export default function CalendarScreen() {
     scrollWeekToTodayRef.current = scrollWeekToToday;
   });
 
-  async function handleToggleToday(routineId: string, existingCompletionId: string | null) {
-    const applyUpdate = (prev: MonthData | undefined, result: Awaited<ReturnType<typeof toggleCheckCompletion>>) => {
+  // 체크형 토글 — 오늘뿐 아니라 지난 날짜(깜빡하고 못 한 날)도 여기서 처리한다. 서버 응답을
+  // 기다리는 동안 화면이 그대로라 "누르면 렉 걸린 것처럼 잘 안 된다"는 느낌이 있었음(오늘
+  // 탭은 이미 낙관적 업데이트를 쓰고 있었는데 캘린더 쪽만 빠져있었다) — 결과를 기다리지 않고
+  // 먼저 화면부터 바꾼 뒤, 서버 응답이 오면 진짜 값으로 다시 맞추고, 실패하면 원래대로 되돌린다
+  async function handleToggleCompletionForDate(routineId: string, existingCompletionId: string | null, date: string) {
+    const monthKey = ['month-data', userId, year, month] as const;
+    const weekKey = ['week-data', userId, weekStart] as const;
+    const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion | null) => {
       if (!prev) return prev;
       const routineMap = { ...(prev.completionsByRoutine[routineId] ?? {}) };
       if (result) {
         routineMap[result.completed_date] = result;
-      } else if (existingCompletionId) {
-        delete routineMap[formatLocalDate(new Date())];
+      } else {
+        delete routineMap[date];
       }
       return {
         ...prev,
@@ -465,12 +486,66 @@ export default function CalendarScreen() {
       };
     };
 
+    const prevMonth = queryClient.getQueryData<MonthData>(monthKey);
+    const prevWeek = queryClient.getQueryData<MonthData>(weekKey);
+    const optimisticResult: RoutineCompletion | null = existingCompletionId
+      ? null
+      : { id: `optimistic-${Date.now()}`, routine_id: routineId, completed_date: date, tracking_value: null };
+    queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+
     try {
-      const result = await toggleCheckCompletion(routineId, existingCompletionId);
-      queryClient.setQueryData(['month-data', userId, year, month], (prev?: MonthData) => applyUpdate(prev, result));
-      queryClient.setQueryData(['week-data', userId, weekStart], (prev?: MonthData) => applyUpdate(prev, result));
+      const result = await toggleCheckCompletion(routineId, existingCompletionId, date);
+      queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
+      queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.invalidateQueries({ queryKey: ['stats', userId] });
     } catch {
+      queryClient.setQueryData(monthKey, prevMonth);
+      queryClient.setQueryData(weekKey, prevWeek);
+      setErrorMessage(t('calendar.errorCheck'));
+    }
+  }
+
+  // 트래킹형 저장 — 값이 있으면 기록을 만들거나 갱신하고, 지우고 빈 채로 저장하면(오늘 탭과
+  // 동일한 정책) 기록삭제로 처리한다. 오늘뿐 아니라 지난 날짜도 여기서 같이 처리
+  async function handleSaveTrackingForDate(routineId: string, existingCompletionId: string | null, date: string) {
+    const raw = trackingDraft;
+    const value = Number(raw);
+    setEditingTrackingRoutineId(null);
+    if (!raw || Number.isNaN(value)) {
+      if (existingCompletionId) await handleToggleCompletionForDate(routineId, existingCompletionId, date);
+      return;
+    }
+    const monthKey = ['month-data', userId, year, month] as const;
+    const weekKey = ['week-data', userId, weekStart] as const;
+    const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion) => {
+      if (!prev) return prev;
+      const routineMap = { ...(prev.completionsByRoutine[routineId] ?? {}) };
+      routineMap[result.completed_date] = result;
+      return { ...prev, completionsByRoutine: { ...prev.completionsByRoutine, [routineId]: routineMap } };
+    };
+
+    // 여기도 체크형과 마찬가지로 서버 응답을 기다리는 동안 화면이 그대로라 느리게 느껴졌음 —
+    // 입력을 닫는 순간 바로 "저장된 값"으로 먼저 보여주고, 실패하면 원래대로 되돌린다
+    const prevMonth = queryClient.getQueryData<MonthData>(monthKey);
+    const prevWeek = queryClient.getQueryData<MonthData>(weekKey);
+    const optimisticResult: RoutineCompletion = {
+      id: existingCompletionId ?? `optimistic-${Date.now()}`,
+      routine_id: routineId,
+      completed_date: date,
+      tracking_value: value,
+    };
+    queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+
+    try {
+      const result = await saveTrackingValue(routineId, existingCompletionId, value, date);
+      queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
+      queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
+      queryClient.invalidateQueries({ queryKey: ['stats', userId] });
+    } catch {
+      queryClient.setQueryData(monthKey, prevMonth);
+      queryClient.setQueryData(weekKey, prevWeek);
       setErrorMessage(t('calendar.errorCheck'));
     }
   }
@@ -633,43 +708,51 @@ export default function CalendarScreen() {
         </AnimatedPressable>
       </View>
 
-      {viewMode === 'week' && (
-        <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
-          {bestStreakEver !== null && bestStreakEver > 0 ? (
-            <>
-              <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
-              <View style={styles.streakHeroNumRow}>
-                <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-                <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
-              </View>
-            </>
-          ) : (
-            <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
-          )}
-        </ShadowCard>
-      )}
+      {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
+          쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
+          캘린더가 차지할 세로 공간을 더 확보한다.
+          ⚠️ 예전엔 주간뷰에서만 보였는데, 그래서 월간뷰엔 이 카드만큼의 높이가 통째로
+          빠져있어 "다완료/일부완료/필수놓침" 범례 위치가 두 모드에서 서로 달라졌다 —
+          두 모드 모두 항상 보여줘서 범례 위까지의 구조를 똑같이 맞춘다 */}
+      <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
+        {bestStreakEver !== null && bestStreakEver > 0 ? (
+          <View style={styles.streakHeroRow}>
+            <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
+            <View style={styles.streakHeroNumRow}>
+              <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
+              <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
+        )}
+      </ShadowCard>
 
       {viewMode === 'month' && (
-        <CalendarList
-          horizontal
-          pagingEnabled
-          // 기본값(과거/미래 각 50개월, 총 101개월치)이 커스텀 dayComponent까지 겹쳐서 최초
-          // 진입 시 로딩이 유독 오래 걸리는 원인이었음 — 실제로 쓸 일 있는 범위로 줄임
-          pastScrollRange={24}
-          futureScrollRange={12}
-          calendarWidth={screenWidth}
-          current={calendarCursor}
-          onMonthChange={handleMonthChange}
-          dayComponent={renderDay}
-          theme={{
-            calendarBackground: Colors[theme].background,
-            dayTextColor: Colors[theme].text,
-            monthTextColor: Colors[theme].text,
-            textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
-            arrowColor: accent,
-            todayTextColor: accent,
-          }}
-        />
+        // 높이를 고정해서(MONTH_CALENDAR_HEIGHT) 달마다 셀 내용이 늦게 채워져도 이 박스
+        // 자체는 안 움직이게 한다
+        <View style={{ height: MONTH_CALENDAR_HEIGHT }}>
+          <CalendarList
+            horizontal
+            pagingEnabled
+            // 기본값(과거/미래 각 50개월, 총 101개월치)이 커스텀 dayComponent까지 겹쳐서 최초
+            // 진입 시 로딩이 유독 오래 걸리는 원인이었음 — 실제로 쓸 일 있는 범위로 줄임
+            pastScrollRange={24}
+            futureScrollRange={12}
+            calendarWidth={screenWidth}
+            current={calendarCursor}
+            onMonthChange={handleMonthChange}
+            dayComponent={renderDay}
+            theme={{
+              calendarBackground: Colors[theme].background,
+              dayTextColor: Colors[theme].text,
+              monthTextColor: Colors[theme].text,
+              textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
+              arrowColor: accent,
+              todayTextColor: accent,
+            }}
+          />
+        </View>
       )}
       {viewMode === 'week' && (
         <View style={styles.weekContainer}>
@@ -709,7 +792,11 @@ export default function CalendarScreen() {
                 return (
                   <AnimatedPressable
                     key={dateStr}
-                    style={[styles.weekColumn, dateStr === todayStr && styles.weekColumnToday]}
+                    style={[
+                      styles.weekColumn,
+                      dateStr === todayStr && styles.weekColumnToday,
+                      { minHeight: weekColumnTargetHeight },
+                    ]}
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
                       <View style={styles.diaryIconSlot}>
@@ -733,7 +820,9 @@ export default function CalendarScreen() {
                         </View>
                       )}
                     </View>
-                    <ScrollView style={styles.weekColumnBody} nestedScrollEnabled>
+                    <ScrollView
+                      style={[styles.weekColumnBody, { maxHeight: weekColumnTargetHeight - 44 }]}
+                      nestedScrollEnabled>
                       {scheduled.length === 0 ? (
                         <Text style={styles.weekColumnEmpty}>{isFuture ? '' : '-'}</Text>
                       ) : (
@@ -889,40 +978,87 @@ export default function CalendarScreen() {
                 <Text style={styles.emptyText}>{t('calendar.noRoutinesThisDay')}</Text>
               ) : (
                 detail.map(({ routine, completion }) => {
-                  const isToday = selectedDate === todayStr;
-                  // 트래킹형은 숫자 기록이라 "체크 토글"(toggleCheckCompletion)을 누르면 그
-                  // 숫자 기록이 지워지거나 값 없는 완료로 잘못 덮어써질 수 있어서, 오늘 날짜라도
-                  // 체크형(block_type==='check')만 눌러서 토글 가능하게 한다
-                  const isCheckToggleable = isToday && routine.block_type === 'check';
-                  const row = (
-                    <View style={styles.detailRow}>
-                      <View style={[styles.detailCheckbox, completion && styles.detailCheckboxDone]}>
-                        {completion && <Text style={styles.detailCheckmark}>✓</Text>}
-                      </View>
-                      <View style={styles.detailMain}>
-                        <Text style={styles.detailTitle}>
-                          {routine.title}
-                          {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
-                        </Text>
-                        <Text style={styles.detailTime}>{timeLabel(routine, t)}</Text>
-                      </View>
-                      {routine.block_type === 'tracking' && completion?.tracking_value !== null && (
-                        <Text style={styles.detailValue}>
-                          {completion?.tracking_value} {routine.tracking_unit}
-                        </Text>
-                      )}
+                  // 오늘뿐 아니라 지난 날짜도 체크/기록할 수 있어야 한다 — 깜빡하고 못 한 걸
+                  // 다음날 뒤늦게 표시하고 싶을 수 있으니까. 미래 날짜는 아직 안 일어난 일이라 제외
+                  const isPastOrToday = selectedDate !== null && selectedDate <= todayStr;
+                  const isCheckToggleable = isPastOrToday && routine.block_type === 'check';
+                  const isTrackingEditable = isPastOrToday && routine.block_type === 'tracking';
+                  const isEditingThisTracking = editingTrackingRoutineId === routine.id;
+
+                  const mainInfo = (
+                    <View style={styles.detailMain}>
+                      <Text style={styles.detailTitle}>
+                        {routine.title}
+                        {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
+                      </Text>
+                      <Text style={styles.detailTime}>{timeLabel(routine, t)}</Text>
                     </View>
                   );
 
-                  return isCheckToggleable ? (
-                    <AnimatedPressable
-                      key={routine.id}
-                      onPress={() => handleToggleToday(routine.id, completion?.id ?? null)}>
-                      {row}
-                    </AnimatedPressable>
-                  ) : (
-                    <View key={routine.id}>{row}</View>
+                  if (isEditingThisTracking && selectedDate) {
+                    return (
+                      <View key={routine.id} style={styles.detailRow}>
+                        {mainInfo}
+                        <TextInput
+                          autoFocus
+                          style={[styles.detailTrackingInput, { color: Colors[theme].text }]}
+                          keyboardType="numeric"
+                          value={trackingDraft}
+                          onChangeText={setTrackingDraft}
+                          placeholder="0"
+                          placeholderTextColor="#999"
+                          onSubmitEditing={() =>
+                            handleSaveTrackingForDate(routine.id, completion?.id ?? null, selectedDate)
+                          }
+                        />
+                        <Text style={styles.detailUnit}>{routine.tracking_unit}</Text>
+                      </View>
+                    );
+                  }
+
+                  const row = (
+                    <View style={styles.detailRow}>
+                      {routine.block_type === 'check' ? (
+                        <View style={[styles.detailCheckbox, completion && styles.detailCheckboxDone]}>
+                          {completion && <Text style={styles.detailCheckmark}>✓</Text>}
+                        </View>
+                      ) : null}
+                      {mainInfo}
+                      {routine.block_type === 'tracking' &&
+                        (completion?.tracking_value != null ? (
+                          <Text style={[styles.detailValue, isTrackingEditable && { color: accent }]}>
+                            ✓ {completion.tracking_value} {routine.tracking_unit}
+                          </Text>
+                        ) : isTrackingEditable ? (
+                          <Text style={styles.detailTrackingPlaceholder}>탭해서 입력</Text>
+                        ) : null)}
+                    </View>
                   );
+
+                  if (isCheckToggleable) {
+                    return (
+                      <AnimatedPressable
+                        key={routine.id}
+                        onPress={() =>
+                          selectedDate && handleToggleCompletionForDate(routine.id, completion?.id ?? null, selectedDate)
+                        }>
+                        {row}
+                      </AnimatedPressable>
+                    );
+                  }
+                  if (isTrackingEditable) {
+                    return (
+                      <AnimatedPressable
+                        key={routine.id}
+                        onPress={() => {
+                          setEditingTrackingRoutineId(routine.id);
+                          setTrackingDraft(completion?.tracking_value != null ? String(completion.tracking_value) : '');
+                        }}>
+                        {row}
+                      </AnimatedPressable>
+                    );
+                  }
+                  return <View key={routine.id}>{row}</View>;
                 })
               )}
             </ScrollView>
@@ -971,31 +1107,36 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   streakHeroOuter: {
     marginHorizontal: 20,
-    marginBottom: 20,
+    marginBottom: 10,
   },
   streakHero: {
-    padding: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  streakHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   streakHeroLabel: {
     fontFamily: fontMono,
     fontSize: 10,
-    letterSpacing: 1.2,
+    letterSpacing: 1,
     textTransform: 'uppercase',
     color: textMuted,
   },
   streakHeroNumRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    gap: 8,
-    marginTop: 6,
+    gap: 5,
   },
   streakHeroNum: {
     fontFamily: fontDisplay,
-    fontSize: 34,
+    fontSize: 22,
     color: accent,
   },
   streakHeroUnit: {
-    fontSize: 13,
+    fontSize: 12,
     color: textMuted,
   },
   streakBadgeEmptyText: {
@@ -1038,7 +1179,8 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   weekColumn: {
     width: WEEK_COLUMN_WIDTH - 6,
-    minHeight: 200,
+    // 위 스트릭 카드를 줄여서 생긴 여유만큼, 폰이 작아도 주간 캘린더 자체가 눈에 잘 들어오도록 키움
+    minHeight: 230,
     marginRight: 6,
     borderWidth: 1,
     borderColor: border,
@@ -1056,8 +1198,8 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     gap: 2,
   },
   weekColumnBody: {
-    minHeight: 110,
-    maxHeight: 180,
+    minHeight: 130,
+    maxHeight: 210,
   },
   weekColumnEmpty: {
     fontSize: 11,
@@ -1343,6 +1485,25 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   detailValue: {
     fontSize: 13,
+  },
+  detailTrackingPlaceholder: {
+    fontSize: 12,
+    color: accent,
+    opacity: 0.7,
+  },
+  detailTrackingInput: {
+    width: 60,
+    borderWidth: 1,
+    borderColor: accent,
+    borderRadius: cardRadius,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    fontSize: 14,
+    textAlign: 'right',
+  },
+  detailUnit: {
+    fontSize: 12,
+    opacity: 0.6,
   },
   closeButton: {
     marginTop: 16,

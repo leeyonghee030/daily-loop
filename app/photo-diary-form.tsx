@@ -695,14 +695,19 @@ function VignetteOverlay({ width, height }: { width: number; height: number }) {
 // 전체가 새로 만들어지고, 그 여파로 캔버스에 있는 다른 블록들(제스처 설정까지 포함)까지
 // 전부 같이 다시 그려졌다 — 빨리 입력하면 한 글자마다 이 무거운 재렌더링이 연달아 밀리면서
 // "깜빡깜빡하고 렉 걸린" 것처럼 보였다.
-// ⚠️ 처음엔 "150ms 동안 타이핑이 멈추면 그때만 반영"하는 디바운스로 완화했는데, 빠르게 치면
-// 그래도 타자 사이사이 150ms 넘는 틈이 종종 생겨서 그때마다 여전히 그 무거운 재렌더링이
-// 일어나 "한 번씩 깜빡"이는 게 남아있었다 — 아예 타이핑 중엔 부모 state(blocks)를 전혀
-// 건드리지 않도록 바꿨다: 화면엔 이 입력창의 로컬 state로만 즉시 반영하고, blocks 쪽 반영은
-// 편집을 완전히 끝낼 때(다른 곳 탭, 키보드 닫기, 저장)만 한다 — 이때는 캔버스가 다시 그려져도
-// 이미 입력이 끝난 뒤라 깜빡임이 안 보인다. 매 글자마다 pendingMemoDraftRef(리렌더 없는
-// ref)에도 같이 적어둬서, 편집을 끝내는 지점(dismissKeyboardAndSelection 등)에서 그 값을
-// 그대로 꺼내 커밋할 수 있게 한다 — 네이티브 onBlur 타이밍에 의존하지 않는 게 핵심
+// ⚠️ "150ms 멈추면 반영"하는 디바운스로 한 차례 완화했지만, 타자 사이 틈이 그보다 길면
+// 여전히 깜빡였다 — 편집 중엔 부모 state(blocks)를 전혀 안 건드리고, 편집을 완전히 끝낼 때
+// (다른 곳 탭, 키보드 닫기, 저장)만 반영하는 걸로 그건 해결했다.
+// ⚠️ 그런데도 "커서(입력 위치를 보여주는 세로 파란 선)가 빠르게 치면 좌우로 흔들린다"는
+// 증상이 남아있었다 — 원인은 이 입력창을 `value={draft}`로 완전히 통제(controlled)하고
+// 있었기 때문. 매 글자마다 (1)네이티브가 글자를 반영 (2)그 결과를 onChangeText로 JS에 알림
+// (3)JS가 state를 갱신 (4)그 state를 다시 value로 native에 되돌려주는 왕복이 일어나는데,
+// 빠르게 연달아 치면 이 왕복이 밀리면서 네이티브가 "방금 되돌려받은 값"을 자기가 이미 알고
+// 있는 최신 값보다 오래된 것으로 착각해 커서 위치를 잘못 다시 계산하는(안드로이드 RN의
+// 고질적인 문제) 것으로 보인다 — `value`를 아예 없애고 `defaultValue`(최초 1회만 값을
+// 넣고 그 다음은 네이티브가 자기 내부 상태로 알아서 관리)로 바꿔서, JS가 매 글자마다
+// "이게 네 값이어야 해"라고 되먹임하는 구간 자체를 없앴다. onChangeText는 여전히 받아서
+// (state로 되돌리지 않고) ref에만 적어 pendingMemoDraftRef/저장용으로 쓴다
 function MemoEditInput({
   blockId,
   text,
@@ -722,34 +727,29 @@ function MemoEditInput({
   // 이 값으로 blocks를 최종 반영한다(pendingMemoDraftRef 참고)
   onDraftChange: (id: string, text: string) => void;
 }) {
-  const [draft, setDraft] = useState(text);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-
-  // 편집 중인 메모가 바뀌면(다른 메모를 열면 이 컴포넌트는 다른 blockId로 새로 마운트되므로
-  // 실제로는 거의 안 타지만, 방어적으로) 그 메모의 최신 값으로 초안을 리셋한다
-  useEffect(() => {
-    setDraft(text);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blockId]);
+  const latestTextRef = useRef(text);
 
   return (
     <TextInput
       autoFocus
       style={style}
-      value={draft}
+      defaultValue={text}
       onChangeText={(v) => {
-        setDraft(v);
+        latestTextRef.current = v;
         onDraftChange(blockId, v);
       }}
       // 네이티브 blur는 이 컴포넌트가 상태 변화(editingBlockId=null)로 언마운트되는 타이밍과
       // 경합할 수 있어(먼저 언마운트되면 아예 안 불릴 수 있음) 전적으로 믿을 수 없다 — 그래도
       // 걸리면 이득이니 보조 안전장치로만 남겨둔다(진짜 커밋은 위 onDraftChange의
       // pendingMemoDraftRef를 편집 종료 지점에서 직접 꺼내 쓴다)
-      onBlur={() => onCommit(blockId, draftRef.current)}
+      onBlur={() => onCommit(blockId, latestTextRef.current)}
       placeholder={placeholder}
       placeholderTextColor={placeholderTextColor}
       multiline
+      // 안드로이드 기본 줄바꿈 전략("고품질")은 글자를 칠 때마다 전체 줄바꿈을 다시 최적화
+      // 계산하는데, 이게 커서/조합 중 밑줄 위치가 흔들리는 원인 중 하나로 잘 알려져 있다 —
+      // "simple"(단순, 재계산 없이 그리디하게 줄바꿈)로 바꿔서 이 재계산 자체를 없앤다
+      textBreakStrategy="simple"
     />
   );
 }
@@ -2095,8 +2095,21 @@ export default function PhotoDiaryFormScreen() {
                                   // 그리드 메모는 자유 메모와 같은 넓은 maxWidth를 그대로 쓰면 긴
                                   // 루틴 제목이 자기 칸(열) 폭을 넘어 옆 칸까지 실제로 겹쳐 버려서,
                                   // 터치 영역이 아니라 텍스트 자체가 다른 메모와 물리적으로 겹치는
-                                  // 문제가 있었다 — 그리드 메모만 칸 폭 안으로 줄바꿈되게 제한한다
-                                  <RNView style={[styles.textChipWrap, isGridMemo && { maxWidth: MEMO_GRID_COL_WIDTH }]}>
+                                  // 문제가 있었다 — 그리드 메모만 칸 폭 안으로 줄바꿈되게 제한한다.
+                                  // ⚠️ 평소(안 쓸 때)엔 minWidth만 두고 내용 길이에 맞춰 폭이
+                                  // 자동으로 커지게(auto-grow) 뒀는데, 편집 중일 땐 이게 문제였다 —
+                                  // 첫 줄이 아직 다 안 찼을 때 글자를 칠 때마다 상자 폭 자체가 매번
+                                  // 조금씩 넓어지면서, 그 순간 안드로이드가 커서/조합 중 밑줄을
+                                  // 다시 계산하다가 위치를 잘못 잡아 좌우로 흔들리는 것으로 보였다
+                                  // (빠르게 치면 이 재계산이 밀려서 더 심해짐) — 편집 중엔 폭을
+                                  // 처음부터 최대치로 고정해서, 타이핑 중 폭이 바뀌는 일 자체가
+                                  // 없게 한다(다 쓰고 나오면 다시 원래처럼 내용 길이에 맞게 줄어듦)
+                                  <RNView
+                                    style={[
+                                      styles.textChipWrap,
+                                      isGridMemo && { maxWidth: MEMO_GRID_COL_WIDTH },
+                                      isEditing && { width: isGridMemo ? MEMO_GRID_COL_WIDTH : CANVAS_WIDTH - 40 },
+                                    ]}>
                                     {isEditing ? (
                                       <MemoEditInput
                                         blockId={block.id}

@@ -425,7 +425,10 @@ export async function fetchStreaks(
 
 export async function toggleCheckCompletion(
   routineId: string,
-  existingCompletionId: string | null
+  existingCompletionId: string | null,
+  // 캘린더에서 지난 날짜(깜빡하고 못 한 날)를 나중에 체크할 수 있게 날짜를 받는다 —
+  // 안 넘기면(오늘 탭 등 기존 호출부) 그대로 오늘 날짜로 동작
+  date: string = formatLocalDate(new Date())
 ): Promise<RoutineCompletion | null> {
   if (existingCompletionId) {
     const { error } = await supabase
@@ -438,7 +441,7 @@ export async function toggleCheckCompletion(
 
   const { data, error } = await supabase
     .from('routine_completions')
-    .insert({ routine_id: routineId, completed_date: formatLocalDate(new Date()) })
+    .insert({ routine_id: routineId, completed_date: date })
     .select()
     .single();
   if (error) throw error;
@@ -745,7 +748,9 @@ export function computeDayStatus(dateStr: string, month: MonthData): DayStatus |
 export async function saveTrackingValue(
   routineId: string,
   existingCompletionId: string | null,
-  value: number
+  value: number,
+  // toggleCheckCompletion과 동일 — 캘린더에서 지난 날짜 기록을 넣을 수 있게 날짜를 받는다
+  date: string = formatLocalDate(new Date())
 ): Promise<RoutineCompletion> {
   if (existingCompletionId) {
     const { data, error } = await supabase
@@ -762,7 +767,7 @@ export async function saveTrackingValue(
     .from('routine_completions')
     .insert({
       routine_id: routineId,
-      completed_date: formatLocalDate(new Date()),
+      completed_date: date,
       tracking_value: value,
     })
     .select()

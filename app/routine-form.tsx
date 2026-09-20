@@ -1,15 +1,29 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useNavigation } from '@react-navigation/native';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Keyboard, Platform, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Keyboard,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  TextInput,
+  TouchableWithoutFeedback,
+  View as RNView,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { VideoPicker } from '@/components/VideoPicker';
 import { clearPersistedLlmText } from '@/app/llm-input';
@@ -140,11 +154,15 @@ export default function RoutineFormScreen() {
   const redirectingRef = useRef(false);
   const router = useRouter();
   const navigation = useNavigation();
+  const queryClient = useQueryClient();
   const { session } = useAuth();
   const userId = session?.user.id;
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 루틴 삭제 확인 — 네이티브 Alert(빨간 시스템 버튼) 대신 다른 화면들과 같은 테마색 커스텀
+  // 모달로 통일
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const [title, setTitle] = useState('');
   const [blockType, setBlockType] = useState<BlockType>('check');
@@ -436,6 +454,13 @@ export default function RoutineFormScreen() {
       } else {
         await createRoutine(userId, input);
       }
+      // 오늘 탭/캘린더/통계가 각자 다른 캐시 키로 루틴을 들고 있어서, 여기서 명시적으로
+      // 무효화 안 하면 focus 시점 재요청(useRefetchOnFocus) 타이밍에 따라 방금 고친 시각이
+      // 잠깐(또는 계속) 예전 값으로 보일 수 있었다 — 저장 성공 즉시 관련 캐시를 전부 무효화
+      queryClient.invalidateQueries({ queryKey: ['today-routines'] });
+      queryClient.invalidateQueries({ queryKey: ['month-data'] });
+      queryClient.invalidateQueries({ queryKey: ['week-data'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       if (saveAsFavorite && repeatType !== 'once') {
         try {
           await createFavorite(userId, {
@@ -474,6 +499,7 @@ export default function RoutineFormScreen() {
 
   async function performDelete() {
     if (!id) return;
+    setShowDeleteConfirm(false);
     setIsSaving(true);
     try {
       await softDeleteRoutine(id);
@@ -485,15 +511,13 @@ export default function RoutineFormScreen() {
   }
 
   function handleDelete() {
-    const message =
-      language === 'ko'
-        ? `"${title}"에 해당하는 모든 예정(반복 전체)이 삭제돼요. 지금까지 체크·기록한 내역은 남아있어요.`
-        : `All occurrences of "${title}" (the whole repeat) will be deleted. Everything you've already checked or recorded stays intact.`;
-    Alert.alert(t('myRoutines.deleteRoutineTitle'), message, [
-      { text: t('settings.cancel'), style: 'cancel' },
-      { text: t('myRoutines.delete'), style: 'destructive', onPress: performDelete },
-    ]);
+    setShowDeleteConfirm(true);
   }
+
+  const deleteConfirmMessage =
+    language === 'ko'
+      ? `"${title}"에 해당하는 모든 예정(반복 전체)이 삭제돼요. 지금까지 체크·기록한 내역은 남아있어요.`
+      : `All occurrences of "${title}" (the whole repeat) will be deleted. Everything you've already checked or recorded stays intact.`;
 
   // 시작 시각이 바뀌면 끝 시각을 항상 시작 시각 +1시간으로 맞춰준다 —
   // 예전엔 끝 시각이 그대로 남아있어서 시작을 늦은 시각으로 옮기면 끝이 그보다 이른 시각으로 보이는 문제가 있었음
@@ -583,7 +607,14 @@ export default function RoutineFormScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      onScrollBeginDrag={Keyboard.dismiss}>
       {!isEditing && (
         <>
           <AnimatedPressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
@@ -918,6 +949,30 @@ export default function RoutineFormScreen() {
         onSelect={setSelectedVideo}
       />
     </ScrollView>
+    </TouchableWithoutFeedback>
+
+    <Modal
+      visible={showDeleteConfirm}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShowDeleteConfirm(false)}>
+      <RNView style={styles.confirmBackdrop}>
+        <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowDeleteConfirm(false)} />
+        <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+          <Text style={styles.confirmTitle}>{t('myRoutines.deleteRoutineTitle')}</Text>
+          <Text style={styles.confirmDesc}>{deleteConfirmMessage}</Text>
+          <View style={styles.confirmButtonRow}>
+            <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setShowDeleteConfirm(false)}>
+              <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.confirmDeleteButton} onPress={performDelete}>
+              <Text style={styles.confirmDeleteText}>{t('myRoutines.delete')}</Text>
+            </AnimatedPressable>
+          </View>
+        </ShadowCard>
+      </RNView>
+    </Modal>
+    </>
   );
 }
 
@@ -1065,15 +1120,17 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 16,
     fontWeight: '600',
   },
+  // 저장은 큰 버튼으로 확실히 강조하고, 삭제는 버튼 틀 없이 작은 텍스트 링크로 바로 밑에
+  // 붙여서 둬서(일기 삭제 버튼과 같은 디자인) 두 동작의 무게감이 다르게 보이면서도
+  // 서로 멀리 떨어져 있지 않게 한다
   deleteButton: {
-    marginTop: 24,
-    paddingVertical: 12,
+    marginTop: 14,
+    paddingVertical: 6,
     alignItems: 'center',
-    backgroundColor: '#FF6B6B',
-    borderRadius: cardRadius,
   },
   deleteButtonText: {
-    color: '#fff',
+    color: accent,
+    fontSize: 13,
     fontWeight: '600',
   },
   videoConnectButton: {
@@ -1124,6 +1181,63 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     height: 48,
     borderRadius: cardRadius,
     backgroundColor: border,
+  },
+  confirmBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  confirmCardOuter: {
+    width: '100%',
+  },
+  confirmCard: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  confirmDesc: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  confirmButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  confirmCancelButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  confirmDeleteButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  confirmDeleteText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   });
 }

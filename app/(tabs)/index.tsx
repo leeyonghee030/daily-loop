@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   Dimensions,
   Keyboard,
+  Modal,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -83,9 +84,95 @@ function timeLabel(routine: Routine, t: (key: TranslationKey) => string): string
   return '';
 }
 
+const SHORT_WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+function repeatLabel(routine: Routine, t: (key: TranslationKey) => string): string {
+  switch (routine.repeat_type) {
+    case 'daily':
+      return t('myRoutines.repeatDaily');
+    case 'weekday':
+      return t('myRoutines.repeatWeekday');
+    case 'weekend':
+      return t('myRoutines.repeatWeekend');
+    case 'custom': {
+      // "커스텀"이라고만 하면 정보가 없어 보여서, 실제 고른 요일을 그대로 보여준다
+      const days = (routine.repeat_days ?? []).slice().sort();
+      if (days.length === 0) return t('myRoutines.repeatCustom');
+      return days.map((d) => SHORT_WEEKDAY_LABELS[d]).join(',');
+    }
+    case 'once':
+      return t('myRoutines.repeatOnce');
+    default:
+      return '';
+  }
+}
+
 const HOUR_HEIGHT = 56;
 const ROW_HEIGHT = 34;
 const EXPANDED_ROW_GAP = 4;
+// 시각 체크(is_instant, 그 순간에만 체크하는 타입)는 실제로 시간을 차지하지 않고 34px짜리
+// 작은 블록 하나만 그리는데, 그 블록이 있는 시간대를 다른 시각형 루틴과 똑같이 HOUR_HEIGHT
+// (56px)만큼 잡아두면 블록 아래로 남는 흰 여백이 눈에 띄게 두드러진다 — 시각 체크만 있는
+// 시간대는 이 작은 블록 하나 들어갈 정도로만 짧게 잡는다.
+// ⚠️ 34px 블록 높이에 딱 맞는 36px로 처음 잡았더니, 시각 체크가 연달아(다른 시간대에)
+// 있으면 위아래 여백이 겨우 1px씩이라 블록끼리 거의 붙어 보였다 — 두 블록 사이가 눈에
+// 보이게 벌어지도록(위아래 각각 5px 정도) 여유를 더 준다
+const INSTANT_HOUR_HEIGHT = 44;
+// 아침/저녁처럼 루틴이 드문드문 있으면 그 사이 빈 시간대까지 전부 HOUR_HEIGHT만큼 그려서
+// 스크롤을 한참 해야 했음 — 루틴이 하나도 없는 시간대가 이만큼(시간) 연달아 이어지면
+// 한 덩어리로 압축해서 짧게 보여준다(COLLAPSED_GAP_HEIGHT)
+const MIN_EMPTY_HOURS_TO_COLLAPSE = 2;
+const COLLAPSED_GAP_HEIGHT = 28;
+
+// 시간대별로 실제 무엇이 있는지 분류 — 'full'은 실제 소요시간이 있는 루틴이 걸쳐있는 시간
+// (기존처럼 꽉 찬 HOUR_HEIGHT 필요), 'instant'는 시각 체크만 있는 시간(짧게만 잡아도 됨),
+// 없으면 압축(collapse) 대상
+type HourKind = 'full' | 'instant';
+
+// 시간축 좌표 계산을 "빈 시간대 압축 + 시각체크 시간대 축소"까지 감안해서 한 곳에 모아둔 것.
+// 압축 안 하는 짧은 공백(1시간 이하)은 기존처럼 HOUR_HEIGHT로 그대로 둬서 평소 느낌을 유지한다
+type HourSegment = { hour: number; hourSpan: number; pixelHeight: number };
+
+function buildHourSegments(minHour: number, maxHour: number, hourKinds: Map<number, HourKind>): HourSegment[] {
+  const segments: HourSegment[] = [];
+  let h = minHour;
+  while (h < maxHour) {
+    const kind = hourKinds.get(h);
+    if (kind) {
+      segments.push({ hour: h, hourSpan: 1, pixelHeight: kind === 'instant' ? INSTANT_HOUR_HEIGHT : HOUR_HEIGHT });
+      h += 1;
+      continue;
+    }
+    let runEnd = h;
+    while (runEnd < maxHour && !hourKinds.has(runEnd)) runEnd += 1;
+    const runLength = runEnd - h;
+    if (runLength >= MIN_EMPTY_HOURS_TO_COLLAPSE) {
+      segments.push({ hour: h, hourSpan: runLength, pixelHeight: COLLAPSED_GAP_HEIGHT });
+    } else {
+      for (let i = h; i < runEnd; i++) segments.push({ hour: i, hourSpan: 1, pixelHeight: HOUR_HEIGHT });
+    }
+    h = runEnd;
+  }
+  return segments;
+}
+
+// 하루 중 "분" 단위 시각(0~1440)을 위 세그먼트를 반영한 실제 화면 y좌표(px)로 변환
+function makeMinutesToY(segments: HourSegment[], minHour: number) {
+  return function minutesToY(minutes: number): number {
+    let y = 0;
+    for (const seg of segments) {
+      const segStartMin = seg.hour * 60;
+      const segEndMin = segStartMin + seg.hourSpan * 60;
+      if (minutes < segEndMin) {
+        const fraction = Math.max(0, minutes - segStartMin) / (seg.hourSpan * 60);
+        return y + fraction * seg.pixelHeight;
+      }
+      y += seg.pixelHeight;
+    }
+    // minHour보다 이른 시각(사실상 없음) 대비 폴백
+    return minutes < minHour * 60 ? 0 : y;
+  };
+}
 
 function toMinutes(time: string): number {
   const [h, m] = time.split(':').map(Number);
@@ -173,18 +260,25 @@ function TimelineView({
   completions,
   onToggleCheck,
   onEdit,
+  onPlayVideo,
+  onSkipToday,
   repositionToken,
 }: {
   routines: Routine[];
   completions: Record<string, RoutineCompletion>;
   onToggleCheck: (routine: Routine) => void;
   onEdit: (routine: Routine) => void;
+  onPlayVideo: (videoId: string) => void;
+  onSkipToday: (routine: Routine) => void;
   repositionToken: number;
 }) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
+  // 타임라인에서 루틴을 탭하면 바로 수정 화면으로 들어가던 걸, 실수로 잘못 눌러도 부담 없게
+  // 먼저 간단한 정보만 보여주는 팝업으로 바꿨다 — 여기서 "수정"을 눌러야 실제 수정 화면으로 감
+  const [infoRoutine, setInfoRoutine] = useState<Routine | null>(null);
   const accent = useAccentColor();
   const { t } = useTranslation();
   const koreanFont = useKoreanFont();
@@ -252,22 +346,64 @@ function TimelineView({
       )
     )
   );
-  const totalHeight = (maxHour - minHour) * HOUR_HEIGHT;
-
-  const hours = Array.from({ length: maxHour - minHour + 1 }, (_, i) => minHour + i);
 
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const showNowLine = nowMinutes >= minHour * 60 && nowMinutes <= maxHour * 60;
-  const nowTop = (nowMinutes - minHour * 60) * (HOUR_HEIGHT / 60);
+
+  // 루틴이 실제로 걸쳐있는 시간(정시 단위)을 모아서, 그 외의 시간대는 압축 대상으로 삼는다.
+  // 시각 체크(순간 체크, 시간을 안 차지함)만 있는 시간은 'instant'(짧게), 실제 소요시간이
+  // 있는 루틴이 하나라도 있으면 'full'(꽉 차게) — 한 시간에 둘 다 있으면 'full'이 우선.
+  // "지금" 표시선이 압축된 좁은 구간 안에 파묻혀 안 보이면 어색하니, 지금 시각이 속한
+  // 시간도 항상 'full'로 넣어둔다
+  const hourKinds = new Map<number, HourKind>();
+  for (const entry of timed) {
+    const startH = Math.floor(toMinutes(entry.range.start) / 60);
+    const endH = entry.isInstant ? startH : Math.max(startH, Math.ceil(endMinutes(entry.range, false) / 60) - 1);
+    const kind: HourKind = entry.isInstant ? 'instant' : 'full';
+    for (let h = startH; h <= endH; h++) {
+      if (kind === 'full' || hourKinds.get(h) !== 'full') hourKinds.set(h, kind);
+    }
+  }
+  if (showNowLine) hourKinds.set(Math.floor(nowMinutes / 60), 'full');
+
+  const segments = buildHourSegments(minHour, maxHour, hourKinds);
+  const minutesToY = makeMinutesToY(segments, minHour);
+  const totalHeight = segments.reduce((sum, s) => sum + s.pixelHeight, 0);
+
+  const nowTop = minutesToY(nowMinutes);
+
+  // 'instant' 세그먼트는 압축된 고정 높이(36px)라 그 시간의 정확한 "분"에 비례해서
+  // (minutesToY로) 위치를 잡으면, 블록 자기 키(34px)가 그 좁은 칸보다 커서 시(hour)의
+  // 뒤쪽 절반에 걸리는 시각체크일수록 다음 시간대까지 밀려 내려가 겹쳐 보이는 문제가 있었다
+  // (예: 22:30분 시각체크가 22:00~23:00 두 칸에 걸쳐 보임) — 시각체크 블록은 "그 시각이 정확히
+  // 몇 분인지"를 칸 안에서 비례로 보여줄 필요가 없으므로, 정확한 분 대신 그 시간 칸(세그먼트)
+  // 안에서 그냥 세로 가운데에 고정해서 절대 다음 칸을 침범하지 않게 한다
+  const instantSegmentTopByHour = new Map<number, number>();
+  {
+    let cursor = 0;
+    for (const seg of segments) {
+      if (seg.hourSpan === 1) instantSegmentTopByHour.set(seg.hour, cursor);
+      cursor += seg.pixelHeight;
+    }
+  }
 
   // 같은 시간대에 여러 개 몰려도 쌓지 않고 각자 블록으로 만들어서, 아래 컬럼 배치 로직이 옆으로 나란히 놓는다
   const blocks: TimelineBlock[] = timed.map((entry) => {
     const { routine, range, isExact, isInstant } = entry;
     const key = isExact ? `exact-${routine.id}` : `slot-${routine.id}`;
-    const top = (toMinutes(range.start) - minHour * 60) * (HOUR_HEIGHT / 60);
-    const rawHeight = isInstant ? 0 : (endMinutes(range, false) - toMinutes(range.start)) * (HOUR_HEIGHT / 60);
-    const height = isInstant ? 34 : Math.max(rawHeight, 34);
+    const height = isInstant ? 34 : Math.max((endMinutes(range, false) - toMinutes(range.start)) * (HOUR_HEIGHT / 60), 34);
+    let top: number;
+    if (isInstant) {
+      const hour = Math.floor(toMinutes(range.start) / 60);
+      const segTop = instantSegmentTopByHour.get(hour);
+      const segHeight = hourKinds.get(hour) === 'instant' ? INSTANT_HOUR_HEIGHT : HOUR_HEIGHT;
+      top = segTop !== undefined ? segTop + Math.max(0, (segHeight - height) / 2) : minutesToY(toMinutes(range.start));
+    } else {
+      // 루틴이 실제로 차지하는 시간대는 정의상 압축 대상이 아니므로(hourKinds에 'full'로 들어있음)
+      // 그 구간 안에서는 항상 기존과 같은 "분당 HOUR_HEIGHT/60px" 비율이 그대로 유지된다
+      top = minutesToY(toMinutes(range.start));
+    }
     return { key, top, height, start: range.start, isExact, items: [entry] };
   });
   const columns = assignColumns(blocks.map((b) => ({ id: b.key, top: b.top, height: b.height })));
@@ -277,6 +413,15 @@ function TimelineView({
     if (!clusterBlocks.has(clusterId)) clusterBlocks.set(clusterId, []);
     clusterBlocks.get(clusterId)!.push(block);
   }
+
+  // 블록 안에는 시작 시각만 짧게 보여주고, 끝나는 시각은 왼쪽 시간축에 정시 눈금과 같은
+  // 자리에 별도로 표시한다(시각 체크는 애초에 끝이 없어서 제외)
+  const endTimeMarkers = timed
+    .filter((entry) => !entry.isInstant)
+    .map((entry) => {
+      const endLabel = entry.range.end <= entry.range.start ? '24:00' : formatTime(entry.range.end);
+      return { key: `end-${entry.routine.id}`, y: minutesToY(endMinutes(entry.range, false)), label: endLabel };
+    });
 
   // 화면을 처음 열 때(마운트), 그리고 다른 탭 갔다가 돌아왔을 때(repositionToken 증가) 매번
   // 지금 시각 위치로 다시 스크롤한다. 예전엔 ScrollView의 onContentSizeChange(콘텐츠 크기가
@@ -317,21 +462,32 @@ function TimelineView({
   ) {
     const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].isInstant);
     return (
-      <View
+      <Swipeable
         key={block.key}
+        containerStyle={{ position: 'absolute', top: pos.top, height: pos.height, left: pos.left, width: pos.width }}
+        overshootRight={false}
+        renderRightActions={() => (
+          <AnimatedPressable
+            style={timelineStyles.blockDeleteAction}
+            onPress={() => onSkipToday(block.items[0].routine)}>
+            <Text style={timelineStyles.blockDeleteActionText}>{t('today.skipToday')}</Text>
+          </AnimatedPressable>
+        )}>
+      <View
         style={[
           timelineStyles.block,
           isNowBlock && timelineStyles.blockNow,
           pos.expanded && timelineStyles.blockExpanded,
-          { top: pos.top, height: pos.height, left: pos.left, width: pos.width },
         ]}>
         {block.items.map(({ routine }, index) => {
           const completion = completions[routine.id];
           const isDone = Boolean(completion);
           return (
             <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
-              <AnimatedPressable style={timelineStyles.blockContent} onPress={() => onEdit(routine)}>
+              <AnimatedPressable style={timelineStyles.blockContent} onPress={() => setInfoRoutine(routine)}>
                 {pos.showTime && index === 0 && (
+                  // 블록 안엔 시작 시각만 짧게 표시 — 끝나는 시각은 블록 안이 아니라 왼쪽
+                  // 시간축에 별도 표시로 보여준다(아래 endTimeMarkers 참고)
                   <Text style={[timelineStyles.blockTime, pos.expanded && timelineStyles.blockTextExpanded]}>
                     {formatTime(block.start)}
                   </Text>
@@ -347,6 +503,14 @@ function TimelineView({
                   {routine.title}
                 </Text>
               </AnimatedPressable>
+              {routine.video_id && (
+                <AnimatedPressable
+                  hitSlop={6}
+                  style={timelineStyles.blockPlayButton}
+                  onPress={() => onPlayVideo(routine.video_id!)}>
+                  <Text style={timelineStyles.blockPlayButtonText}>▶</Text>
+                </AnimatedPressable>
+              )}
               {routine.block_type === 'check' ? (
                 <AnimatedPressable
                   hitSlop={8}
@@ -364,6 +528,7 @@ function TimelineView({
           );
         })}
       </View>
+      </Swipeable>
     );
   }
 
@@ -397,13 +562,37 @@ function TimelineView({
         onScrollBeginDrag={() => {
           if (expandedClusters.size > 0) setExpandedClusters(new Set());
         }}>
-      {hours.map((hour) => (
-        <Fragment key={hour}>
-          <View style={[timelineStyles.hourLine, { top: (hour - minHour) * HOUR_HEIGHT }]} />
-          <View style={[timelineStyles.hourLabelWrap, { top: (hour - minHour) * HOUR_HEIGHT - 7 }]}>
-            <Text style={timelineStyles.hourLabel}>{String(hour).padStart(2, '0')}:00</Text>
-          </View>
-        </Fragment>
+      {(() => {
+        let cursor = 0;
+        return segments.map((seg) => {
+          const segTop = cursor;
+          cursor += seg.pixelHeight;
+          // 루틴 있는 시간(또는 짧은 공백)은 기존처럼 매 정시마다 눈금선+시각 표시
+          if (seg.hourSpan === 1) {
+            return (
+              <Fragment key={seg.hour}>
+                <View style={[timelineStyles.hourLine, { top: segTop }]} />
+                <View style={[timelineStyles.hourLabelWrap, { top: segTop - 7 }]}>
+                  <Text style={timelineStyles.hourLabel}>{String(seg.hour).padStart(2, '0')}:00</Text>
+                </View>
+              </Fragment>
+            );
+          }
+          // 루틴이 한참 없는 구간은 정시마다 다 그리지 않고, 그 범위를 알려주는 얇은 띠 하나로 압축
+          return (
+            <View key={seg.hour} style={[timelineStyles.gapBand, { top: segTop, height: seg.pixelHeight }]}>
+              <Text style={timelineStyles.gapBandText}>
+                {String(seg.hour).padStart(2, '0')}~{String(seg.hour + seg.hourSpan).padStart(2, '0')}시
+              </Text>
+            </View>
+          );
+        });
+      })()}
+
+      {endTimeMarkers.map((marker) => (
+        <View key={marker.key} style={[timelineStyles.endTimeLabelWrap, { top: marker.y - 7 }]} pointerEvents="none">
+          <Text style={timelineStyles.endTimeLabel}>{marker.label}</Text>
+        </View>
       ))}
 
       {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
@@ -431,7 +620,11 @@ function TimelineView({
             const hiddenCount = sortedItems.length - 1;
             return (
               <Fragment key={clusterId}>
-                {renderBlock(first, { top: clusterTop, height: first.height, left: '0%', width: '80%', showTime: false })}
+                {/* 접힌 상태에서 보이는 블록은 하나뿐이라 시간 표시가 중복되지 않는다 — 펼쳤을
+                    때(같은 슬롯 시각이 여러 번 반복되는 목록)만 showTime을 꺼서 중복을 없앤다.
+                    이걸 여기서도 꺼두면 "아침/점심/저녁"처럼 슬롯에 루틴이 여럿 몰린 경우
+                    시작 시각 자체가 아예 안 보이는 버그가 있었음 */}
+                {renderBlock(first, { top: clusterTop, height: first.height, left: '0%', width: '80%', showTime: true })}
                 <AnimatedPressable
                   style={[
                     timelineStyles.block,
@@ -482,6 +675,72 @@ function TimelineView({
         })}
       </View>
       </ScrollView>
+
+      <Modal visible={!!infoRoutine} transparent animationType="fade" onRequestClose={() => setInfoRoutine(null)}>
+        <View style={timelineStyles.infoBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setInfoRoutine(null)} />
+          {infoRoutine && (
+            <ShadowCard style={timelineStyles.infoCardOuter} contentStyle={timelineStyles.infoCard}>
+              <Text style={timelineStyles.infoTitle}>{infoRoutine.title}</Text>
+              <View style={timelineStyles.infoBadgeRow}>
+                <View style={timelineStyles.infoBadge}>
+                  <Text style={timelineStyles.infoBadgeText}>
+                    {infoRoutine.block_type === 'check' ? t('common.check') : t('common.tracking')}
+                  </Text>
+                </View>
+                <View style={timelineStyles.infoBadge}>
+                  <Text style={timelineStyles.infoBadgeText}>{repeatLabel(infoRoutine, t)}</Text>
+                </View>
+                {infoRoutine.is_required && (
+                  <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
+                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>*필수</Text>
+                  </View>
+                )}
+                {infoRoutine.skip_holidays && (
+                  <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
+                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>공휴일 제외</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={timelineStyles.infoTime}>{timeLabel(infoRoutine, t)}</Text>
+              {(() => {
+                const infoCompletion = completions[infoRoutine.id];
+                if (!infoCompletion) return null;
+                return (
+                  <Text style={timelineStyles.infoStatusDone}>
+                    ✓ 완료
+                    {infoRoutine.block_type === 'tracking' &&
+                      infoCompletion.tracking_value != null &&
+                      ` · ${infoCompletion.tracking_value} ${infoRoutine.tracking_unit ?? ''}`}
+                  </Text>
+                );
+              })()}
+              {infoRoutine.memo && (
+                <View style={timelineStyles.infoMemoCard}>
+                  {/* 메모가 너무 길면 팝업 박스 자체가 한없이 커지니 5줄까지만 보여주고 나머진 ... */}
+                  <Text style={timelineStyles.infoMemo} numberOfLines={5} ellipsizeMode="tail">
+                    {infoRoutine.memo}
+                  </Text>
+                </View>
+              )}
+              <View style={timelineStyles.infoButtonRow}>
+                <AnimatedPressable style={timelineStyles.infoCloseButton} onPress={() => setInfoRoutine(null)}>
+                  <Text style={timelineStyles.infoCloseText}>{t('today.close')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable
+                  style={timelineStyles.infoEditButton}
+                  onPress={() => {
+                    const routine = infoRoutine;
+                    setInfoRoutine(null);
+                    onEdit(routine);
+                  }}>
+                  <Text style={timelineStyles.infoEditText}>{t('today.edit')}</Text>
+                </AnimatedPressable>
+              </View>
+            </ShadowCard>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -568,6 +827,33 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 10,
     opacity: 0.4,
   },
+  // 루틴이 끝나는 정확한 시각 — 정시 눈금(hourLabel)과 같은 세로줄이지만 살짝 오른쪽(정시
+  // 숫자와 안 겹치게)에 테마색으로 표시해서 "끝나는 시각"임을 구분한다
+  endTimeLabelWrap: {
+    position: 'absolute',
+    left: 34,
+  },
+  endTimeLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: accent,
+    opacity: 0.8,
+  },
+  // 루틴이 없는 시간대를 압축해서 보여주는 얇은 띠 — 일반 시간 칸(HOUR_HEIGHT)보다 훨씬 얇게
+  gapBand: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(26,26,26,0.08)',
+  },
+  gapBandText: {
+    fontSize: 10,
+    opacity: 0.35,
+  },
   blocksArea: {
     position: 'absolute',
     left: 69,
@@ -653,6 +939,26 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockTitleDone: {
     textDecorationLine: 'line-through',
   },
+  blockPlayButton: {
+    paddingHorizontal: 4,
+  },
+  blockPlayButtonText: {
+    fontSize: 11,
+    color: accent,
+  },
+  // 리스트뷰의 스와이프 "오늘삭제"와 같은 동작 — 타임라인에서도 왼쪽으로 스와이프하면 나옴
+  blockDeleteAction: {
+    backgroundColor: accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 64,
+    borderRadius: cardRadius,
+  },
+  blockDeleteActionText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   blockCheckbox: {
     width: 22,
     height: 22,
@@ -673,6 +979,107 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockTrackingValue: {
     fontSize: 12,
     opacity: 0.7,
+  },
+  // 타임라인에서 루틴을 탭하면 바로 수정 화면으로 넘어가는 대신 뜨는 간단설명 팝업
+  infoBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  infoCardOuter: {
+    width: '100%',
+  },
+  infoCard: {
+    padding: 24,
+  },
+  infoTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  infoBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+  },
+  infoBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  infoBadgeText: {
+    fontSize: 11,
+    opacity: 0.6,
+  },
+  // 필수/공휴일 제외처럼 눈에 띄어야 하는 뱃지만 테마색으로 채워서 구분
+  infoBadgeAccent: {
+    backgroundColor: accent,
+    borderColor: accent,
+  },
+  infoBadgeTextAccent: {
+    color: '#fff',
+    opacity: 1,
+    fontWeight: '600',
+  },
+  infoTime: {
+    fontSize: 14,
+    opacity: 0.6,
+    fontFamily: fontMono,
+  },
+  infoStatusDone: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: accent,
+    marginTop: 6,
+  },
+  // 메모는 그냥 글자만 놓기보다 포스트잇처럼 살짝 구분된 카드로 보여줘서 "깔끔한 메모"
+  // 느낌을 준다(캘린더 날짜 메모 카드와 같은 톤)
+  infoMemoCard: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: cardRadius,
+    backgroundColor: withAlpha(accent, 0.08),
+  },
+  infoMemo: {
+    fontSize: 13,
+    opacity: 0.8,
+    lineHeight: 18,
+  },
+  infoButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginTop: 20,
+  },
+  infoCloseButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  infoCloseText: {
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  infoEditButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  infoEditText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   });
 }
@@ -822,6 +1229,10 @@ const ListRow = memo(function ListRow({
                   onChangeText={(text) => onChangeTrackingInput(item.id, text)}
                   onFocus={() => onFocusTracking(item.id)}
                   onBlur={() => onBlurTracking(item.id)}
+                  // 화면을 깔끔하게 하려고 별도 "저장" 버튼을 없애고, 숫자 키패드의 완료 키를
+                  // 누르면 바로 저장되게 한다(안드로이드/iOS 숫자 키패드는 기본이 "완료"라
+                  // returnKeyType을 따로 안 줘도 됨)
+                  onSubmitEditing={() => onSaveTracking(item)}
                   placeholder="0"
                   autoFocus={isDone}
                 />
@@ -831,11 +1242,6 @@ const ListRow = memo(function ListRow({
                     <Text style={styles.cancelTrackingButtonText}>{t('today.close')}</Text>
                   </AnimatedPressable>
                 )}
-              </View>
-              <View style={styles.actionSlot}>
-                <AnimatedPressable style={styles.saveButton} onPress={() => onSaveTracking(item)}>
-                  <Text style={styles.saveButtonText}>{t('today.save')}</Text>
-                </AnimatedPressable>
               </View>
             </>
           )
@@ -1326,19 +1732,6 @@ export default function TodayScreen() {
     skipTodayMutation.mutate(routine.id);
   }, []);
 
-  const handleSaveTracking = useCallback(
-    (routine: Routine) => {
-      const raw = trackingInputsRef.current[routine.id];
-      const value = Number(raw);
-      if (!raw || Number.isNaN(value)) return;
-      const existing = completionsRef.current[routine.id] ?? null;
-      saveTrackingMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, value });
-      // 저장 즉시 "기록됨" 표시로 접어서, 입력창이 사라지고 새 값이 보이는 걸로 저장됐다는 걸 확인할 수 있게 한다
-      closeEditTracking(routine.id);
-    },
-    [closeEditTracking]
-  );
-
   // 트래킹 기록을 완전히 지운다(체크형의 "다시 눌러서 해제"에 해당) — 저장된 값 자체를 없애고
   // 싶을 때 쓰는 용도라, 값을 지우는 completion 삭제(toggleCheckCompletion의 delete 경로)를
   // 그대로 재사용한다(어떤 block_type이든 id로만 지우므로 문제없음)
@@ -1357,6 +1750,24 @@ export default function TodayScreen() {
       scrollRowIntoView(routine.id);
     },
     [closeEditTracking, scrollRowIntoView]
+  );
+
+  const handleSaveTracking = useCallback(
+    (routine: Routine) => {
+      const raw = trackingInputsRef.current[routine.id];
+      const value = Number(raw);
+      if (!raw || Number.isNaN(value)) {
+        // 값이 있던 기록을 지우고 빈 채로 저장(엔터)하면, 그냥 무시하는 대신 "기록삭제"와
+        // 똑같이 처리해서 기록이 없는 상태로 되돌아가게 한다(다시 체크/입력할 수 있도록)
+        if (completionsRef.current[routine.id]) handleCancelTracking(routine);
+        return;
+      }
+      const existing = completionsRef.current[routine.id] ?? null;
+      saveTrackingMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, value });
+      // 저장 즉시 "기록됨" 표시로 접어서, 입력창이 사라지고 새 값이 보이는 걸로 저장됐다는 걸 확인할 수 있게 한다
+      closeEditTracking(routine.id);
+    },
+    [closeEditTracking, handleCancelTracking]
   );
 
   const handleEditRoutine = useCallback(
@@ -1392,12 +1803,6 @@ export default function TodayScreen() {
     // 움직이는" 이중 보정처럼 보였음(2026-09-17) — 이 화면은 KeyboardAvoidingView 없이 우리
     // 로직만으로 처리한다
     <View style={styles.container}>
-      <View style={styles.header}>
-        <AnimatedPressable style={styles.addButton} onPress={() => router.push('/routine-form')}>
-          <Text style={styles.addButtonText}>{t('today.addRoutine')}</Text>
-        </AnimatedPressable>
-      </View>
-
       {/* 예전엔 가로 스크롤 칩이었는데, 언어에 따라 글자 길이가 달라지면(한글은 짧아서 꽉
           차 보이고, 영어는 짧게 줄여도 남는 공간이 생겨 어중간해 보였음) 매번 다르게 보이는
           문제가 있어서, 4등분 flex로 바꿔 화면 폭을 항상 꽉 채우도록 통일했다 */}
@@ -1490,6 +1895,8 @@ export default function TodayScreen() {
           completions={completions}
           onToggleCheck={handleToggleCheck}
           onEdit={(routine) => router.push({ pathname: '/routine-form', params: { id: routine.id } })}
+          onPlayVideo={handlePlayVideo}
+          onSkipToday={handleSkipToday}
           repositionToken={repositionToken}
         />
       ) : (
@@ -1583,6 +1990,15 @@ export default function TodayScreen() {
         </View>
       )}
 
+      {/* "루틴 추가"를 화면 위쪽 헤더 버튼에서 오른쪽 아래 떠 있는 뱃지(FAB)로 옮김 — 화면
+          상단이 더 깔끔해지고, 엄지로 누르기도 더 편한 위치. borderRadius+그림자를 같은
+          View에 같이 주면 안드로이드에서 그림자가 안 보이는 문제가 있어서(ShadowCard와 동일한
+          이유) 그림자 전용 바깥 껍데기와 색+아이콘 담당 안쪽 버튼을 분리한다 */}
+      <View style={styles.fabShadowWrap}>
+        <AnimatedPressable style={styles.fabButton} onPress={() => router.push('/routine-form')}>
+          <Ionicons name="add" size={24} color="#fff" />
+        </AnimatedPressable>
+      </View>
     </View>
   );
 }
@@ -1600,13 +2016,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 20,
-    marginBottom: 12,
   },
   llmBannerOuter: {
     marginHorizontal: 20,
@@ -1673,16 +2082,28 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 12,
     fontWeight: '600',
   },
-  addButton: {
-    backgroundColor: accent,
-    borderRadius: cardRadius,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  fabShadowWrap: {
+    position: 'absolute',
+    right: 16,
+    // summaryBar(하단 완료율 표시줄) 바로 위, 리스트/타임라인이 스크롤되는 영역과 겹치는
+    // 자리에 뜨도록 여유를 더 둔다 — 너무 아래(화면 맨 밑)에 두면 summaryBar 옆에 나란히
+    // 붙어 보여서 "루틴 목록과 별개"인 것처럼 보였다
+    bottom: 76,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+    zIndex: 20,
   },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
+  fabButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: accent,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   viewModeTabs: {
     flexDirection: 'row',
@@ -1822,6 +2243,12 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     height: 28,
     gap: 6,
     flexShrink: 0,
+    // 체크형은 actionSlot(56px 폭 가운데 정렬)에 체크박스(28px)를 담아서 끝에서 14px
+    // 안쪽에서 끝나는데, 트래킹형은 그 슬롯 없이 바로 행 끝까지 붙어서 두 줄의 끝 위치가
+    // 서로 어긋나 보였다 — 같은 14px만큼 오른쪽 여백을 줘서 끝 위치를 맞춘다
+    paddingRight: 14,
+    // actionSlot과 같은 10px만큼 왼쪽으로 당겨서 오른쪽 아래 "루틴 추가" 뱃지와 안 겹치게 함
+    marginRight: 10,
   },
   trackingInput: {
     borderWidth: 1,
@@ -1854,25 +2281,15 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     opacity: 0.7,
     includeFontPadding: false,
   },
-  saveButton: {
-    height: 28,
-    backgroundColor: accent,
-    borderRadius: cardRadius,
-    paddingHorizontal: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    includeFontPadding: false,
-  },
-  // 체크박스/저장 버튼/완료 뱃지가 항상 같은 가로 위치에서 중심을 잡도록 고정폭 슬롯으로 감쌈
+  // 체크박스/완료 뱃지가 항상 같은 가로 위치에서 중심을 잡도록 고정폭 슬롯으로 감쌈
   // (버튼 내용이 이 폭보다 작아야 눌려서 깨지지 않음 — "저장" 버튼 기준 여유있게 56)
   actionSlot: {
     width: 56,
     alignItems: 'center',
     justifyContent: 'center',
+    // 오른쪽 아래 "루틴 추가" 뱃지와 살짝 겹쳐 보인다는 피드백으로 체크/트래킹 쪽을
+    // 왼쪽으로 10px만 살짝 당김
+    marginRight: 10,
   },
   checkbox: {
     width: 28,
