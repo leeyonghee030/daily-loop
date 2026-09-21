@@ -13,7 +13,8 @@ import {
   TextInput,
   type DimensionValue,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, Swipeable } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -115,9 +116,9 @@ const EXPANDED_ROW_GAP = 4;
 // (56px)만큼 잡아두면 블록 아래로 남는 흰 여백이 눈에 띄게 두드러진다 — 시각 체크만 있는
 // 시간대는 이 작은 블록 하나 들어갈 정도로만 짧게 잡는다.
 // ⚠️ 34px 블록 높이에 딱 맞는 36px로 처음 잡았더니, 시각 체크가 연달아(다른 시간대에)
-// 있으면 위아래 여백이 겨우 1px씩이라 블록끼리 거의 붙어 보였다 — 두 블록 사이가 눈에
-// 보이게 벌어지도록(위아래 각각 5px 정도) 여유를 더 준다
-const INSTANT_HOUR_HEIGHT = 44;
+// 있으면 위아래 여백이 겨우 1px씩이라 블록끼리 거의 붙어 보였다 — 44px(위아래 각각 5px)로
+// 한 번 늘렸는데도 여전히 붙어 보인다는 신고가 있어(2026-09-21) 한 번 더 늘림(위아래 각각 10px)
+const INSTANT_HOUR_HEIGHT = 54;
 // 아침/저녁처럼 루틴이 드문드문 있으면 그 사이 빈 시간대까지 전부 HOUR_HEIGHT만큼 그려서
 // 스크롤을 한참 해야 했음 — 루틴이 하나도 없는 시간대가 이만큼(시간) 연달아 이어지면
 // 한 덩어리로 압축해서 짧게 보여준다(COLLAPSED_GAP_HEIGHT)
@@ -254,6 +255,50 @@ const SLOT_HINT_LAST_SHOWN_KEY = 'timeline_slot_hint_last_shown_date';
 // 없어진다(대부분의 안드로이드 자동완성 줄 높이가 이 값 이내라 가정한 여유값)
 const KEYBOARD_GROWTH_SAFETY_MARGIN = 56;
 
+// "리스트/타임라인" 중 두 번 탭해서 고른 기본 화면 — 앱을 껐다 켜도 이 값으로 시작한다
+const DEFAULT_VIEW_MODE_KEY = 'today_default_view_mode';
+// "다시 보지 않음"을 체크하고 닫아야만 'true'로 저장된다
+const VIEW_MODE_HINT_DISMISSED_KEY = 'today_view_mode_hint_dismissed';
+// "+ 루틴 추가" FAB 위치 기억 — 기본 자리(오른쪽 아래)로부터의 이동량(translateX/Y)을 저장한다
+const FAB_POSITION_KEY = 'today_fab_position_v1';
+// FAB 이동/초기화 안내 배너 — "다시 보지 않음"을 체크하고 닫아야만 'true'로 저장된다
+const FAB_HINT_DISMISSED_KEY = 'today_fab_hint_dismissed_v3';
+const FAB_SIZE = 48;
+const FAB_DEFAULT_RIGHT = 16;
+const FAB_DEFAULT_BOTTOM = 76;
+// 화면 가장자리에서 이만큼은 항상 남기고, 그 밖으로는 못 나가게 한다
+const FAB_EDGE_MARGIN = 8;
+
+// FAB를 드래그하는 동안(Gesture.Pan().onUpdate) UI 스레드에서 바로 호출되는 워클릿이라
+// 'worklet' 지시어가 필요하다. 화면(컨테이너) 크기를 몰라도(아직 onLayout 전) 일단
+// 그대로 통과시키고, 크기를 알게 되면 그때부터 정상적으로 화면 밖을 못 나가게 막는다
+function clampFabTranslate(
+  x: number,
+  y: number,
+  containerWidth: number,
+  containerHeight: number
+): { x: number; y: number } {
+  'worklet';
+  if (!containerWidth || !containerHeight) return { x, y };
+  const minX = FAB_EDGE_MARGIN - containerWidth + FAB_DEFAULT_RIGHT + FAB_SIZE;
+  const maxX = FAB_DEFAULT_RIGHT - FAB_EDGE_MARGIN;
+  const minY = FAB_EDGE_MARGIN - containerHeight + FAB_DEFAULT_BOTTOM + FAB_SIZE;
+  const maxY = FAB_DEFAULT_BOTTOM - FAB_EDGE_MARGIN;
+  return {
+    x: Math.min(maxX, Math.max(minX, x)),
+    y: Math.min(maxY, Math.max(minY, y)),
+  };
+}
+
+// 트래킹 단위(예: "페이지", "잔")를 사용자가 너무 길게 적으면 값+단위가 행을 다 차지해서
+// 옆의 루틴 제목이 밀려 안 보이는 문제가 있었다(2026-09-21) — 2글자까지만 보여주고 그 뒤는
+// "..."으로 자른다
+const TRACKING_UNIT_MAX_CHARS = 2;
+function truncateTrackingUnit(unit?: string | null): string {
+  if (!unit) return '';
+  return unit.length > TRACKING_UNIT_MAX_CHARS ? `${unit.slice(0, TRACKING_UNIT_MAX_CHARS)}...` : unit;
+}
+
 // 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
 function TimelineView({
   routines,
@@ -262,6 +307,14 @@ function TimelineView({
   onEdit,
   onPlayVideo,
   onSkipToday,
+  onCancelTracking,
+  editingTrackingIds,
+  trackingInputs,
+  onStartEditTracking,
+  onChangeTrackingInput,
+  onSaveTracking,
+  onFocusTracking,
+  onBlurTracking,
   repositionToken,
 }: {
   routines: Routine[];
@@ -270,12 +323,45 @@ function TimelineView({
   onEdit: (routine: Routine) => void;
   onPlayVideo: (videoId: string) => void;
   onSkipToday: (routine: Routine) => void;
+  onCancelTracking: (routine: Routine) => void;
+  editingTrackingIds: Set<string>;
+  trackingInputs: Record<string, string>;
+  onStartEditTracking: (routine: Routine) => void;
+  onChangeTrackingInput: (routineId: string, text: string) => void;
+  onSaveTracking: (routine: Routine) => void;
+  onFocusTracking: (routineId: string) => void;
+  onBlurTracking: (routineId: string) => void;
   repositionToken: number;
 }) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
+  // 스와이프로 연 수정/기록삭제/오늘삭제 버튼을 오늘 탭 리스트뷰와 동일하게 2초 방치하면
+  // 자동으로 닫히게 한다(2026-09-21)
+  const swipeRefsRef = useRef<Record<string, Swipeable | null>>({});
+  const swipeAutoCloseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // 배경(빈 자리) 탭 시 펼친 "+N 더보기" 목록을 접는다. 이 화면 블록들이 전부
+  // react-native-gesture-handler 기반 Swipeable이라, 일반 RN Touchable로는 터치를 못 받아서
+  // (2026-09-21) 같은 체계인 Gesture.Tap()으로 맞췄다.
+  // ⚠️ 처음엔 runOnJS(setExpandedClusters)(new Set())처럼 Set 인스턴스를 워클릿(UI 스레드)에서
+  // JS 스레드로 직접 건넸는데, "expandedClusters.has is not a function(undefined)" 렌더
+  // 에러가 났다 — Reanimated의 워클릿↔JS 브리지는 원시값/일반 객체만 안전하게 넘기고 Set 같은
+  // 내장 클래스 인스턴스는 제대로 안 넘어가는 것으로 보인다. new Set()을 JS 스레드 쪽 함수
+  // 안에서 직접 만들도록 바꿔서(인자로는 아무것도 안 넘김) 해결한다
+  function collapseExpandedClusters() {
+    setExpandedClusters(new Set());
+  }
+  // 기본 Tap은 손가락이 살짝만 움직여도(약 10px) "탭 실패"로 처리해서 안 접혔다 —
+  // 스크롤할 내용이 없어서 실제 스크롤(onScrollBeginDrag)이 안 걸리는 화면에서, 스크롤하듯
+  // 문지르기만 해도 접히길 원해서(2026-09-21) maxDistance를 넉넉히 늘려 손을 뗄 때까지는
+  // 계속 "탭"으로 인정되게 한다. 실제 스크롤이 되는 경우는 ScrollView가 이 제스처보다 먼저
+  // 드래그를 가져가므로(onScrollBeginDrag) 이 값이 커도 스크롤 자체를 방해하지 않는다
+  const collapseExpandedClustersTap = Gesture.Tap()
+    .maxDistance(200)
+    .onEnd((_e, success) => {
+      if (success) runOnJS(collapseExpandedClusters)();
+    });
   // 타임라인에서 루틴을 탭하면 바로 수정 화면으로 들어가던 걸, 실수로 잘못 눌러도 부담 없게
   // 먼저 간단한 정보만 보여주는 팝업으로 바꿨다 — 여기서 "수정"을 눌러야 실제 수정 화면으로 감
   const [infoRoutine, setInfoRoutine] = useState<Routine | null>(null);
@@ -357,12 +443,31 @@ function TimelineView({
   // "지금" 표시선이 압축된 좁은 구간 안에 파묻혀 안 보이면 어색하니, 지금 시각이 속한
   // 시간도 항상 'full'로 넣어둔다
   const hourKinds = new Map<number, HourKind>();
+  // 시각 축 라벨을 정시("14:00")가 아니라 그 시간에 실제로 시작/끝나는 루틴이 있으면 그 정확한
+  // 시각("14:15")으로 보여주기 위한 맵(hour → "HH:MM"). 예전엔 시작은 블록 안에, 끝은 축에
+  // 테마색으로 따로 표시했는데, 정시 눈금("14:00"/"15:00")까지 같이 보여서 숫자가 4개나
+  // 보이는 게 헷갈린다는 피드백(2026-09-21) — 정시 눈금 자리 자체를 그 루틴의 실제 시작/끝
+  // 시각으로 바꿔서 보여주는 숫자를 줄인다. 같은 시간에 여러 개면 처음 것 하나만 대표로 보여준다
+  const hourExactTimeLabel = new Map<number, string>();
   for (const entry of timed) {
     const startH = Math.floor(toMinutes(entry.range.start) / 60);
     const endH = entry.isInstant ? startH : Math.max(startH, Math.ceil(endMinutes(entry.range, false) / 60) - 1);
     const kind: HourKind = entry.isInstant ? 'instant' : 'full';
     for (let h = startH; h <= endH; h++) {
       if (kind === 'full' || hourKinds.get(h) !== 'full') hourKinds.set(h, kind);
+    }
+    if (!hourExactTimeLabel.has(startH)) hourExactTimeLabel.set(startH, entry.range.start);
+    if (!entry.isInstant) {
+      const endH2 = Math.floor(endMinutes(entry.range, false) / 60);
+      if (!hourExactTimeLabel.has(endH2)) {
+        hourExactTimeLabel.set(endH2, entry.range.end <= entry.range.start ? '24:00' : entry.range.end);
+      }
+      // 끝나는 시각이 정각(예: 08:00)이면 그 루틴은 그 시(8시)를 실제로 전혀 차지하지
+      // 않아서 위 hourKinds 루프에 안 잡히고, 빈 시간대 압축 로직에 묻혀 끝 시각 라벨
+      // 자체가 안 보이는 버그가 있었다(2026-09-21, "07:00-08:00인데 시작만 나온다") —
+      // 그 시(hour)만 별도로 짧게(instant) 확보해서 압축 대상에서 빼고, 정확한 끝
+      // 시각이 항상 자기 칸을 갖고 보이게 한다
+      if (!hourKinds.has(endH2)) hourKinds.set(endH2, 'instant');
     }
   }
   if (showNowLine) hourKinds.set(Math.floor(nowMinutes / 60), 'full');
@@ -414,15 +519,6 @@ function TimelineView({
     clusterBlocks.get(clusterId)!.push(block);
   }
 
-  // 블록 안에는 시작 시각만 짧게 보여주고, 끝나는 시각은 왼쪽 시간축에 정시 눈금과 같은
-  // 자리에 별도로 표시한다(시각 체크는 애초에 끝이 없어서 제외)
-  const endTimeMarkers = timed
-    .filter((entry) => !entry.isInstant)
-    .map((entry) => {
-      const endLabel = entry.range.end <= entry.range.start ? '24:00' : formatTime(entry.range.end);
-      return { key: `end-${entry.routine.id}`, y: minutesToY(endMinutes(entry.range, false)), label: endLabel };
-    });
-
   // 화면을 처음 열 때(마운트), 그리고 다른 탭 갔다가 돌아왔을 때(repositionToken 증가) 매번
   // 지금 시각 위치로 다시 스크롤한다. 예전엔 ScrollView의 onContentSizeChange(콘텐츠 크기가
   // 바뀔 때만 호출됨)에 기대서 "최초 1회만" 스크롤했는데, 탭을 갔다 왔을 때 내용이 안 바뀌었으면
@@ -460,22 +556,73 @@ function TimelineView({
       expanded?: boolean;
     }
   ) {
-    const isNowBlock = isNowWithinRange(block.items[0].range, block.items[0].isInstant);
+    const routine = block.items[0].routine;
+    const isInstant = block.items[0].isInstant;
+    const isNowBlock = isNowWithinRange(block.items[0].range, isInstant);
+    const blockCompletion = completions[routine.id];
+    const isBlockDone = Boolean(blockCompletion);
+    // 배경(빈 자리) 탭으로만 "+N 더보기" 목록이 닫혀서, 다른 루틴을 눌러도 안 닫힌다는
+    // 피드백(2026-09-21) — 지금 펼쳐진 목록 소속이 아닌 블록을 누르면(체크/제목/트래킹 등
+    // 실제 동작과 함께) 그 목록도 같이 접는다. 펼쳐진 목록 "안"의 항목(pos.expanded)을 누를
+    // 땐 계속 그 목록을 보면서 여러 개 체크할 수 있어야 하므로 안 접는다
+    const collapseFirstIfNeeded = () => {
+      if (!pos.expanded && expandedClusters.size > 0) setExpandedClusters(new Set());
+    };
     return (
       <Swipeable
         key={block.key}
-        containerStyle={{ position: 'absolute', top: pos.top, height: pos.height, left: pos.left, width: pos.width }}
+        ref={(instance) => {
+          swipeRefsRef.current[block.key] = instance;
+        }}
+        onSwipeableOpen={() => {
+          clearTimeout(swipeAutoCloseTimersRef.current[block.key]);
+          swipeAutoCloseTimersRef.current[block.key] = setTimeout(() => {
+            swipeRefsRef.current[block.key]?.close();
+          }, 1500);
+        }}
+        onSwipeableClose={() => {
+          clearTimeout(swipeAutoCloseTimersRef.current[block.key]);
+          delete swipeAutoCloseTimersRef.current[block.key];
+        }}
+        containerStyle={{
+          position: 'absolute',
+          top: pos.top,
+          height: pos.height,
+          left: pos.left,
+          width: pos.width,
+          // "더보기"로 펼친 목록은 원래 시간 위치와 무관하게 겹쳐 그려지므로, 그 자리에 먼저
+          // 깔아둔 불투명 배경판(blockExpanded, zIndex:10)보다 위에 있어야 하는데, 이 zIndex를
+          // 블록 안쪽(Swipeable이 감싼 내부 View)에만 줬을 땐 정작 형제 관계로 겹치는 건
+          // Swipeable 자기 자신(바깥 컨테이너)이라 안쪽 zIndex가 반영되지 않아 배경판에 가려져
+          // 파란 배경만 보이고 글자/체크박스가 안 보이는 버그가 있었다(2026-09-21)
+          ...(pos.expanded ? { zIndex: 10, elevation: 4 } : null),
+        }}
         overshootRight={false}
         renderRightActions={() => (
-          <AnimatedPressable
-            style={timelineStyles.blockDeleteAction}
-            onPress={() => onSkipToday(block.items[0].routine)}>
-            <Text style={timelineStyles.blockDeleteActionText}>{t('today.skipToday')}</Text>
-          </AnimatedPressable>
+          <View style={timelineStyles.blockSwipeActionsRow}>
+            <AnimatedPressable style={timelineStyles.blockEditAction} onPress={() => onEdit(routine)}>
+              <Text style={timelineStyles.blockEditActionText}>{t('today.edit')}</Text>
+            </AnimatedPressable>
+            {routine.block_type === 'tracking' && isBlockDone && (
+              <AnimatedPressable
+                style={timelineStyles.blockCancelTrackingAction}
+                onPress={() => onCancelTracking(routine)}>
+                <Text style={timelineStyles.blockEditActionText}>{t('today.cancelRecord')}</Text>
+              </AnimatedPressable>
+            )}
+            <AnimatedPressable style={timelineStyles.blockDeleteAction} onPress={() => onSkipToday(routine)}>
+              <Text style={timelineStyles.blockDeleteActionText}>{t('today.skipToday')}</Text>
+            </AnimatedPressable>
+          </View>
         )}>
       <View
         style={[
           timelineStyles.block,
+          // Swipeable의 containerStyle이 이미 위치(top/left)와 크기(width/height)를 절대값으로
+          // 잡아주므로, 안쪽 블록은 그 안을 꽉 채우기만 하면 된다 — block 스타일에 남아있는
+          // position:'absolute'를 그대로 두면 이 View 자신은 크기 기준(top/left)이 없어 내용물
+          // 크기로 쪼그라들어서, 제목/시간/버튼이 한 지점에 겹쳐 보이는 버그가 있었다(2026-09-21)
+          timelineStyles.blockFill,
           isNowBlock && timelineStyles.blockNow,
           pos.expanded && timelineStyles.blockExpanded,
         ]}>
@@ -484,11 +631,19 @@ function TimelineView({
           const isDone = Boolean(completion);
           return (
             <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
-              <AnimatedPressable style={timelineStyles.blockContent} onPress={() => setInfoRoutine(routine)}>
+              <AnimatedPressable
+                style={timelineStyles.blockContent}
+                onPress={() => {
+                  collapseFirstIfNeeded();
+                  setInfoRoutine(routine);
+                }}>
                 {pos.showTime && index === 0 && (
-                  // 블록 안엔 시작 시각만 짧게 표시 — 끝나는 시각은 블록 안이 아니라 왼쪽
-                  // 시간축에 별도 표시로 보여준다(아래 endTimeMarkers 참고)
+                  // 블록 안엔 시작 시각만 짧게 표시 — 끝나는 시각은 왼쪽 시간축의 해당 정시
+                  // 라벨 자리를 그대로 대신해서 보여준다(hourExactTimeLabel 참고). 시각 체크(⏱)는
+                  // 시작~끝이 있는 일반 시각형과 달리 "그 순간 하나"만 있다는 걸 알기 어려워서
+                  // 이모지로 구분해준다
                   <Text style={[timelineStyles.blockTime, pos.expanded && timelineStyles.blockTextExpanded]}>
+                    {isInstant ? '⏱ ' : ''}
                     {formatTime(block.start)}
                   </Text>
                 )}
@@ -515,15 +670,39 @@ function TimelineView({
                 <AnimatedPressable
                   hitSlop={8}
                   style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
-                  onPress={() => onToggleCheck(routine)}>
+                  onPress={() => {
+                    collapseFirstIfNeeded();
+                    onToggleCheck(routine);
+                  }}>
                   {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
                 </AnimatedPressable>
-              ) : pos.showTime ? (
-                <Text
-                  style={[timelineStyles.blockTrackingValue, pos.expanded && timelineStyles.blockTextExpanded]}>
-                  {completion?.tracking_value ?? '-'} {routine.tracking_unit}
-                </Text>
-              ) : null}
+              ) : editingTrackingIds.has(routine.id) ? (
+                // 타임라인에선 그동안 값을 보여주기만 하고 실제로 적을 방법이 없었다(2026-09-21) —
+                // 오늘 탭 리스트뷰와 같은 입력 상태(trackingInputs 등)를 그대로 공유해서, 숫자
+                // 키패드의 "완료"를 누르면 저장되게 한다
+                <TextInput
+                  style={timelineStyles.blockTrackingInput}
+                  keyboardType="numeric"
+                  value={trackingInputs[routine.id] ?? ''}
+                  onChangeText={(text) => onChangeTrackingInput(routine.id, text)}
+                  onFocus={() => onFocusTracking(routine.id)}
+                  onBlur={() => onBlurTracking(routine.id)}
+                  onSubmitEditing={() => onSaveTracking(routine)}
+                  placeholder="0"
+                  autoFocus
+                />
+              ) : (
+                <AnimatedPressable
+                  onPress={() => {
+                    collapseFirstIfNeeded();
+                    onStartEditTracking(routine);
+                  }}>
+                  <Text
+                    style={[timelineStyles.blockTrackingValue, pos.expanded && timelineStyles.blockTextExpanded]}>
+                    {completion?.tracking_value ?? '-'} {truncateTrackingUnit(routine.tracking_unit)}
+                  </Text>
+                </AnimatedPressable>
+              )}
             </View>
           );
         })}
@@ -558,10 +737,30 @@ function TimelineView({
       <ScrollView
         ref={scrollRef}
         style={timelineStyles.container}
-        contentContainerStyle={{ height: totalHeight + 20 }}
+        // 루틴이 적어서 콘텐츠(totalHeight)가 화면보다 짧으면, 화면에 보이는 아래쪽 흰 여백은
+        // 스크롤뷰의 "콘텐츠 영역" 밖이라 그 안의 배경 탭 제스처가 아예 닿지 않았다(2026-09-21)
+        // — flexGrow로 콘텐츠 영역 자체를 화면 높이만큼 늘려서 그 여백도 탭 가능하게 한다
+        contentContainerStyle={{ minHeight: totalHeight + 20, flexGrow: 1 }}
         onScrollBeginDrag={() => {
           if (expandedClusters.size > 0) setExpandedClusters(new Set());
         }}>
+      {/* 자식들이 전부 position:absolute라서 이 View에 실제 크기를 안 주면 0x0으로 잡혀
+          제스처가 인식할 영역 자체가 없어져 탭이 전혀 안 먹히는 문제가 있었다(2026-09-21) —
+          minHeight+flex:1로 콘텐츠 영역(위 contentContainerStyle과 동일하게 늘어난 만큼)
+          전체를 채워서 루틴 없는 흰 배경까지 전부 탭 가능하게 한다 */}
+      <View style={{ width: '100%', minHeight: totalHeight, flex: 1 }}>
+      {/* "+N 더보기"로 펼친 목록을 스크롤하면 닫히던 것과 같은 이유로, 빈 자리를 탭해도 닫히게
+          하고 싶었는데, 이 화면은 블록마다 Swipeable(react-native-gesture-handler)을 쓰고 있어서
+          일반 RN Touchable(TouchableWithoutFeedback)로 배경을 감싸면 제스처 체계가 달라 터치를
+          아예 못 받는 문제가 있었다(2026-09-21) — 사진일기 화면의 배경 탭 해제와 동일하게
+          같은 gesture-handler 체계의 Gesture.Tap()으로 통일해서 해결한다. 단, 펼친 목록의
+          체크박스/트래킹 입력처럼 실제 눌러야 하는 요소까지 이 감지 영역 "안"에 있으면 같은
+          터치가 두 체계(RNGH 제스처 + 일반 Pressable) 양쪽에서 동시에 인식돼, 체크/입력을
+          누르는데도 배경 탭으로 오인되어 목록이 접혀버리는 버그가 있었다(2026-09-21) —
+          블록들(blocksArea)은 이 GestureDetector "밖"으로 빼서 위에 별도 레이어로 얹고,
+          배경 감지는 그 밑에 깔린 축/빈 공간에만 걸리게 분리했다 */}
+      <GestureDetector gesture={collapseExpandedClustersTap}>
+      <View style={{ width: '100%', height: '100%' }}>
       {(() => {
         let cursor = 0;
         return segments.map((seg) => {
@@ -569,11 +768,18 @@ function TimelineView({
           cursor += seg.pixelHeight;
           // 루틴 있는 시간(또는 짧은 공백)은 기존처럼 매 정시마다 눈금선+시각 표시
           if (seg.hourSpan === 1) {
+            // 이 시간에 시작하거나 끝나는 루틴이 있으면 정시("14:00") 대신 그 정확한 시각
+            // ("14:15")을 축 라벨로 보여준다 — 정시 눈금 + 블록 시작 + 테마색 끝 표시까지
+            // 숫자가 3~4개나 보여서 헷갈린다는 피드백으로, 끝 표시를 따로 안 두고 이 정시
+            // 눈금 자리 자체를 정확한 시각으로 바꿔서 숫자 개수를 줄였다(2026-09-21)
+            const exactTime = hourExactTimeLabel.get(seg.hour);
             return (
               <Fragment key={seg.hour}>
                 <View style={[timelineStyles.hourLine, { top: segTop }]} />
                 <View style={[timelineStyles.hourLabelWrap, { top: segTop - 7 }]}>
-                  <Text style={timelineStyles.hourLabel}>{String(seg.hour).padStart(2, '0')}:00</Text>
+                  <Text style={timelineStyles.hourLabel}>
+                    {exactTime ? formatTime(exactTime) : `${String(seg.hour).padStart(2, '0')}:00`}
+                  </Text>
                 </View>
               </Fragment>
             );
@@ -589,13 +795,9 @@ function TimelineView({
         });
       })()}
 
-      {endTimeMarkers.map((marker) => (
-        <View key={marker.key} style={[timelineStyles.endTimeLabelWrap, { top: marker.y - 7 }]} pointerEvents="none">
-          <Text style={timelineStyles.endTimeLabel}>{marker.label}</Text>
-        </View>
-      ))}
-
       {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
+      </View>
+      </GestureDetector>
 
       <View style={timelineStyles.blocksArea}>
         {Array.from(clusterBlocks.entries()).map(([clusterId, clusterItems]) => {
@@ -674,6 +876,7 @@ function TimelineView({
           );
         })}
       </View>
+      </View>
       </ScrollView>
 
       <Modal visible={!!infoRoutine} transparent animationType="fade" onRequestClose={() => setInfoRoutine(null)}>
@@ -711,7 +914,7 @@ function TimelineView({
                     ✓ 완료
                     {infoRoutine.block_type === 'tracking' &&
                       infoCompletion.tracking_value != null &&
-                      ` · ${infoCompletion.tracking_value} ${infoRoutine.tracking_unit ?? ''}`}
+                      ` · ${infoCompletion.tracking_value} ${truncateTrackingUnit(infoRoutine.tracking_unit)}`}
                   </Text>
                 );
               })()}
@@ -827,18 +1030,6 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 10,
     opacity: 0.4,
   },
-  // 루틴이 끝나는 정확한 시각 — 정시 눈금(hourLabel)과 같은 세로줄이지만 살짝 오른쪽(정시
-  // 숫자와 안 겹치게)에 테마색으로 표시해서 "끝나는 시각"임을 구분한다
-  endTimeLabelWrap: {
-    position: 'absolute',
-    left: 34,
-  },
-  endTimeLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: accent,
-    opacity: 0.8,
-  },
   // 루틴이 없는 시간대를 압축해서 보여주는 얇은 띠 — 일반 시간 칸(HOUR_HEIGHT)보다 훨씬 얇게
   gapBand: {
     position: 'absolute',
@@ -861,13 +1052,25 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     top: 0,
     bottom: 0,
   },
+  // 배경을 반투명(rgba)으로 쓰면 평소엔 은은한 색으로 잘 보이지만, 스와이프를 닫는 애니메이션
+  // 동안엔 그 뒤에서 슬라이드되어 빠져나가는 "수정/삭제" 버튼 색이 이 반투명 배경 사이로
+  // 비쳐 보이는 문제가 있었다(2026-09-21) — 흰 배경 위에 이 반투명색을 얹었을 때와 눈으로
+  // 똑같이 보이는 불투명(opaque) 색을 미리 계산해서 대신 쓴다(rgba(169,196,224,0.12) on white)
   block: {
     position: 'absolute',
-    backgroundColor: 'rgba(169, 196, 224, 0.12)',
+    backgroundColor: 'rgb(245, 248, 251)',
     borderLeftWidth: 3,
     borderLeftColor: accent,
     borderRadius: cardRadius,
     overflow: 'hidden',
+  },
+  // Swipeable로 감싼 블록 전용 — 바깥 Swipeable의 containerStyle이 이미 절대 위치/크기를
+  // 잡아주므로, 안쪽 View는 position:'absolute'를 relative로 되돌리고 부모(Swipeable이 감싼
+  // 영역)를 꽉 채우기만 하면 된다
+  blockFill: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
   },
   moreBlock: {
     alignItems: 'center',
@@ -888,8 +1091,9 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     backgroundColor: withAlpha(accent, 0.35),
     zIndex: 5,
   },
+  // block과 같은 이유로 불투명 색으로 미리 계산(rgba(255,152,0,0.18) on white)
   blockNow: {
-    backgroundColor: 'rgba(255, 152, 0, 0.18)',
+    backgroundColor: 'rgb(255, 236, 209)',
     borderLeftColor: '#FF9800',
   },
   // "더보기"로 펼쳤을 때만 적용 — 실제 시간 위치와 무관하게 겹쳐 그려지는 자리라, 밑에 깔린
@@ -924,10 +1128,12 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     alignItems: 'center',
     gap: 8,
   },
+  // 고정폭(36px)이 "22:15"에는 딱 맞았지만 ⏱ 이모지를 붙이면 폭이 모자라서 다음 줄로
+  // 넘어가(제목이 있어야 할 자리를 이모지+시각 두 줄이 차지) 시각이 안 보이던 버그(2026-09-21)
+  // — 고정폭 대신 내용 그대로의 너비를 쓰게 해서 이모지가 붙어도 한 줄에 다 들어가게 한다
   blockTime: {
     fontSize: 11,
     opacity: 0.6,
-    width: 36,
     fontFamily: fontMono,
   },
   blockTitle: {
@@ -946,17 +1152,42 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 11,
     color: accent,
   },
-  // 리스트뷰의 스와이프 "오늘삭제"와 같은 동작 — 타임라인에서도 왼쪽으로 스와이프하면 나옴
+  // 리스트뷰의 스와이프(수정/기록삭제/오늘삭제)와 같은 구성 — 타임라인에서도 왼쪽으로
+  // 스와이프하면 동일하게 나옴(기록삭제는 트래킹형이면서 완료된 경우에만 표시)
+  blockSwipeActionsRow: {
+    flexDirection: 'row',
+    gap: 4,
+    height: '100%',
+  },
+  blockEditAction: {
+    backgroundColor: withAlpha(accent, 0.15),
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 56,
+    borderRadius: cardRadius,
+  },
+  blockEditActionText: {
+    color: accent,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  blockCancelTrackingAction: {
+    backgroundColor: withAlpha(accent, 0.3),
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 56,
+    borderRadius: cardRadius,
+  },
   blockDeleteAction: {
     backgroundColor: accent,
     justifyContent: 'center',
     alignItems: 'center',
-    width: 64,
+    width: 56,
     borderRadius: cardRadius,
   },
   blockDeleteActionText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   blockCheckbox: {
@@ -979,6 +1210,16 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockTrackingValue: {
     fontSize: 12,
     opacity: 0.7,
+  },
+  blockTrackingInput: {
+    width: 40,
+    fontSize: 12,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    borderColor: accent,
+    borderRadius: cardRadius,
+    textAlign: 'center',
   },
   // 타임라인에서 루틴을 탭하면 바로 수정 화면으로 넘어가는 대신 뜨는 간단설명 팝업
   infoBackdrop: {
@@ -1149,7 +1390,7 @@ const ListRow = memo(function ListRow({
         clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
         swipeAutoCloseTimersRef.current[item.id] = setTimeout(() => {
           swipeRefsRef.current[item.id]?.close();
-        }, 2000);
+        }, 1500);
       }}
       onSwipeableClose={() => {
         clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
@@ -1212,7 +1453,7 @@ const ListRow = memo(function ListRow({
             <View style={styles.actionSlot}>
               <AnimatedPressable onPress={() => onStartEditTracking(item)}>
                 <Text style={styles.trackingDoneBadge} numberOfLines={1}>
-                  ✓ {completion?.tracking_value} {item.tracking_unit}
+                  ✓ {completion?.tracking_value} {truncateTrackingUnit(item.tracking_unit)}
                 </Text>
               </AnimatedPressable>
             </View>
@@ -1236,7 +1477,9 @@ const ListRow = memo(function ListRow({
                   placeholder="0"
                   autoFocus={isDone}
                 />
-                <Text style={styles.unit}>{item.tracking_unit}</Text>
+                <Text style={styles.unit} numberOfLines={1}>
+                  {truncateTrackingUnit(item.tracking_unit)}
+                </Text>
                 {isDone && (
                   <AnimatedPressable style={styles.cancelTrackingButton} onPress={() => onCloseEditTracking(item.id)}>
                     <Text style={styles.cancelTrackingButtonText}>{t('today.close')}</Text>
@@ -1261,6 +1504,144 @@ export default function TodayScreen() {
   const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
+  // "+ 루틴 추가" FAB를 길게 눌러서 원하는 자리로 옮길 수 있게 한다(2026-09-21) — 화면 크기에
+  // 관계없이 항상 화면 밖으로는 못 나가게 clampFabTranslate로 가장자리에서 최소 8px은 남긴다.
+  // 위치는 기본(오른쪽 아래) 자리로부터의 이동량(translateX/Y)으로 저장 — 짧게 탭하면 루틴
+  // 추가, 두 번 연속 탭하면 기본 위치로 돌아온다. Swipeable(react-native-gesture-handler)이
+  // 이미 화면 곳곳에 있는 화면이라, 일반 RN Touchable/PanResponder 대신 같은 체계인
+  // Gesture(react-native-gesture-handler)로 통일해서 터치 인식 충돌을 피한다
+  const fabTranslateX = useSharedValue(0);
+  const fabTranslateY = useSharedValue(0);
+  const fabDragStartX = useSharedValue(0);
+  const fabDragStartY = useSharedValue(0);
+  const fabContainerWidth = useSharedValue(0);
+  const fabContainerHeight = useSharedValue(0);
+
+  useEffect(() => {
+    AsyncStorage.getItem(FAB_POSITION_KEY).then((raw) => {
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          fabTranslateX.value = parsed.x;
+          fabTranslateY.value = parsed.y;
+        }
+      } catch {
+        // 저장된 값이 깨져 있으면 그냥 기본 위치로 둔다
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // "길게 눌러서 옮기고, 두 번 탭하면 초기화" 안내 — 처음엔 배경을 테마 주색(accent)으로
+  // 채웠다가 밝고 옅은 테마(은은한 노랑/세이지그린/로즈)에서 흰 글씨가 안 보이는 버그를
+  // 겪었고, 그다음 어두운 고정 배경으로 바꿨다가 "너무 칙칙하다"는 피드백을 받았다 —
+  // 최종적으로 설정 화면 회원탈퇴 안내(deleteAccountTooltip)와 같은 패턴으로 통일: 배경은
+  // 항상 불투명한 흰색으로 고정하고 테마 주색은 테두리·아이콘·글자·닫기 버튼에만 입혀서,
+  // 어떤 테마색을 골라도 흰 배경 위 텍스트라 대비가 항상 안정적으로 확보된다(2026-09-21)
+  // "다시 보지 않음"을 체크하고 닫아야만 다음부터 안 뜨고, 그냥 두면(또는 체크 안 하고
+  // 닫으면) 15초 뒤 자동으로 사라지되 다음에 오늘 탭에 들어오면 다시 뜬다. 다른 걸 눌러도
+  // 이 15초 동안은 그대로 떠 있게 둔다 — 읽고 "닫기"/"다시 보지 않음"을 누를 시간을 준다
+  // ("닫기"가 있으니 자동으로 안 사라져도 사용자가 직접 닫으면 되므로 여유있게 잡는다)
+  const [showFabHint, setShowFabHint] = useState(false);
+  const [dontShowFabHintAgain, setDontShowFabHintAgain] = useState(false);
+  const fabHintAutoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    AsyncStorage.getItem(FAB_HINT_DISMISSED_KEY).then((dismissedForever) => {
+      if (dismissedForever === 'true') return;
+      setShowFabHint(true);
+      fabHintAutoHideTimerRef.current = setTimeout(() => setShowFabHint(false), 15000);
+    });
+  }, []);
+
+  const hideFabHint = useCallback(() => {
+    if (fabHintAutoHideTimerRef.current) {
+      clearTimeout(fabHintAutoHideTimerRef.current);
+      fabHintAutoHideTimerRef.current = null;
+    }
+    setShowFabHint(false);
+  }, []);
+
+  async function closeFabHint() {
+    hideFabHint();
+    if (dontShowFabHintAgain) await AsyncStorage.setItem(FAB_HINT_DISMISSED_KEY, 'true');
+  }
+
+  function persistFabPosition(x: number, y: number) {
+    AsyncStorage.setItem(FAB_POSITION_KEY, JSON.stringify({ x, y }));
+  }
+
+  function resetFabPosition() {
+    fabTranslateX.value = withSpring(0);
+    fabTranslateY.value = withSpring(0);
+    persistFabPosition(0, 0);
+  }
+
+  function openAddRoutine() {
+    router.push('/routine-form');
+  }
+
+  // ⚠️ Gesture.Tap().numberOfTaps(2) + requireExternalGestureToFail로 싱글탭/더블탭을
+  // 구분하려던 첫 시도는 "+" 버튼을 누르는 순간 에러가 났다 — 이어서 그 relation 하나를
+  // 지워봤는데도(2026-09-21 이전 수정) 여전히 에러가 남아있었다. react-native-gesture-handler의
+  // 제스처 관계 설정(Exclusive/requireToFail) 자체가 문제였던 것으로 보고, 아예 그 방식을
+  // 버리고 이 화면의 다른 제스처들처럼 단순한 방식으로 바꾼다: 탭 자체는 순수 JS 타이머로
+  // "직전 탭과 300ms 안이면 더블탭"만 판정하고, 길게 누르기+드래그(fabPan)만 제스처로 처리해서
+  // Race로 묶는다(사진일기 화면에서 이미 검증된 조합 — Gesture.Race(pan, ..., singleTap))
+  const fabLastTapAtRef = useRef(0);
+  const fabPendingTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleFabTap() {
+    const now = Date.now();
+    const sinceLastTap = now - fabLastTapAtRef.current;
+    fabLastTapAtRef.current = now;
+    if (sinceLastTap < 300) {
+      if (fabPendingTapTimerRef.current) {
+        clearTimeout(fabPendingTapTimerRef.current);
+        fabPendingTapTimerRef.current = null;
+      }
+      fabLastTapAtRef.current = 0;
+      resetFabPosition();
+      return;
+    }
+    fabPendingTapTimerRef.current = setTimeout(() => {
+      fabPendingTapTimerRef.current = null;
+      openAddRoutine();
+    }, 300);
+  }
+
+  const fabPan = Gesture.Pan()
+    .activateAfterLongPress(400)
+    .onStart(() => {
+      fabDragStartX.value = fabTranslateX.value;
+      fabDragStartY.value = fabTranslateY.value;
+      runOnJS(hideFabHint)();
+    })
+    .onUpdate((e) => {
+      const clamped = clampFabTranslate(
+        fabDragStartX.value + e.translationX,
+        fabDragStartY.value + e.translationY,
+        fabContainerWidth.value,
+        fabContainerHeight.value
+      );
+      fabTranslateX.value = clamped.x;
+      fabTranslateY.value = clamped.y;
+    })
+    .onEnd(() => {
+      runOnJS(persistFabPosition)(fabTranslateX.value, fabTranslateY.value);
+    });
+
+  const fabTap = Gesture.Tap().onEnd((_e, success) => {
+    if (success) runOnJS(handleFabTap)();
+  });
+
+  const fabGesture = Gesture.Race(fabPan, fabTap);
+
+  const fabAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: fabTranslateX.value }, { translateY: fabTranslateY.value }],
+  }));
+
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   // 이미 오늘 기록이 있는 트래킹 루틴은 기본으로 "기록됨" 표시만 보여주고, 이 Set에 들어있는
@@ -1269,6 +1650,50 @@ export default function TodayScreen() {
   const [editingTrackingIds, setEditingTrackingIds] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
+  // "리스트/타임라인" 탭을 두 번 연속 탭하면 그걸 오늘 탭 기본 화면으로 저장한다(2026-09-22) —
+  // 앱을 껐다 켜도 저장된 쪽이 먼저 보이게 AsyncStorage에 저장. 어느 쪽이 기본인지 표시하는
+  // 작은 원(●)도 같이 보여준다
+  const [defaultViewMode, setDefaultViewMode] = useState<'list' | 'timeline' | null>(null);
+  const listTapAtRef = useRef(0);
+  const timelineTapAtRef = useRef(0);
+  useEffect(() => {
+    AsyncStorage.getItem(DEFAULT_VIEW_MODE_KEY).then((saved) => {
+      if (saved === 'list' || saved === 'timeline') {
+        setDefaultViewMode(saved);
+        setViewMode(saved);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  function handleViewModeTap(mode: 'list' | 'timeline') {
+    const tapAtRef = mode === 'list' ? listTapAtRef : timelineTapAtRef;
+    const now = Date.now();
+    const isDoubleTap = now - tapAtRef.current < 300;
+    tapAtRef.current = isDoubleTap ? 0 : now;
+    setViewMode(mode);
+    if (isDoubleTap) {
+      setDefaultViewMode(mode);
+      AsyncStorage.setItem(DEFAULT_VIEW_MODE_KEY, mode);
+      hideViewModeHint();
+    }
+  }
+  // "두 번 탭하면 기본 화면으로 저장된다"는 걸 모르면 발견하기 어려운 기능이라, 최초 1회
+  // 자동으로 안내를 보여준다 — 설정 화면 회원탈퇴 안내(deleteAccountTooltip)와 같은 디자인
+  // (흰 배경+주색 테두리), "닫기"/"다시 보지 않음" 포함(2026-09-22)
+  const [showViewModeHint, setShowViewModeHint] = useState(false);
+  const [dontShowViewModeHintAgain, setDontShowViewModeHintAgain] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem(VIEW_MODE_HINT_DISMISSED_KEY).then((dismissed) => {
+      if (dismissed !== 'true') setShowViewModeHint(true);
+    });
+  }, []);
+  function hideViewModeHint() {
+    setShowViewModeHint(false);
+  }
+  async function closeViewModeHint() {
+    hideViewModeHint();
+    if (dontShowViewModeHintAgain) await AsyncStorage.setItem(VIEW_MODE_HINT_DISMISSED_KEY, 'true');
+  }
   const [, setTick] = useState(0);
   // 자정을 넘기면 이 값이 바뀌면서 아래 쿼리의 key도 같이 바뀌어 자동으로 새 날짜 기준으로
   // 다시 불러온다 — 예전엔 "날짜 바뀐 걸 감지하면 수동으로 load() 호출"을 직접 구현했었음
@@ -1802,7 +2227,13 @@ export default function TodayScreen() {
     // 또 바뀔 때(예: 자동완성 줄) 둘이 동시에 반응해서 "우리가 이미 맞춰둔 위치가 한 번 더
     // 움직이는" 이중 보정처럼 보였음(2026-09-17) — 이 화면은 KeyboardAvoidingView 없이 우리
     // 로직만으로 처리한다
-    <View style={styles.container}>
+    <View
+      style={styles.container}
+      onLayout={(e) => {
+        // FAB를 화면 밖으로 못 나가게 막으려면 이 화면이 실제로 얼마나 큰지 알아야 한다
+        fabContainerWidth.value = e.nativeEvent.layout.width;
+        fabContainerHeight.value = e.nativeEvent.layout.height;
+      }}>
       {/* 예전엔 가로 스크롤 칩이었는데, 언어에 따라 글자 길이가 달라지면(한글은 짧아서 꽉
           차 보이고, 영어는 짧게 줄여도 남는 공간이 생겨 어중간해 보였음) 매번 다르게 보이는
           문제가 있어서, 4등분 flex로 바꿔 화면 폭을 항상 꽉 채우도록 통일했다 */}
@@ -1838,19 +2269,41 @@ export default function TodayScreen() {
       <View style={styles.viewModeTabs}>
         <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
-          onPress={() => setViewMode('list')}>
+          onPress={() => handleViewModeTap('list')}>
+          {defaultViewMode === 'list' && (
+            <View style={[styles.viewModeDefaultDot, viewMode === 'list' && styles.viewModeDefaultDotActive]} />
+          )}
           <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
             {t('today.list')}
           </Text>
         </AnimatedPressable>
         <AnimatedPressable
           style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
-          onPress={() => setViewMode('timeline')}>
+          onPress={() => handleViewModeTap('timeline')}>
+          {defaultViewMode === 'timeline' && (
+            <View style={[styles.viewModeDefaultDot, viewMode === 'timeline' && styles.viewModeDefaultDotActive]} />
+          )}
           <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
             {t('today.timeline')}
           </Text>
         </AnimatedPressable>
       </View>
+
+      {showViewModeHint && (
+        <View style={styles.viewModeHintWrap}>
+          <Text style={styles.viewModeHintText}>{t('today.viewModeHintText')}</Text>
+          <View style={styles.viewModeHintFooter}>
+            <AnimatedPressable onPress={() => setDontShowViewModeHintAgain((v) => !v)} hitSlop={8}>
+              <Text style={styles.viewModeHintCheckboxLabel}>
+                {dontShowViewModeHintAgain ? '☑' : '☐'} {t('today.dontShowAgain')}
+              </Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.viewModeHintCloseButton} onPress={closeViewModeHint} hitSlop={8}>
+              <Text style={styles.viewModeHintCloseText}>{t('today.close')}</Text>
+            </AnimatedPressable>
+          </View>
+        </View>
+      )}
 
       {/* 그림자+테두리(ShadowCard)까지 통째로 눌림 애니메이션 대상에 포함시켜야 함 — 안쪽 배너만
           줄어들면 그 밖의 정적인 테두리/그림자가 그대로 남아 테두리 선처럼 비쳐 보임 */}
@@ -1897,6 +2350,14 @@ export default function TodayScreen() {
           onEdit={(routine) => router.push({ pathname: '/routine-form', params: { id: routine.id } })}
           onPlayVideo={handlePlayVideo}
           onSkipToday={handleSkipToday}
+          onCancelTracking={handleCancelTracking}
+          editingTrackingIds={editingTrackingIds}
+          trackingInputs={trackingInputs}
+          onStartEditTracking={startEditTracking}
+          onChangeTrackingInput={handleChangeTrackingInput}
+          onSaveTracking={handleSaveTracking}
+          onFocusTracking={handleFocusTracking}
+          onBlurTracking={handleBlurTracking}
           repositionToken={repositionToken}
         />
       ) : (
@@ -1990,15 +2451,49 @@ export default function TodayScreen() {
         </View>
       )}
 
+      {/* FAB를 길게 눌러 옮기고 두 번 탭하면 초기화된다는 안내 + "다시 보지 않음" 체크.
+          설정 화면 회원탈퇴 안내(deleteAccountTooltip)와 같은 디자인으로 통일 — 배경은
+          항상 불투명한 흰색으로 고정하고 테마 주색은 테두리·아이콘·글자·닫기 버튼에만 입혀서
+          어떤 테마색을 고르든 대비가 안정적으로 확보된다(2026-09-21). 15초 지나거나
+          다른 걸 해도 그대로 떠 있다가 시간이 지나면 자동으로 사라지고, "다시 보지 않음"을
+          체크하고 닫아야만 그다음부터 완전히 안 뜬다 */}
+      {showFabHint && (
+        <View style={styles.fabHintWrap} pointerEvents="box-none">
+          <View style={styles.fabHintCard}>
+            <View style={styles.fabHintHeaderRow}>
+              <Ionicons name="move-outline" size={15} color={accent} style={styles.fabHintIcon} />
+              <Text style={styles.fabHintText}>
+                길게 눌러서 원하는 위치로 옮기고,{'\n'}두 번 탭하면 원래 위치로 돌아와요
+              </Text>
+            </View>
+            <View style={styles.fabHintDivider} />
+            <View style={styles.fabHintFooter}>
+              <AnimatedPressable onPress={() => setDontShowFabHintAgain((v) => !v)} hitSlop={8}>
+                <Text style={styles.fabHintCheckboxLabel}>
+                  {dontShowFabHintAgain ? '☑' : '☐'} {t('today.dontShowAgain')}
+                </Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.fabHintCloseButton} onPress={closeFabHint} hitSlop={8}>
+                <Text style={styles.fabHintCloseText}>{t('today.close')}</Text>
+              </AnimatedPressable>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* "루틴 추가"를 화면 위쪽 헤더 버튼에서 오른쪽 아래 떠 있는 뱃지(FAB)로 옮김 — 화면
           상단이 더 깔끔해지고, 엄지로 누르기도 더 편한 위치. borderRadius+그림자를 같은
           View에 같이 주면 안드로이드에서 그림자가 안 보이는 문제가 있어서(ShadowCard와 동일한
-          이유) 그림자 전용 바깥 껍데기와 색+아이콘 담당 안쪽 버튼을 분리한다 */}
-      <View style={styles.fabShadowWrap}>
-        <AnimatedPressable style={styles.fabButton} onPress={() => router.push('/routine-form')}>
-          <Ionicons name="add" size={24} color="#fff" />
-        </AnimatedPressable>
-      </View>
+          이유) 그림자 전용 바깥 껍데기와 색+아이콘 담당 안쪽 버튼을 분리한다.
+          짧게 탭하면 루틴 추가, 길게 누른 채 끌면 원하는 자리로 이동(화면 밖으론 못 나감),
+          두 번 연속 탭하면 기본 위치로 초기화된다(2026-09-21) */}
+      <GestureDetector gesture={fabGesture}>
+        <Animated.View style={[styles.fabShadowWrap, fabAnimatedStyle]}>
+          <View style={styles.fabButton}>
+            <Ionicons name="add" size={24} color="#fff" />
+          </View>
+        </Animated.View>
+      </GestureDetector>
     </View>
   );
 }
@@ -2105,6 +2600,86 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // FAB 위에 떠서 "옮길 수 있다"고 알려주는 말풍선.
+  // ⚠️ 진짜 원인을 여기서 찾았다(2026-09-21): 이 파일의 View는 '@/components/Themed'의
+  // View라 style에 backgroundColor를 안 주면 항상 테마 배경색(라이트 모드면 흰색)이
+  // 기본으로 깔린다 — 체크박스/닫기가 들어있던 fabHintFooter(View)에 backgroundColor를
+  // 안 줬더니 그 자리만 흰 배경이 깔리고, 그 위 흰 글씨(color:'#fff')가 흰 배경과 겹쳐
+  // 안 보이면서 "안내문 아래 정체불명의 블록"처럼 보였던 것 — 여기 쓰는 View는 전부
+  // backgroundColor: 'transparent'를 명시해서 안쪽 어두운 카드 색이 그대로 비치게 한다
+  fabHintWrap: {
+    position: 'absolute',
+    backgroundColor: 'transparent',
+    right: FAB_DEFAULT_RIGHT,
+    bottom: FAB_DEFAULT_BOTTOM + FAB_SIZE + 10,
+    maxWidth: 240,
+    // alignItems가 기본값(stretch)이면 폭이 정해지지 않은(오른쪽만 고정) 이 컨테이너가
+    // maxWidth(240)까지 억지로 늘어나 카드가 필요 이상으로 넓적/길쭉해 보일 수 있다 —
+    // 내용 크기만큼만 오른쪽 정렬로 자연스럽게 줄어들게 한다
+    alignItems: 'flex-end',
+    zIndex: 25,
+  },
+  fabHintCard: {
+    // 설정 화면 deleteAccountTooltip과 같은 패턴 — 배경을 불투명한 흰색으로 고정해서
+    // 뒤에 깔린 다른 글자가 안 비치게 하고, 테마 주색 테두리로만 포인트를 준다
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: accent,
+    borderRadius: cardRadius,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  fabHintHeaderRow: {
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  fabHintIcon: {
+    marginRight: 8,
+    marginTop: 1,
+  },
+  fabHintText: {
+    flexShrink: 1,
+    color: accent,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  fabHintDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: `${accent}33`,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  fabHintFooter: {
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  fabHintCheckboxLabel: {
+    color: accent,
+    fontSize: 12,
+    opacity: 0.75,
+  },
+  fabHintCloseButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: accent,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  fabHintCloseText: {
+    color: accent,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   viewModeTabs: {
     flexDirection: 'row',
     marginHorizontal: 20,
@@ -2119,6 +2694,70 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     paddingVertical: 8,
     borderRadius: cardRadius,
     alignItems: 'center',
+  },
+  // 두 번 탭해서 기본 화면으로 고른 쪽에 작은 원으로 표시(2026-09-22) — 버튼 레이아웃(가운데
+  // 정렬)에 영향 안 주도록 절대위치로 왼쪽에 살짝 얹는다
+  viewModeDefaultDot: {
+    position: 'absolute',
+    top: 5,
+    left: 10,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: accent,
+  },
+  // 선택된(배경이 주색으로 꽉 찬) 탭 위에서는 원이 배경에 묻혀 안 보이니 흰색으로 바꾼다
+  viewModeDefaultDotActive: {
+    backgroundColor: '#fff',
+  },
+  // "두 번 탭하면 기본 화면 저장" 안내 — FAB 안내(fabHint)와 같은 흰 배경+주색 테두리
+  // 디자인으로 통일. 리스트/타임라인 박스 바로 아래에 흐름대로(비고정) 배치한다(2026-09-22)
+  viewModeHintWrap: {
+    marginHorizontal: 20,
+    marginTop: -6,
+    marginBottom: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: accent,
+    borderRadius: cardRadius,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  viewModeHintText: {
+    color: accent,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  viewModeHintFooter: {
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  viewModeHintCheckboxLabel: {
+    color: accent,
+    fontSize: 11,
+    opacity: 0.75,
+  },
+  viewModeHintCloseButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: accent,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  viewModeHintCloseText: {
+    color: accent,
+    fontSize: 11,
+    fontWeight: '700',
   },
   viewModeTabActive: {
     backgroundColor: accent,
@@ -2236,19 +2875,18 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     height: 2,
     backgroundColor: withAlpha(accent, 0.35),
   },
-  // 체크박스(28px)와 시각적 중심을 맞추기 위해 같은 높이로 고정하고 그 안에서 가운데 정렬
+  // 단위 글자가 입력칸 뒤(오른쪽)에 있는 이상, 그 폭만큼은 입력칸이 체크박스 위치보다
+  // 왼쪽에 있을 수밖에 없다(단위가 차지하는 자리 자체가 체크형엔 없는 요소라서) — 단위를
+  // 최대 2글자+"..."로 짧게, 글씨도 작게(styles.unit) 줄이고 여백도 최소로 당겨서 이 밀림을
+  // 물리적으로 가능한 만큼 최대한 좁혔다(2026-09-21)
   trackingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 28,
-    gap: 6,
+    gap: 3,
     flexShrink: 0,
-    // 체크형은 actionSlot(56px 폭 가운데 정렬)에 체크박스(28px)를 담아서 끝에서 14px
-    // 안쪽에서 끝나는데, 트래킹형은 그 슬롯 없이 바로 행 끝까지 붙어서 두 줄의 끝 위치가
-    // 서로 어긋나 보였다 — 같은 14px만큼 오른쪽 여백을 줘서 끝 위치를 맞춘다
-    paddingRight: 14,
-    // actionSlot과 같은 10px만큼 왼쪽으로 당겨서 오른쪽 아래 "루틴 추가" 뱃지와 안 겹치게 함
-    marginRight: 10,
+    // 체크형(marginRight 10)보다 더 당겨서 입력칸을 최대한 오른쪽으로 붙인다
+    marginRight: 1,
   },
   trackingInput: {
     borderWidth: 1,
@@ -2276,8 +2914,12 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: dangerMuted,
     includeFontPadding: false,
   },
+  // 단위 글자 수가 루틴마다 달라서 이 폭이 그때그때 바뀌면 옆의 다른 줄과 위치가 안 맞아
+  // 보인다(2026-09-21) — 단위는 최대 2글자+"..."로 길이를 제한하고 글씨도 작게 줄여서,
+  // 항상 같은 좁은 폭만 차지하도록 고정한다(체크박스 위치에서 밀리는 정도를 최소화하기 위함)
   unit: {
-    fontSize: 13,
+    width: 32,
+    fontSize: 11,
     opacity: 0.7,
     includeFontPadding: false,
   },
@@ -2329,7 +2971,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontWeight: '600',
   },
   cancelTrackingAction: {
-    backgroundColor: dangerMuted,
+    backgroundColor: withAlpha(accent, 0.3),
     justifyContent: 'center',
     alignItems: 'center',
     width: 64,

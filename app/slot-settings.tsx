@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -53,6 +54,18 @@ export default function SlotSettingsScreen() {
   // iOS 스피너가 열려있는 동안 고르고 있는 값 — routine-form.tsx와 동일한 패턴
   const pickerDraftRef = useRef<Date | null>(null);
   const [pickerOpenValue, setPickerOpenValue] = useState<Date | null>(null);
+
+  // 안내문들을 펼친 채로 스크롤하거나 이 화면을 벗어나면 자동으로 접는다(2026-09-22)
+  function collapseAllHints() {
+    setShowNotice(false);
+    setExpandedHintSlotIds(new Set());
+    setShowMemoHint(false);
+  }
+  useFocusEffect(
+    useCallback(() => {
+      return () => collapseAllHints();
+    }, [])
+  );
 
   const slotsQuery = useQuery({
     queryKey: slotsQueryKey,
@@ -106,6 +119,15 @@ export default function SlotSettingsScreen() {
         is_instant: updated.is_instant,
       });
       await resync();
+      // 오늘 탭/캘린더/통계는 루틴을 조회할 때 슬롯을 함께 join해서 들고 있는데, 그 캐시들은
+      // 여기서 슬롯을 바꿔도 무효화된 적이 없었다 — 슬롯의 시간/체크형 여부를 바꿔도 오늘
+      // 탭 타임라인은 그 화면에 자연스러운 재조회가 걸리기 전까지 예전 값을 계속 보여줬다.
+      // 루틴 저장(routine-form.tsx)에서 이미 쓰던 것과 동일한 무효화를 여기서도 해준다
+      // (2026-09-21 — "정확히 06:30으로 바꿨는데 07:00~08:00으로 보인다"는 반복 신고의 원인)
+      queryClient.invalidateQueries({ queryKey: ['today-routines'] });
+      queryClient.invalidateQueries({ queryKey: ['month-data'] });
+      queryClient.invalidateQueries({ queryKey: ['week-data'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
     } catch (err) {
       setErrorMessage(t('slotSettings.errorSave'));
     }
@@ -191,7 +213,10 @@ export default function SlotSettingsScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      onScrollBeginDrag={collapseAllHints}>
       {showNotice ? (
         <AnimatedPressable onPress={() => setShowNotice(false)}>
           <Text style={styles.sectionDesc}>{t('slotSettings.noticeDesc')}</Text>

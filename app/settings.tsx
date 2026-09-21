@@ -31,6 +31,17 @@ export default function SettingsScreen() {
   const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [showDeleteAccountDesc, setShowDeleteAccountDesc] = useState(false);
+  const deleteAccountDescTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 계속 떠 있으면 거슬린다는 피드백으로, ⓘ를 누르면 떴다가 1.5초 뒤 저절로 사라지게 한다.
+  // 떠 있는 동안 또 누르면 타이머만 새로 시작(그만큼 더 오래 보임)
+  const showDeleteAccountDescBriefly = () => {
+    setShowDeleteAccountDesc(true);
+    if (deleteAccountDescTimerRef.current) clearTimeout(deleteAccountDescTimerRef.current);
+    deleteAccountDescTimerRef.current = setTimeout(() => {
+      deleteAccountDescTimerRef.current = null;
+      setShowDeleteAccountDesc(false);
+    }, 1500);
+  };
   // 로그아웃 바로 옆이라 잘못 눌리기 쉬워서, 1초 길게 눌러야 "활성화"(빨간색)되고
   // 그 뒤 3초 안에 다시 눌러야만 실제로 확인창이 뜬다. 3초 안에 안 누르면 자동으로 꺼진다.
   const [deleteAccountArmed, setDeleteAccountArmed] = useState(false);
@@ -44,10 +55,21 @@ export default function SettingsScreen() {
     setDeleteAccountArmed(false);
   }, []);
 
-  // 설정 화면을 벗어나면(시간대 설정 등 다른 화면으로 이동해도) 활성화 상태를 남겨두지 않는다
+  // 설정 화면을 벗어나면(시간대 설정 등 다른 화면으로 이동해도) 활성화 상태를 남겨두지 않는다.
+  // 펼쳐둔 안내문들도 전부 같이 접는다(2026-09-22)
   useFocusEffect(
     useCallback(() => {
-      return () => disarmDeleteAccount();
+      return () => {
+        disarmDeleteAccount();
+        if (deleteAccountDescTimerRef.current) clearTimeout(deleteAccountDescTimerRef.current);
+        setShowDeleteAccountDesc(false);
+        setShowThemeDesc(false);
+        setShowFontDesc(false);
+        setShowLanguageDesc(false);
+        setShowNotifDesc(false);
+        setShowExactAlarmDesc(false);
+        setShowNotifTroubleshootDesc(false);
+      };
     }, [disarmDeleteAccount])
   );
 
@@ -354,8 +376,11 @@ export default function SettingsScreen() {
             {session?.user.email}
           </Text>
           <View style={styles.accountActions}>
+            {/* 안내문구를 줄의 흐름 안(위/아래)에 넣으면 펼칠 때마다 그만큼 줄 전체가 밀려서
+                뒤로가기 버튼과 겹치는 문제가 반복됐다(2026-09-21) — deleteAccountGroup을
+                기준점 삼아 절대위치 말풍선으로 ⓘ 바로 위에 띄우면 줄 위치는 안 움직인다 */}
             <View style={styles.deleteAccountGroup}>
-              <AnimatedPressable onPress={() => setShowDeleteAccountDesc((v) => !v)} hitSlop={8}>
+              <AnimatedPressable onPress={showDeleteAccountDescBriefly} hitSlop={8}>
                 <Text style={styles.deleteAccountInfoIcon}>ⓘ</Text>
               </AnimatedPressable>
               <AnimatedPressable
@@ -366,17 +391,19 @@ export default function SettingsScreen() {
                   {t('settings.deleteAccount')}
                 </Text>
               </AnimatedPressable>
+              {showDeleteAccountDesc && (
+                <View style={styles.deleteAccountTooltip}>
+                  <Text style={styles.deleteAccountTooltipText} numberOfLines={2}>
+                    {t('settings.deleteAccountHint')}
+                  </Text>
+                </View>
+              )}
             </View>
             <AnimatedPressable onPress={() => setShowSignOutConfirm(true)}>
               <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
             </AnimatedPressable>
           </View>
         </View>
-        {showDeleteAccountDesc && (
-          <Text style={styles.deleteAccountDesc} numberOfLines={1}>
-            {t('settings.deleteAccountHint')}
-          </Text>
-        )}
       </View>
 
       <Modal
@@ -455,10 +482,12 @@ function createStyles(accent: string) {
       padding: 20,
       paddingBottom: 44,
     },
-    // 이메일/로그아웃을 위 그룹들과 무관하게 항상 화면 맨 아래에 붙인다
+    // 이메일/로그아웃을 위 그룹들과 무관하게 항상 화면 맨 아래에 붙인다.
+    // position:'relative'는 안내문구(deleteAccountDesc)를 이 안에서 절대위치로 띄우기 위한 기준점
     accountSection: {
       marginTop: 'auto',
       paddingBottom: 10,
+      position: 'relative',
     },
     // 카드 없이 위쪽 얇은 선으로만 구분한 블록 — 이메일/로그아웃이 각자 한 블록씩.
     // 위아래 여백을 같게 둬서 줄 안에서 세로 중심이 맞도록 함(기기 하단 뒤로가기 버튼과도 거리 확보)
@@ -487,6 +516,7 @@ function createStyles(accent: string) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
+      position: 'relative',
     },
     // 그룹(카드) 위에 놓는 소제목. 설명 문구는 항상 보이지 않고, 옆 ⓘ 아이콘을 눌러야 펼쳐짐
     groupHeaderRow: {
@@ -673,11 +703,34 @@ function createStyles(accent: string) {
       color: textMuted,
       opacity: 0.6,
     },
-    deleteAccountDesc: {
-      textAlign: 'left',
+    // 일반 흐름에 넣으면 펼칠 때마다 그만큼 이메일/회원탈퇴/로그아웃 줄이 밀려서 기기 뒤로가기
+    // 버튼과 겹치는 문제가 있었음 — deleteAccountGroup(ⓘ+"회원탈퇴") 기준으로 절대위치 카드를
+    // 그 바로 위에 띄워서 줄 위치·높이에 전혀 영향을 안 주게 한다. 배경을 불투명한 흰색으로
+    // 채워서 뒤에 깔린 다른 글자가 비치지 않게 하고, 테마 주색 테두리로 살짝만 포인트를 준다.
+    // 1.3초 뒤 자동으로 사라지므로(showDeleteAccountDescBriefly) 계속 떠 있지 않는다(2026-09-21)
+    deleteAccountTooltip: {
+      position: 'absolute',
+      bottom: '100%',
+      right: 0,
+      marginBottom: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: cardRadius,
+      backgroundColor: '#FFFFFF',
+      borderWidth: 1,
+      borderColor: accent,
+      maxWidth: 220,
+      zIndex: 20,
+      elevation: 6,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.12,
+      shadowRadius: 6,
+    },
+    deleteAccountTooltipText: {
+      color: accent,
       fontSize: 12,
-      opacity: 0.55,
-      marginTop: 6,
+      fontWeight: '600',
       lineHeight: 16,
     },
     confirmBackdrop: {

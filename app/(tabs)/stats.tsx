@@ -2,6 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, ScrollView, StyleSheet } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import Svg, { Circle } from 'react-native-svg';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -229,6 +231,48 @@ export default function StatsScreen() {
       ? summary.hiddenRoutines
       : summary.hiddenRoutines.filter((r) => routineMatchesDayCategory(r.routine, dayCategory));
 
+  // 위 요약 카드(링)를 좌우로 스와이프하면 주간/월별이 바뀌고, 아래 루틴 목록을 좌우로
+  // 스와이프하면 전체/평일/주말이 바뀐다(2026-09-21) — 두 토글을 서로 다른 영역에 나눠서
+  // 하나의 스와이프 동작이 두 가지 의미를 갖지 않게 했다. 목록 쪽은 세로 스크롤과 부딪히지
+  // 않도록 뚜렷하게 가로로만 움직였을 때만 인식한다(activeOffsetX/failOffsetY)
+  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
+  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
+  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
+  const PERIODS: ('weekly' | 'monthly')[] = ['weekly', 'monthly'];
+  function handlePeriodSwipe(translationX: number) {
+    const index = PERIODS.indexOf(period);
+    if (translationX < -40) {
+      const next = PERIODS[index + 1];
+      if (next) setPeriod(next);
+    } else if (translationX > 40) {
+      const prev = PERIODS[index - 1];
+      if (prev) setPeriod(prev);
+    }
+  }
+  const periodSwipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handlePeriodSwipe)(e.translationX);
+    });
+  const DAY_CATEGORIES: ('all' | 'weekday' | 'weekend')[] = ['all', 'weekday', 'weekend'];
+  function handleCategorySwipe(translationX: number) {
+    const index = DAY_CATEGORIES.indexOf(dayCategory);
+    if (translationX < -40) {
+      const next = DAY_CATEGORIES[index + 1];
+      if (next) setDayCategory(next);
+    } else if (translationX > 40) {
+      const prev = DAY_CATEGORIES[index - 1];
+      if (prev) setDayCategory(prev);
+    }
+  }
+  const categorySwipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleCategorySwipe)(e.translationX);
+    });
+
   return (
     <View style={styles.container}>
       <View style={styles.periodTabs}>
@@ -244,21 +288,23 @@ export default function StatsScreen() {
         </AnimatedPressable>
       </View>
 
-      <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
-        <View style={styles.summaryTextCol}>
-          <Text style={styles.summaryLabel}>
-            {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
-          </Text>
-          <Text style={styles.summaryHeadline}>
-            {categorySummary.completed}/{categorySummary.scheduled} {t('stats.completedSuffix')}
-          </Text>
-        </View>
-        <CompletionRing
-          ratio={rateValue(categorySummary.completed, categorySummary.scheduled)}
-          accent={accent}
-          styles={styles}
-        />
-      </ShadowCard>
+      <GestureDetector gesture={periodSwipeGesture}>
+        <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
+          <View style={styles.summaryTextCol}>
+            <Text style={styles.summaryLabel}>
+              {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
+            </Text>
+            <Text style={styles.summaryHeadline}>
+              {categorySummary.completed}/{categorySummary.scheduled} {t('stats.completedSuffix')}
+            </Text>
+          </View>
+          <CompletionRing
+            ratio={rateValue(categorySummary.completed, categorySummary.scheduled)}
+            accent={accent}
+            styles={styles}
+          />
+        </ShadowCard>
+      </GestureDetector>
 
       <View style={styles.categoryTabs}>
         <AnimatedPressable
@@ -286,26 +332,30 @@ export default function StatsScreen() {
 
       {showSummaryNote && <Text style={styles.summaryNote}>{t('stats.summaryNote')}</Text>}
 
-      <FlatList
-        style={styles.list}
-        data={filteredRoutines}
-        keyExtractor={(item) => item.routine.id}
-        renderItem={renderRoutine}
-        contentContainerStyle={styles.listContent}
-        ListEmptyComponent={
-          summary.routines.length > 0 ? (
-            <Text style={styles.emptyText}>{t('stats.emptyCategoryNoRoutines')}</Text>
-          ) : summary.hiddenRoutines.length > 0 ? (
-            <Text style={styles.emptyText}>{t('stats.emptyAllHidden')}</Text>
-          ) : (
-            <Text style={styles.emptyText}>
-              {t('stats.emptyNoActiveRoutines')}
-              {'\n'}
-              {t('stats.summaryNote')}
-            </Text>
-          )
-        }
-      />
+      <GestureDetector gesture={categorySwipeGesture}>
+        <View style={styles.swipeArea}>
+          <FlatList
+            style={styles.list}
+            data={filteredRoutines}
+            keyExtractor={(item) => item.routine.id}
+            renderItem={renderRoutine}
+            contentContainerStyle={styles.listContent}
+            ListEmptyComponent={
+              summary.routines.length > 0 ? (
+                <Text style={styles.emptyText}>{t('stats.emptyCategoryNoRoutines')}</Text>
+              ) : summary.hiddenRoutines.length > 0 ? (
+                <Text style={styles.emptyText}>{t('stats.emptyAllHidden')}</Text>
+              ) : (
+                <Text style={styles.emptyText}>
+                  {t('stats.emptyNoActiveRoutines')}
+                  {'\n'}
+                  {t('stats.summaryNote')}
+                </Text>
+              )
+            }
+          />
+        </View>
+      </GestureDetector>
 
       {filteredHiddenRoutines.length > 0 && (
         <View style={styles.hiddenSection}>
@@ -456,6 +506,9 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     textAlign: 'center',
     marginHorizontal: 20,
     marginBottom: 16,
+  },
+  swipeArea: {
+    flex: 1,
   },
   list: {
     flex: 1,

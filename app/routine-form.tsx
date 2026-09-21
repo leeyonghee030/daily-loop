@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Image,
   Keyboard,
   Modal,
@@ -90,6 +91,16 @@ function dateToTimeString(date: Date): string {
   const h = String(date.getHours()).padStart(2, '0');
   const m = String(date.getMinutes()).padStart(2, '0');
   return `${h}:${m}:00`;
+}
+
+// 저장된 끝 시각이 시작보다 이르면(자정 00:00 예외 제외) 화면에 그대로 보여주는 대신 시작+1시간으로
+// 바로잡는다 — 이 폼의 편집 UI(applyEndTime 등)는 항상 끝이 시작보다 이르게 저장되는 걸 막고
+// 있지만, 예전 데이터나 다른 경로(즐겨찾기 등)로 들어온 값 중에 이 검증을 안 거친 게 있으면
+// "20:15~14:00"처럼 끝이 시작보다 앞선 값이 그대로 화면에 보이는 문제가 있었다(2026-09-21)
+function clampEndAfterStart(start: Date, end: Date): Date {
+  const isMidnight = end.getHours() === 0 && end.getMinutes() === 0;
+  if (isMidnight || end.getTime() > start.getTime()) return end;
+  return new Date(start.getTime() + 60 * 60 * 1000);
 }
 
 // 시작~끝 옆에 "1시간" 처럼 간단히 보여줄 소요 시간 텍스트
@@ -205,6 +216,51 @@ export default function RoutineFormScreen() {
   const [newPhotoUri, setNewPhotoUri] = useState<string | null>(null);
   const [isPickingPhoto, setIsPickingPhoto] = useState(false);
 
+  // 메모 입력창이 폼 중간에 있어서 포커스하면 키보드에 가려지던 문제 — 오늘 탭 트래킹
+  // 입력창과 같은 방식(measureInWindow로 실제 화면 위치를 재서 키보드가 가리는 만큼만
+  // 정확히 스크롤)으로 해결한다
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollYRef = useRef(0);
+  const memoInputRef = useRef<TextInput>(null);
+  const isMemoFocusedRef = useRef(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  function scrollMemoAboveKeyboard(keyboardHeightNow: number, attemptsLeft = 6): void {
+    const node = memoInputRef.current;
+    if (!node) return;
+    node.measureInWindow((_x, y, _width, height) => {
+      if (y === 0 && height === 0) {
+        if (attemptsLeft > 0) {
+          setTimeout(() => scrollMemoAboveKeyboard(keyboardHeightNow, attemptsLeft - 1), 60);
+        }
+        return;
+      }
+      const screenHeight = Dimensions.get('window').height;
+      const visibleBottom = screenHeight - keyboardHeightNow - 24;
+      const overlap = y + height - visibleBottom;
+      if (overlap > 0) {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollYRef.current + overlap), animated: true });
+      }
+    });
+  }
+
+  useEffect(() => {
+    const handleKeyboardHeight = (height: number) => {
+      setKeyboardHeight(height);
+      if (isMemoFocusedRef.current) scrollMemoAboveKeyboard(height);
+    };
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => handleKeyboardHeight(e.endCoordinates?.height ?? 0));
+    const changeFrameSub = Keyboard.addListener('keyboardDidChangeFrame', (e) =>
+      handleKeyboardHeight(e.endCoordinates?.height ?? 0)
+    );
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      changeFrameSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   // 즐겨찾기/모음집 폼 등과 같은 쿼리 키를 써서 캐시를 공유한다
   const slotsQuery = useQuery({
     queryKey: ['slots', userId],
@@ -279,8 +335,9 @@ export default function RoutineFormScreen() {
       setStartTime(timeToDate(routine.scheduled_time_start));
     } else if (routine.scheduled_time_start && routine.scheduled_time_end) {
       setTimeMode('exact');
-      setStartTime(timeToDate(routine.scheduled_time_start));
-      setEndTime(timeToDate(routine.scheduled_time_end));
+      const start = timeToDate(routine.scheduled_time_start);
+      setStartTime(start);
+      setEndTime(clampEndAfterStart(start, timeToDate(routine.scheduled_time_end)));
     } else if (routine.slot_id) {
       setTimeMode('slot');
       setSlotId(routine.slot_id);
@@ -352,8 +409,9 @@ export default function RoutineFormScreen() {
       setStartTime(timeToDate(favorite.scheduled_time_start));
     } else if (favorite.scheduled_time_start && favorite.scheduled_time_end) {
       setTimeMode('exact');
-      setStartTime(timeToDate(favorite.scheduled_time_start));
-      setEndTime(timeToDate(favorite.scheduled_time_end));
+      const start = timeToDate(favorite.scheduled_time_start);
+      setStartTime(start);
+      setEndTime(clampEndAfterStart(start, timeToDate(favorite.scheduled_time_end)));
     } else if (favorite.slot_id) {
       setTimeMode('slot');
       setSlotId(favorite.slot_id);
@@ -610,11 +668,16 @@ export default function RoutineFormScreen() {
     <>
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
     <ScrollView
+      ref={scrollRef}
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
-      onScrollBeginDrag={Keyboard.dismiss}>
+      onScrollBeginDrag={Keyboard.dismiss}
+      onScroll={(e) => {
+        scrollYRef.current = e.nativeEvent.contentOffset.y;
+      }}
+      scrollEventThrottle={16}>
       {!isEditing && (
         <>
           <AnimatedPressable style={styles.favoriteButton} onPress={() => setShowFavoritePicker(true)}>
@@ -851,11 +914,19 @@ export default function RoutineFormScreen() {
 
       <Text style={styles.label}>{t('routineForm.memoLabel')}</Text>
       <TextInput
+        ref={memoInputRef}
         style={[styles.input, styles.memoInput]}
         value={memo}
         onChangeText={setMemo}
         placeholder={t('routineForm.memoPlaceholder')}
         multiline
+        onFocus={() => {
+          isMemoFocusedRef.current = true;
+          if (keyboardHeight > 0) scrollMemoAboveKeyboard(keyboardHeight);
+        }}
+        onBlur={() => {
+          isMemoFocusedRef.current = false;
+        }}
       />
 
       <Text style={styles.label}>{t('routineForm.photoLabel')}</Text>
@@ -948,6 +1019,11 @@ export default function RoutineFormScreen() {
         onClose={() => setShowVideoPicker(false)}
         onSelect={setSelectedVideo}
       />
+
+      {/* 메모가 폼 아래쪽에 있으면 그 밑에 남은 콘텐츠가 적어서 키보드 위로 올릴 만큼
+          스크롤할 여백 자체가 없을 수 있음 — 키보드가 떠 있는 동안만 그만큼 빈 공간을
+          깔아서 항상 스크롤할 여백을 확보한다(오늘 탭 트래킹 입력창과 동일한 방식) */}
+      {keyboardHeight > 0 && <View style={{ height: keyboardHeight + 40 }} />}
     </ScrollView>
     </TouchableWithoutFeedback>
 

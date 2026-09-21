@@ -1,5 +1,7 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -40,6 +42,8 @@ function timeLabel(routine: Routine, t: (key: TranslationKey) => string): string
   return t('myRoutines.noScheduledTime');
 }
 
+const ROUTINE_TRASH_NOTICE_SEEN_KEY = 'routine_trash_notice_seen';
+
 function daysUntilPurge(deletedAt: string): number {
   const purgeDate = new Date(deletedAt);
   purgeDate.setDate(purgeDate.getDate() + 14);
@@ -62,6 +66,23 @@ export default function RoutineTrashScreen() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedPresetIds, setSelectedPresetIds] = useState<Set<string>>(new Set());
   const [selectedRoutineIds, setSelectedRoutineIds] = useState<Set<string>>(new Set());
+  // 안내문은 최초 1회만 자동으로 펼쳐서 보여주고, 그다음부턴 ⓘ 아이콘만 남아있다가 누르면
+  // 다시 펼쳐진다(다른 화면들과 동일한 패턴, 2026-09-22)
+  const [showDesc, setShowDesc] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem(ROUTINE_TRASH_NOTICE_SEEN_KEY).then((seen) => {
+      if (seen === 'true') return;
+      setShowDesc(true);
+      AsyncStorage.setItem(ROUTINE_TRASH_NOTICE_SEEN_KEY, 'true');
+    });
+  }, []);
+  // 안내문을 펼친 채로 스크롤하거나 이 화면을 벗어나면(다른 화면으로 이동) 자동으로 접는다
+  // (2026-09-22)
+  useFocusEffect(
+    useCallback(() => {
+      return () => setShowDesc(false);
+    }, [])
+  );
 
   const trashQuery = useQuery({
     queryKey: trashQueryKey,
@@ -278,12 +299,23 @@ export default function RoutineTrashScreen() {
         )}
       </View>
 
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={styles.desc}>
-          {t('routineTrash.descLine1')}
-          {'\n\n'}
-          {t('routineTrash.descLine2')}
-        </Text>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        onScrollBeginDrag={() => setShowDesc(false)}>
+        {showDesc ? (
+          <AnimatedPressable onPress={() => setShowDesc(false)}>
+            <Text style={styles.desc}>
+              {t('routineTrash.descLine1')}
+              {'\n\n'}
+              {t('routineTrash.descLine2')}
+            </Text>
+          </AnimatedPressable>
+        ) : (
+          <AnimatedPressable style={styles.descCollapsed} onPress={() => setShowDesc(true)} hitSlop={8}>
+            <Text style={styles.descIcon}>ⓘ</Text>
+          </AnimatedPressable>
+        )}
 
         {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
@@ -424,6 +456,14 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     marginBottom: 16,
     lineHeight: 18,
   },
+  descCollapsed: {
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+  },
+  descIcon: {
+    fontSize: 14,
+    color: '#999',
+  },
   error: {
     color: '#FF6B6B',
     marginBottom: 12,
@@ -433,8 +473,14 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     textAlign: 'center',
     marginTop: 40,
   },
+  // 이 화면 카드만 그림자를 은은하게 — ShadowCard 기본 그림자(cardShadow, 앱 전역 공용)를
+  // style prop으로 덮어써서 이 화면에만 국한되게 한다(2026-09-21)
   cardOuter: {
     marginBottom: 12,
+    shadowOpacity: 0.06,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   presetCard: {
     padding: 14,

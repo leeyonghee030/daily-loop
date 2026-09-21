@@ -10,7 +10,8 @@ import {
   TextInput,
   View as RNView,
 } from 'react-native';
-import Animated, { useAnimatedRef } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedRef } from 'react-native-reanimated';
 import Sortable from 'react-native-sortables';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -309,6 +310,30 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
     }
   }
 
+  // 그리드 영역을 좌우로 스와이프하면 옆 카테고리 탭으로 이동한다(2026-09-21) — 세로 스크롤,
+  // Sortable.Grid의 길게 눌러 드래그(순서 변경)와 부딪히지 않도록 뚜렷하게 가로로만 움직였을
+  // 때만(activeOffsetX) 인식하고, 세로로 먼저 움직이면(failOffsetY) 즉시 포기해서 스크롤에
+  // 양보한다. 드래그는 "누른 채 대기"가 먼저 필요해서 빠른 좌우 스와이프와는 시간상 안 겹친다
+  function goToAdjacentCategory(direction: 1 | -1) {
+    const index = categories.findIndex((c) => c.id === selectedId);
+    if (index === -1) return;
+    const next = categories[index + direction];
+    if (next) setSelectedId(next.id);
+  }
+  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
+  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
+  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
+  function handleCategorySwipeEnd(translationX: number) {
+    if (translationX < -40) goToAdjacentCategory(1);
+    else if (translationX > 40) goToAdjacentCategory(-1);
+  }
+  const categorySwipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleCategorySwipeEnd)(e.translationX);
+    });
+
   return (
     <View style={styles.container}>
       <ScrollView
@@ -354,47 +379,51 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         )}
       </View>
 
-      {isLoading ? (
-        <ActivityIndicator style={styles.loading} />
-      ) : videos.length === 0 ? (
-        <Text style={styles.emptyText}>
-          {t('categoryVideoGrid.emptyVideosLine1')}
-          {'\n'}
-          {t('categoryVideoGrid.emptyVideosLine2')}
-        </Text>
-      ) : (
-        <Animated.ScrollView ref={gridScrollRef} style={styles.list} contentContainerStyle={styles.grid}>
-          <Sortable.Grid
-            columns={videos.length === 1 ? 1 : 2}
-            data={videos}
-            keyExtractor={(item) => item.id}
-            rowGap={16}
-            columnGap={12}
-            scrollableRef={gridScrollRef}
-            onDragEnd={({ data }) => handleDragEnd(data)}
-            renderItem={({ item }: { item: Video }) => (
-              <AnimatedPressable style={styles.cardSlot} onPress={() => onSelectVideo(item)}>
-                <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
-                  <View style={styles.thumbnailWrap}>
-                    <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
-                    <AnimatedPressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
-                      <Text style={styles.deleteBadgeText}>✕</Text>
-                    </AnimatedPressable>
-                  </View>
-                  <View style={styles.cardTitleBox}>
-                    <Text style={styles.cardTitle} numberOfLines={2}>
-                      {item.title}
-                    </Text>
-                  </View>
-                  <Text style={styles.cardChannel} numberOfLines={1}>
-                    {item.channel_name}
-                  </Text>
-                </ShadowCard>
-              </AnimatedPressable>
-            )}
-          />
-        </Animated.ScrollView>
-      )}
+      <GestureDetector gesture={categorySwipeGesture}>
+        <View style={styles.swipeArea}>
+          {isLoading ? (
+            <ActivityIndicator style={styles.loading} />
+          ) : videos.length === 0 ? (
+            <Text style={styles.emptyText}>
+              {t('categoryVideoGrid.emptyVideosLine1')}
+              {'\n'}
+              {t('categoryVideoGrid.emptyVideosLine2')}
+            </Text>
+          ) : (
+            <Animated.ScrollView ref={gridScrollRef} style={styles.list} contentContainerStyle={styles.grid}>
+              <Sortable.Grid
+                columns={videos.length === 1 ? 1 : 2}
+                data={videos}
+                keyExtractor={(item) => item.id}
+                rowGap={16}
+                columnGap={12}
+                scrollableRef={gridScrollRef}
+                onDragEnd={({ data }) => handleDragEnd(data)}
+                renderItem={({ item }: { item: Video }) => (
+                  <AnimatedPressable style={styles.cardSlot} onPress={() => onSelectVideo(item)}>
+                    <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
+                      <View style={styles.thumbnailWrap}>
+                        <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
+                        <AnimatedPressable style={styles.deleteBadge} onPress={() => handleDeleteVideo(item)}>
+                          <Text style={styles.deleteBadgeText}>✕</Text>
+                        </AnimatedPressable>
+                      </View>
+                      <View style={styles.cardTitleBox}>
+                        <Text style={styles.cardTitle} numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                      </View>
+                      <Text style={styles.cardChannel} numberOfLines={1}>
+                        {item.channel_name}
+                      </Text>
+                    </ShadowCard>
+                  </AnimatedPressable>
+                )}
+              />
+            </Animated.ScrollView>
+          )}
+        </View>
+      </GestureDetector>
 
       <Modal visible={showAddModal} animationType="slide" transparent onRequestClose={() => setShowAddModal(false)}>
         <RNView style={styles.modalBackdrop}>
@@ -756,6 +785,9 @@ function createStyles(accent: string) {
     color: accent,
     fontSize: 12,
     fontWeight: '600',
+  },
+  swipeArea: {
+    flex: 1,
   },
   loading: {
     marginTop: 40,

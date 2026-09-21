@@ -10,6 +10,8 @@ import {
   StyleSheet,
   View as RNView,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
@@ -110,6 +112,28 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
     }
   }
 
+  // 그리드를 좌우로 스와이프하면 옆 카테고리로 이동한다(2026-09-21) — "내 영상" 탭과 동일한
+  // 방식(가로로 뚜렷하게 움직였을 때만 인식, 세로 스크롤엔 양보)
+  function goToAdjacentCategory(direction: 1 | -1) {
+    const index = categories.findIndex((c) => c.id === selectedId);
+    if (index === -1) return;
+    const next = categories[index + direction];
+    if (next) setSelectedId(next.id);
+  }
+  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
+  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
+  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
+  function handleCategorySwipeEnd(translationX: number) {
+    if (translationX < -40) goToAdjacentCategory(1);
+    else if (translationX > 40) goToAdjacentCategory(-1);
+  }
+  const categorySwipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleCategorySwipeEnd)(e.translationX);
+    });
+
   return (
     <View style={styles.container}>
       {toastNode}
@@ -130,45 +154,49 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
         ))}
       </ScrollView>
 
-      {isLoading ? (
-        <ActivityIndicator style={styles.loading} />
-      ) : videos.length === 0 ? (
-        <Text style={styles.emptyText}>{t('recommendedVideoGrid.notReady')}</Text>
-      ) : (
-        <FlatList
-          style={styles.list}
-          data={videos}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          columnWrapperStyle={styles.row}
-          contentContainerStyle={styles.grid}
-          renderItem={({ item }) => (
-            <AnimatedPressable
-              style={[styles.cardSlot, videos.length === 1 && styles.cardSlotSingle]}
-              onPress={() => onSelectVideo(item)}>
-              <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
-                <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
-                <Text style={styles.cardTitle} numberOfLines={2}>
-                  {item.title}
-                </Text>
-                <Text style={styles.cardChannel} numberOfLines={1}>
-                  {item.channel_name}
-                </Text>
+      <GestureDetector gesture={categorySwipeGesture}>
+        <View style={styles.swipeArea}>
+          {isLoading ? (
+            <ActivityIndicator style={styles.loading} />
+          ) : videos.length === 0 ? (
+            <Text style={styles.emptyText}>{t('recommendedVideoGrid.notReady')}</Text>
+          ) : (
+            <FlatList
+              style={styles.list}
+              data={videos}
+              keyExtractor={(item) => item.id}
+              numColumns={2}
+              columnWrapperStyle={styles.row}
+              contentContainerStyle={styles.grid}
+              renderItem={({ item }) => (
                 <AnimatedPressable
-                  style={styles.addButton}
-                  onPress={() => setPickerVideo(item)}
-                  disabled={addingId === item.id}>
-                  {addingId === item.id ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Text style={styles.addButtonText}>{t('recommendedVideoGrid.addToMyGrid')}</Text>
-                  )}
+                  style={[styles.cardSlot, videos.length === 1 && styles.cardSlotSingle]}
+                  onPress={() => onSelectVideo(item)}>
+                  <ShadowCard style={styles.cardOuter} contentStyle={styles.card}>
+                    <Image source={{ uri: item.thumbnail_url }} style={styles.thumbnail} />
+                    <Text style={styles.cardTitle} numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                    <Text style={styles.cardChannel} numberOfLines={1}>
+                      {item.channel_name}
+                    </Text>
+                    <AnimatedPressable
+                      style={styles.addButton}
+                      onPress={() => setPickerVideo(item)}
+                      disabled={addingId === item.id}>
+                      {addingId === item.id ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Text style={styles.addButtonText}>{t('recommendedVideoGrid.addToMyGrid')}</Text>
+                      )}
+                    </AnimatedPressable>
+                  </ShadowCard>
                 </AnimatedPressable>
-              </ShadowCard>
-            </AnimatedPressable>
+              )}
+            />
           )}
-        />
-      )}
+        </View>
+      </GestureDetector>
 
       <Modal visible={!!pickerVideo} animationType="slide" transparent onRequestClose={() => setPickerVideo(null)}>
         <RNView style={styles.modalBackdrop}>
@@ -225,6 +253,9 @@ function createStyles(accent: string) {
   },
   tabTextActive: {
     color: '#fff',
+  },
+  swipeArea: {
+    flex: 1,
   },
   loading: {
     marginTop: 40,

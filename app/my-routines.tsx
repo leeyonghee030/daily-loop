@@ -1,9 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, ScrollView, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import ReorderableList, {
   reorderItems,
   useReorderableDrag,
@@ -163,6 +166,18 @@ export default function MyRoutinesScreen() {
   const koreanFont = useKoreanFont();
   const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  // ReorderableList가 내부적으로 쓰는 드래그용 Pan 제스처가 기본값(즉시 반응)이라, 밖에
+  // 얹은 필터 스와이프가 루틴 목록 위에서는 전혀 인식되지 않는 문제가 있었다(2026-09-21) —
+  // 처음엔 라이브러리 문서의 activateAfterLongPress(시간차) 방식을 썼는데, 우리는 이미
+  // 드래그 핸들 자체의 길게 누르기(150ms)로 드래그를 직접 트리거하고 있어서, 이 내부 제스처가
+  // "길게 눌러야만 활성화"를 기다리는 동안 정작 드래그하려고 움직이는 손가락 자체가 그 대기를
+  // 깨버려(길게 누르기는 원래 가만히 있어야 하는 제스처라서) 드래그가 아예 안 되는 부작용이
+  // 있었다 — 시간이 아니라 방향으로 구분하는 방식(문서의 두 번째 대안)으로 교체: 세로 움직임은
+  // 즉시 반응(드래그). 가로 움직임 임계값을 처음엔 필터 스와이프(20px)와 똑같이 뒀더니, 안쪽
+  // (자식) 제스처가 같은 조건이면 바깥(부모) 제스처보다 먼저 이겨버려서 이번엔 반대로 스와이프가
+  // 안 되는 문제가 생겼다 — 가로 임계값을 필터 스와이프보다 훨씬 크게(60px) 벌려서, 가로로만
+  // 움직이는 스와이프는 이 임계값에 절대 못 닿고 그사이 바깥 스와이프 제스처가 먼저 이기게 한다
+  const reorderPanGesture = useMemo(() => Gesture.Pan().activeOffsetX([-60, 60]).activeOffsetY([0, 0]), []);
   const FILTERS = useMemo<{ value: FilterValue; label: string }[]>(
     () => [
       { value: 'all', label: t('myRoutines.filterAll') },
@@ -216,6 +231,12 @@ export default function MyRoutinesScreen() {
       AsyncStorage.setItem(MY_ROUTINES_NOTICE_SEEN_KEY, 'true');
     });
   }, []);
+  // 펼친 채로 목록을 스크롤하거나 이 화면을 벗어나면 자동으로 접는다(2026-09-22)
+  useFocusEffect(
+    useCallback(() => {
+      return () => setShowSubtitle(false);
+    }, [])
+  );
 
   const routinesQuery = useQuery({
     queryKey: routinesQueryKey,
@@ -463,6 +484,52 @@ export default function MyRoutinesScreen() {
     });
   }
 
+  // 목록을 좌우로 스와이프하면 옆 필터로 이동한다(2026-09-21) — "반복주기" 탭이면 FILTERS
+  // 배열, "모음집" 탭이면 presets 배열 안에서 이동. ReorderableList의 길게 눌러 드래그(순서
+  // 변경)와 시간상 안 겹치도록(드래그는 누른 채 대기가 먼저 필요) 뚜렷하게 가로로만 움직였을
+  // 때만 인식하고, 세로로 먼저 움직이면 즉시 스크롤에 양보한다
+  function goToAdjacentFilter(direction: 1 | -1) {
+    if (groupMode === 'repeat') {
+      const index = FILTERS.findIndex((f) => f.value === filter);
+      const next = FILTERS[index + direction];
+      if (next) selectFilter(next.value);
+      return;
+    }
+    if (presetFilter === null) {
+      if (direction === 1 && presets.length > 0) setPresetFilter(presets[0].id);
+      return;
+    }
+    const index = presets.findIndex((p) => p.id === presetFilter);
+    const next = presets[index + direction];
+    if (next) setPresetFilter(next.id);
+  }
+  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
+  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
+  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
+  function handleFilterSwipe(translationX: number) {
+    if (translationX < -40) goToAdjacentFilter(1);
+    else if (translationX > 40) goToAdjacentFilter(-1);
+  }
+  // 안내문 줄만으로는 스와이프할 자리가 너무 좁다는 피드백(2026-09-21) — 루틴 목록 위에서도
+  // 스와이프되게 이 제스처를 하나 더 만들어 목록에도 같이 건다(같은 제스처 인스턴스를
+  // 두 GestureDetector에 같이 물리면 충돌할 수 있어 각자 따로 만든다)
+  const filterSwipeGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleFilterSwipe)(e.translationX);
+    });
+  // 목록 위에서만은 여전히 라이브러리의 드래그 제스처(reorderPanGesture)와 같은 자리를
+  // 공유해서 인식이 불안정할 수 있다 — blocksExternalGesture로 "내가 인식되면 그 제스처는
+  // 취소시킨다"를 명시해서 우선순위를 확실히 정해준다(2026-09-22)
+  const filterSwipeGestureOnList = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .blocksExternalGesture(reorderPanGesture)
+    .onEnd((e) => {
+      runOnJS(handleFilterSwipe)(e.translationX);
+    });
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -602,43 +669,56 @@ export default function MyRoutinesScreen() {
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      {!selectMode && filtered.length > 1 && (
-        <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>
-      )}
+      {/* 안내문 줄에도 스와이프를 걸어두고(항상 자리를 차지하도록 최소 높이 확보), 루틴
+          목록 위에서도 스와이프되게 아래 블록 전체에도 같이 건다(2026-09-21) — 목록
+          쪽은 ReorderableList의 자체 드래그 제스처와 부딪힐 가능성이 있어(길게 눌러야
+          작동하는 제스처라 빠른 스와이프와는 시간상 안 겹치길 기대) 안내문 줄을 항상
+          동작하는 안전한 자리로 같이 남겨둔다 */}
+      <GestureDetector gesture={filterSwipeGesture}>
+        <View style={styles.filterSwipeStrip}>
+          {!selectMode && filtered.length > 1 && <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>}
+        </View>
+      </GestureDetector>
 
-      {isLoading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator />
-        </View>
-      ) : filtered.length === 0 ? (
-        <View style={styles.centered}>
-          <Text style={styles.emptyText}>
-            {groupMode === 'preset' && presetFilter === null
-              ? t('myRoutines.emptyChoosePreset')
-              : t('myRoutines.emptyNoMatch')}
-          </Text>
-        </View>
-      ) : (
-        <ReorderableList
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          data={filtered}
-          keyExtractor={(item) => item.id}
-          onReorder={handleReorder}
-          renderItem={({ item }) => (
-            <RoutineRow
-              routine={item}
-              selectMode={selectMode}
-              isSelected={selectedIds.has(item.id)}
-              isSkippedToday={skippedTodayIds.has(item.id)}
-              onEdit={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}
-              onToggleSelect={() => toggleSelected(item.id)}
-              onDelete={() => handleDelete(item)}
-              onUnskip={() => handleUnskip(item)}
+      <GestureDetector gesture={filterSwipeGestureOnList}>
+        <View style={styles.swipeArea}>
+          {isLoading ? (
+            <View style={styles.centered}>
+              <ActivityIndicator />
+            </View>
+          ) : filtered.length === 0 ? (
+            <View style={styles.centered}>
+              <Text style={styles.emptyText}>
+                {groupMode === 'preset' && presetFilter === null
+                  ? t('myRoutines.emptyChoosePreset')
+                  : t('myRoutines.emptyNoMatch')}
+              </Text>
+            </View>
+          ) : (
+            <ReorderableList
+              style={styles.list}
+              contentContainerStyle={styles.listContent}
+              data={filtered}
+              keyExtractor={(item) => item.id}
+              onReorder={handleReorder}
+              panGesture={reorderPanGesture}
+              onScrollBeginDrag={() => setShowSubtitle(false)}
+              renderItem={({ item }) => (
+                <RoutineRow
+                  routine={item}
+                  selectMode={selectMode}
+                  isSelected={selectedIds.has(item.id)}
+                  isSkippedToday={skippedTodayIds.has(item.id)}
+                  onEdit={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}
+                  onToggleSelect={() => toggleSelected(item.id)}
+                  onDelete={() => handleDelete(item)}
+                  onUnskip={() => handleUnskip(item)}
+                />
+              )}
             />
           )}
-        />
-      )}
+        </View>
+      </GestureDetector>
 
       <Modal visible={!!deleteConfirm} transparent animationType="fade" onRequestClose={() => setDeleteConfirm(null)}>
         <RNView style={styles.confirmBackdrop}>
@@ -846,8 +926,17 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   dragHint: {
     fontSize: 11,
     opacity: 0.45,
-    paddingHorizontal: 20,
     marginBottom: 6,
+  },
+  // 안내문이 없을 때도(선택모드거나 항목이 1개 이하) 스와이프할 자리가 사라지지 않도록
+  // 최소 높이를 확보한다. 화면 양 끝과는 20px 띄워서(marginHorizontal) 시스템 제스처 영역과 안 겹치게 함
+  filterSwipeStrip: {
+    minHeight: 22,
+    justifyContent: 'center',
+    marginHorizontal: 20,
+  },
+  swipeArea: {
+    flex: 1,
   },
   error: {
     color: '#FF6B6B',

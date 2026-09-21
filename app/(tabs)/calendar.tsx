@@ -1,9 +1,11 @@
 import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Modal, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Dimensions, Modal, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -155,6 +157,233 @@ function mergeRangeSet(prev: Set<string>, incoming: string[], rangeStart: string
   return next;
 }
 
+// 날짜 칸(dayCell) 높이가 고정값이라, 8월처럼 6줄이 필요한 달은 5줄짜리 달보다 총 높이가
+// 한 줄만큼 더 필요해서 캘린더 박스(MONTH_CALENDAR_HEIGHT 고정)를 넘어 마지막 줄이 잘려
+// 안 보이는 버그가 있었다(2026-09-21) — 그 달이 실제로 몇 줄(4~6)인지 계산해서, 6줄인
+// 달만 줄 높이를 살짝 줄여 항상 같은 박스 안에 다 들어가게 한다
+function weeksInMonth(year: number, month1to12: number): number {
+  const firstWeekday = new Date(year, month1to12 - 1, 1).getDay();
+  const daysInMonth = new Date(year, month1to12, 0).getDate();
+  return Math.ceil((firstWeekday + daysInMonth) / 7);
+}
+
+// 트래킹 단위가 길면 옆의 입력칸/제목 자리를 밀어내는 문제가 있어서(오늘 탭과 동일한 이유),
+// 여기서도 2글자까지만 보여주고 그 뒤는 "..."으로 자른다(2026-09-21)
+function truncateTrackingUnit(unit?: string | null): string {
+  if (!unit) return '';
+  return unit.length > 2 ? `${unit.slice(0, 2)}...` : unit;
+}
+
+type DayCellProps = {
+  dateStr: string;
+  day: number;
+  isDisabled: boolean;
+  status: DayStatus | null;
+  isSelected: boolean;
+  isToday: boolean;
+  isHoliday: boolean;
+  hasPhotoDiary: boolean;
+  hasDiary: boolean;
+  memoColors: MemoColor[];
+  accent: string;
+  theme: 'light' | 'dark';
+  styles: ReturnType<typeof createStyles>;
+  cellHeight: number;
+  onSelect: (date: string) => void;
+};
+
+// 이 아래 값(전부 원시값/원시값 배열)만 실제로 안 바뀌었으면 다시 안 그린다. 오늘 탭 체크박스
+// 하나 누를 때 월간뷰 전체(최대 24/12개월치 미리 그려둔 날짜 칸)가 통째로 다시 그려지며
+// 렉이 걸리던 원인 — renderDay는 monthAccum(완료기록 전체)이 바뀔 때마다 새로 만들어지고,
+// 이게 CalendarList에 전달되면 미리 그려둔 날짜 칸 전부가 memo 비교에서 걸려 다시 그려졌는데,
+// 실제로 화면이 달라지는 건 방금 체크한 "그 하루"뿐이었다. renderDay 자체는 계속 새로 만들어지되
+// (monthAccum이 진짜로 바뀌었으니 어쩔 수 없음), 그 안에서 각 날짜마다 필요한 값만 뽑아
+// DayCell(React.memo)에 넘기면, 값이 그대로인 나머지 날짜 칸들은 React가 실제 렌더를 건너뛴다
+function dayCellPropsEqual(prev: DayCellProps, next: DayCellProps): boolean {
+  return (
+    prev.dateStr === next.dateStr &&
+    prev.day === next.day &&
+    prev.isDisabled === next.isDisabled &&
+    prev.status === next.status &&
+    prev.isSelected === next.isSelected &&
+    prev.isToday === next.isToday &&
+    prev.isHoliday === next.isHoliday &&
+    prev.hasPhotoDiary === next.hasPhotoDiary &&
+    prev.hasDiary === next.hasDiary &&
+    prev.accent === next.accent &&
+    prev.theme === next.theme &&
+    prev.styles === next.styles &&
+    prev.cellHeight === next.cellHeight &&
+    prev.onSelect === next.onSelect &&
+    prev.memoColors.length === next.memoColors.length &&
+    prev.memoColors.every((c, i) => c === next.memoColors[i])
+  );
+}
+
+const DayCell = memo(function DayCell({
+  dateStr,
+  day,
+  isDisabled,
+  status,
+  isSelected,
+  isToday,
+  isHoliday,
+  hasPhotoDiary,
+  hasDiary,
+  memoColors,
+  accent,
+  theme,
+  styles,
+  cellHeight,
+  onSelect,
+}: DayCellProps) {
+  return (
+    <AnimatedPressable onPress={() => onSelect(dateStr)} style={[styles.dayCell, { minHeight: cellHeight }]}>
+      <View style={styles.diaryIconSlot}>
+        {hasPhotoDiary ? (
+          <Ionicons name="camera-outline" size={10} color={textMuted} />
+        ) : (
+          hasDiary && <Ionicons name="book-outline" size={10} color={textMuted} />
+        )}
+      </View>
+      <View
+        style={[
+          styles.dayNumberWrap,
+          status ? { backgroundColor: withAlpha(STATUS_COLORS[status], 0.35) } : null,
+          (isSelected || isToday) && { borderWidth: 2, borderColor: accent },
+        ]}>
+        <Text
+          style={[
+            styles.dayNumberText,
+            { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : isHoliday ? accent : Colors[theme].text },
+            // 공휴일도 오늘처럼 굵게 — 테마색을 "검정"(#4A4A4A, 거의 검정)으로 골랐을 때도
+            // 색만으로는 구분이 잘 안 될 수 있어서, 굵기 차이로 항상 표시가 나게 한다
+            (isToday || isHoliday) ? { fontWeight: '700' } : null,
+          ]}>
+          {day}
+        </Text>
+        {/* 색만으로는 테마색을 "검정"에 가까운 프리셋으로 골랐을 때 티가 잘 안 나서, 색과
+            무관하게 항상 눈에 띄는 작은 점을 숫자 아래에 덧붙인다 */}
+        {isHoliday && <View style={[styles.holidayDot, { backgroundColor: accent }]} />}
+      </View>
+      {memoColors.length > 0 && (
+        <View style={styles.memoStack}>
+          {memoColors.map((color, index) => (
+            <View
+              key={index}
+              style={[styles.memoBar, { backgroundColor: MEMO_COLORS[color].bg, borderColor: MEMO_COLORS[color].border }]}
+            />
+          ))}
+        </View>
+      )}
+    </AnimatedPressable>
+  );
+},
+dayCellPropsEqual);
+
+type MonthCalendarSectionProps = {
+  height: number;
+  screenWidth: number;
+  calendarCursor: string;
+  calendarTheme: object;
+  onMonthChange: (date: DateData) => void;
+  monthAccum: MonthData;
+  monthMemosAccum: Record<string, DateMemo[]>;
+  monthDiaryAccum: Set<string>;
+  monthPhotoDiaryAccum: Set<string>;
+  selectedDate: string | null;
+  theme: 'light' | 'dark';
+  todayStr: string;
+  accent: string;
+  styles: ReturnType<typeof createStyles>;
+  onSelectDate: (date: string) => void;
+};
+
+// 월간뷰(CalendarList)를 별도 컴포넌트로 분리하고 React.memo로 감쌌다. CalendarScreen은
+// 트래킹 입력창 타이핑, 메모 입력, 모달 열고 닫기 같은 상태도 전부 한 컴포넌트 안에 같이
+// 들고 있어서, 분리하기 전엔 이런 것과 무관한 상태가 바뀔 때마다도(예: 트래킹 숫자
+// 한 글자 입력) CalendarList까지 매번 다시 그려지고 있었다 — CalendarList 자체가
+// React.memo로 감싸여 있지 않은 라이브러리 컴포넌트라, 부모(CalendarScreen)가 리렌더되면
+// props가 그대로여도 무조건 다시 실행됐기 때문. 이 값들(monthAccum 등)이 실제로 바뀔 때만
+// 다시 그려지도록 여기서 한 번 막아준다(2026-09-21)
+const MonthCalendarSection = memo(function MonthCalendarSection({
+  height,
+  screenWidth,
+  calendarCursor,
+  calendarTheme,
+  onMonthChange,
+  monthAccum,
+  monthMemosAccum,
+  monthDiaryAccum,
+  monthPhotoDiaryAccum,
+  selectedDate,
+  theme,
+  todayStr,
+  accent,
+  styles,
+  onSelectDate,
+}: MonthCalendarSectionProps) {
+  const renderDay = useCallback(
+    ({ date, state }: { date?: DateData; state?: string }) => {
+      if (!date) return <View />;
+      const dateStr = date.dateString;
+      const status = dateStr <= todayStr ? computeDayStatus(dateStr, monthAccum) : null;
+      const memoColors = (monthMemosAccum[dateStr] ?? []).slice(0, 5).map((memo) => memo.color);
+      const isDisabled = state === 'disabled';
+      // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
+      const isHoliday = !isDisabled && !!monthAccum.holidayDates[dateStr];
+      // 기본 줄 높이(46)는 5줄짜리 달 기준으로 맞춰져 있어서, 6줄이 필요한 달(예: 8월)은
+      // 그대로 두면 총 높이가 MONTH_CALENDAR_HEIGHT를 넘어 마지막 줄이 잘려 보인다 —
+      // 6줄인 달만 그 비율만큼 줄 높이를 줄여서 항상 같은 박스 안에 다 들어가게 한다
+      const rows = weeksInMonth(date.year, date.month);
+      // react-native-calendars가 주(week) 행 사이에 라이브러리 자체 여백을 더 두기 때문에
+      // 단순 비례 계산(46*5/6≈38)보다 조금 더 줄여야 실제로 다 들어간다(2026-09-21)
+      const cellHeight = rows > 5 ? 34 : 46;
+
+      return (
+        <DayCell
+          dateStr={dateStr}
+          day={date.day}
+          isDisabled={isDisabled}
+          status={status}
+          isSelected={selectedDate === dateStr}
+          isToday={dateStr === todayStr}
+          isHoliday={isHoliday}
+          hasPhotoDiary={monthPhotoDiaryAccum.has(dateStr)}
+          hasDiary={monthDiaryAccum.has(dateStr)}
+          cellHeight={cellHeight}
+          memoColors={memoColors}
+          accent={accent}
+          theme={theme}
+          styles={styles}
+          onSelect={onSelectDate}
+        />
+      );
+    },
+    [monthAccum, monthMemosAccum, monthDiaryAccum, monthPhotoDiaryAccum, selectedDate, theme, todayStr, accent, styles, onSelectDate]
+  );
+
+  return (
+    // 높이를 고정해서(height=MONTH_CALENDAR_HEIGHT) 달마다 셀 내용이 늦게 채워져도 이 박스
+    // 자체는 안 움직이게 한다. marginTop은 스트릭 카드를 숨긴 뒤 캘린더가 화면 위쪽에 너무
+    // 붙어 보인다는 요청으로 살짝 내린 값(2026-09-21)
+    <View style={{ height, marginTop: 10 }}>
+      <CalendarList
+        horizontal
+        pagingEnabled
+        // 기본값(과거/미래 각 50개월, 총 101개월치)이 커스텀 dayComponent까지 겹쳐서 최초
+        // 진입 시 로딩이 유독 오래 걸리는 원인이었음 — 실제로 쓸 일 있는 범위로 줄임
+        pastScrollRange={24}
+        futureScrollRange={12}
+        calendarWidth={screenWidth}
+        current={calendarCursor}
+        onMonthChange={onMonthChange}
+        dayComponent={renderDay}
+        theme={calendarTheme}
+      />
+    </View>
+  );
+});
 
 export default function CalendarScreen() {
   const { session } = useAuth();
@@ -303,6 +532,21 @@ export default function CalendarScreen() {
     return monthAccumRef.current;
   }, [monthQuery.data, monthStart, monthEnd]);
 
+  // 체크/트래킹을 누르면 모달의 체크표시는 monthAccum이 바뀌자마자 그 즉시(높은 우선순위로)
+  // 반영돼야 답답하지 않은데, 월간뷰 그리드(MonthCalendarSection)는 3개월치를 다시 계산해야 해서
+  // 그것까지 같은 렌더에서 같이 끝내려고 하면 전체 커밋이 그리드 속도에 발목 잡혀 체크 반응까지
+  // 같이 느려 보였다(2026-09-21) — 모달 쪽(detail/activeData)은 즉시 값(monthAccum)을 그대로
+  // 쓰고, 그리드에만 넘기는 값은 useDeferredValue로 낮은 우선순위로 미뤄서, 체크 반응은 즉시
+  // 보이고 그리드는 한 박자 뒤에 조용히 따라오게 분리한다(korean-font.tsx의 useDeferredValue와 동일한 패턴)
+  const deferredMonthAccum = useDeferredValue(monthAccum);
+
+  // selectedDate도 같은 이유로 따로 미룬다 — 날짜 상세 팝업을 "닫기"로 닫는 것도
+  // selectedDate를 null로 바꾸는 상태 변화라, 그리드에 그대로 넘기면 "선택 테두리를 지우려면
+  // 3개월치 그리드를 다시 그려야 함"이 모달을 닫는 동작(Modal의 visible=false)까지 같이
+  // 붙잡고 있어서 닫기 버튼이 늦게 반응하는 것처럼 보였다(2026-09-21) — 모달의 visible/detail은
+  // 즉시 값을 쓰고, 그리드의 "선택된 날짜 테두리" 표시만 지연 허용한다
+  const deferredSelectedDate = useDeferredValue(selectedDate);
+
   const monthMemosAccumRef = useRef<Record<string, DateMemo[]>>({});
   const monthMemosAccum = useMemo(() => {
     const data = monthMemosQuery.data;
@@ -383,10 +627,14 @@ export default function CalendarScreen() {
     requestAnimationFrame(() => requestAnimationFrame(() => scrollWeekToTodayRef.current()));
   }, [weekQuery.data]);
 
-  function handleMonthChange(date: DateData) {
+  // useCallback으로 안 감싸면 CalendarScreen이 리렌더될 때마다(트래킹 입력창 타이핑 등
+  // 월간뷰와 무관한 상태 변화 포함) 이 함수가 매번 새로 만들어지고, CalendarList의
+  // onMonthChange prop이 매번 바뀌면서 renderDay와 똑같은 이유로 CalendarListItem들이
+  // 통째로 다시 그려지는 원인이 됐다(2026-09-21)
+  const handleMonthChange = useCallback((date: DateData) => {
     setYear(date.year);
     setMonth(date.month);
-  }
+  }, []);
 
   function shiftWeek(days: number) {
     const d = new Date(`${weekStart}T00:00:00`);
@@ -421,7 +669,53 @@ export default function CalendarScreen() {
   // 이 고정값으로 못박아서(월간뷰 박스에 그대로 적용) 안 움직이게 하고, 주간뷰 칸 높이도
   // 같은 값 기준으로 계산해서 범례 위치가 두 모드에서 항상 똑같게 맞춘다
   const MONTH_CALENDAR_HEIGHT = 430;
-  const weekColumnTargetHeight = MONTH_CALENDAR_HEIGHT - 40;
+  // 6줄짜리 달의 마지막 줄이 dayCell 높이를 줄인 뒤에도 여전히 살짝 잘려 보인다는 피드백
+  // (2026-09-21) — react-native-calendars가 각 주 행 사이에 라이브러리 자체 여백을 얼마나
+  // 두는지 정확히 알 수 없어서(커스텀 dayComponent라 우리가 그 여백까지 제어 못함), 칸
+  // 높이 계산과는 별개로 캘린더를 실제로 담는 박스 자체에 여유 공간을 더 준다. 주간뷰
+  // 높이(weekColumnTargetHeight)는 원래 값(MONTH_CALENDAR_HEIGHT) 기준 그대로 둬서
+  // 이미 맞춰둔 두 모드 간 범례 위치는 안 흔들리게 한다
+  const MONTH_GRID_HEIGHT = MONTH_CALENDAR_HEIGHT + 30;
+  // 월간뷰에서 스트릭 카드(streakHeroOuter)를 숨기면서(2026-09-21) 그 카드는 이제 주간뷰에만
+  // 남아있는데, 그만큼 주간뷰 전체 길이가 월간뷰보다 길어지고 범례("다완료/일부완료/필수놓침")
+  // 위치도 그만큼 아래로 밀려버렸다 — 주간뷰 칸 높이를 스트릭 카드가 차지하는 높이만큼
+  // (paddingVertical 20 + 내용 약 24px + marginBottom 10 ≈ 54) 추가로 줄여서, 범례가
+  // 다시 월간뷰와 같은 세로 위치에 오도록 맞춘다
+  const STREAK_CARD_HEIGHT = 54;
+  const weekColumnTargetHeight = MONTH_CALENDAR_HEIGHT - 40 - STREAK_CARD_HEIGHT;
+
+  // CalendarList의 theme prop을 매 렌더마다 새 객체 리터럴로 넘기면, renderDay를 고쳐도
+  // 소용없이 그 자체로 CalendarListItem(React.memo)의 얕은 비교를 매번 깨뜨려서 체크/트래킹
+  // 저장은 물론 트래킹 숫자를 한 글자 입력할 때마다도 월간뷰 전체가 다시 그려지고 있었다
+  // (2026-09-21) — theme/accent가 실제로 바뀔 때만 새로 만들어지게 고정한다
+  const calendarTheme = useMemo(
+    () => ({
+      calendarBackground: Colors[theme].background,
+      dayTextColor: Colors[theme].text,
+      monthTextColor: Colors[theme].text,
+      textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
+      arrowColor: accent,
+      todayTextColor: accent,
+      // "2026년 9월" 제목·화살표(header)와 그 아래 요일 이름 줄(week)을 각각 따로 내리기 위한
+      // 라이브러리 커스텀 키(react-native-calendars가 지원하는 'stylesheet.calendar.header'
+      // 오버라이드). 달력 본문(week 아래로 이어지는 그리드)의 화면상 절대 위치는 그대로 두고
+      // 제목만 5px 더 내리고 싶어서, header.marginTop을 5 늘리는 대신 week.marginTop을 그만큼
+      // 줄여서 상쇄한다 — header 기본값 6+5=11, week는 기존 17(기본값7+10)에서 5 뺀 12.
+      // 각 키를 통째로 덮어써야 해서 나머지 속성(flexDirection 등)도 라이브러리 기본값 그대로 같이 넣어준다
+      'stylesheet.calendar.header': {
+        header: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          paddingLeft: 10,
+          paddingRight: 10,
+          marginTop: 11,
+          alignItems: 'center',
+        },
+        week: { marginTop: 12, flexDirection: 'row', justifyContent: 'space-around' },
+      },
+    }),
+    [theme, accent]
+  );
 
   // 요일 칸들이 실제로 화면에 그려지기 전에 scrollTo를 호출하면(useEffect가 너무 일찍 실행되면)
   // 아직 스크롤 가능한 콘텐츠 폭이 확보되지 않아 명령이 조용히 무시됨 — onContentSizeChange로
@@ -596,74 +890,17 @@ export default function CalendarScreen() {
 
   const todayStr = formatLocalDate(today);
 
-  // useCallback으로 감싸지 않으면 CalendarScreen이 리렌더될 때마다(예: 메모 입력창에 타이핑,
-  // 모달 열고 닫기 등 월간뷰와 무관한 상태 변화까지 포함) renderDay가 매번 새 함수로
-  // 만들어지고, 이 새 함수가 CalendarList에 전달되면서 현재 화면에 미리 그려둔 달(최대 7개월치,
-  // 빠른 스와이프 대비용)의 날짜 칸 전부가 memo 비교에서 걸려 통째로 다시 그려짐 —
-  // 이게 월간뷰가 느리고 데이터 갱신될 때마다 깜빡이는 것처럼 보이던 원인이었음.
-  // monthData/memosByDate/diaryDates/selectedDate/theme처럼 실제로 화면에 영향을 주는
-  // 값이 바뀔 때만 함수가 새로 만들어지게 해서, 무관한 상태 변화로는 재렌더가 안 일어나게 한다
-  const renderDay = useCallback(
-    ({ date, state }: { date?: DateData; state?: string }) => {
-      if (!date) return <View />;
-      const dateStr = date.dateString;
-      const status = dateStr <= todayStr ? computeDayStatus(dateStr, monthAccum) : null;
-      const memos = (monthMemosAccum[dateStr] ?? []).slice(0, 5);
-      const isSelected = selectedDate === dateStr;
-      const isDisabled = state === 'disabled';
-      // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
-      const isHoliday = !isDisabled && !!monthAccum.holidayDates[dateStr];
-
-      return (
-        <AnimatedPressable onPress={() => setSelectedDate(dateStr)} style={styles.dayCell}>
-          <View style={styles.diaryIconSlot}>
-            {monthPhotoDiaryAccum.has(dateStr) ? (
-              <Ionicons name="camera-outline" size={10} color={textMuted} />
-            ) : (
-              monthDiaryAccum.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
-            )}
-          </View>
-          <View
-            style={[
-              styles.dayNumberWrap,
-              status ? { backgroundColor: withAlpha(STATUS_COLORS[status], 0.35) } : null,
-              (isSelected || dateStr === todayStr) && { borderWidth: 2, borderColor: accent },
-            ]}>
-            <Text
-              style={[
-                styles.dayNumberText,
-                { color: isDisabled ? (theme === 'dark' ? '#555' : '#ccc') : isHoliday ? accent : Colors[theme].text },
-                // 공휴일도 오늘처럼 굵게 — 테마색을 "검정"(#4A4A4A, 거의 검정)으로 골랐을 때도
-                // 색만으로는 구분이 잘 안 될 수 있어서, 굵기 차이로 항상 표시가 나게 한다
-                (dateStr === todayStr || isHoliday) ? { fontWeight: '700' } : null,
-              ]}>
-              {date.day}
-            </Text>
-            {/* 색만으로는 테마색을 "검정"에 가까운 프리셋으로 골랐을 때 티가 잘 안 나서, 색과
-                무관하게 항상 눈에 띄는 작은 점을 숫자 아래에 덧붙인다 */}
-            {isHoliday && <View style={[styles.holidayDot, { backgroundColor: accent }]} />}
-          </View>
-          {memos.length > 0 && (
-            <View style={styles.memoStack}>
-              {memos.map((memo) => (
-                <View
-                  key={memo.id}
-                  style={[
-                    styles.memoBar,
-                    { backgroundColor: MEMO_COLORS[memo.color].bg, borderColor: MEMO_COLORS[memo.color].border },
-                  ]}
-                />
-              ))}
-            </View>
-          )}
-        </AnimatedPressable>
-      );
-    },
-    [monthAccum, monthMemosAccum, monthDiaryAccum, monthPhotoDiaryAccum, selectedDate, theme, todayStr, accent, styles]
-  );
-
   const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
   const selectedMemos = selectedDate ? activeMemosByDate[selectedDate] ?? [] : [];
+
+  // 트래킹 입력 중 바깥을 탭하거나 목록을 스크롤하면 키보드를 내리면서 입력을 마무리한다 —
+  // handleSaveTrackingForDate가 이미 "빈 값이면 기록삭제로 취급"하는 로직을 갖고 있어서,
+  // 숫자를 안 적은 채로 나가면 자동으로 미기록 상태로 되돌아간다(2026-09-21)
+  function commitOrCancelTrackingEdit() {
+    if (!editingTrackingRoutineId || !selectedDate) return;
+    const entry = detail.find((d) => d.routine.id === editingTrackingRoutineId);
+    handleSaveTrackingForDate(editingTrackingRoutineId, entry?.completion?.id ?? null, selectedDate);
+  }
 
   const weekDates: string[] = [];
   if (viewMode === 'week') {
@@ -684,75 +921,103 @@ export default function CalendarScreen() {
   const weekMaxScrollX = Math.max(1, weekContentWidth - weekViewportWidth);
   const weekThumbMaxTranslate = Math.max(0, weekViewportWidth - weekThumbWidth);
 
+  // 범례("다완료/일부완료/필수놓침") 박스를 좌우로 스와이프하면 주/월 보기가 바뀐다(2026-09-21).
+  // 예전에 캘린더 전체(화면 가로 전체 폭)에 커스텀 스와이프를 걸었을 때 안드로이드 시스템
+  // 뒤로가기 제스처(화면 양 끝에서 시작하는 스와이프)와 계속 충돌해서 실패한 적이 있어서
+  // (docs/study.md 2026-08-27), 이번엔 화면 양 끝에 안 닿도록 좌우 여백을 준 좁은 박스
+  // 하나에만 제스처를 걸어 그 문제를 피한다 — 달력 그리드 자체나 리스트는 건드리지 않는다
+  // 월간뷰로 들어갈 때마다 예전에 보던 달이 아니라 항상 지금 달부터 보여준다 — 탭으로
+  // 들어갈 때와 스와이프로 들어갈 때가 똑같이 동작하도록 함수 하나로 공유한다
+  function goToMonthView() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    setYear(y);
+    setMonth(m);
+    setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
+    setViewMode('month');
+  }
+  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
+  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
+  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
+  function handleViewModeSwipe(translationX: number) {
+    if (translationX < -40) goToMonthView();
+    else if (translationX > 40) setViewMode('week');
+  }
+  // 위(탭 박스)와 아래(범례+그 밑 빈 공간) 두 군데에 같은 동작을 걸되, 하나의 제스처
+  // 인스턴스를 두 GestureDetector에 같이 물리면 충돌할 수 있어 각자 따로 만든다(2026-09-21) —
+  // 달력 그리드/주간뷰 칸(실제로 탭해서 날짜를 고르는 부분)만 빼고 나머지는 전부 스와이프되게
+  // 범위를 넓혀달라는 요청으로, 탭 박스와 범례 박스를 스와이프 영역으로 잡았다
+  const viewModeSwipeGestureTop = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleViewModeSwipe)(e.translationX);
+    });
+  const viewModeSwipeGestureBottom = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      runOnJS(handleViewModeSwipe)(e.translationX);
+    });
+
   return (
     <View style={styles.container}>
-      <View style={styles.viewModeTabs}>
-        <AnimatedPressable
-          style={[styles.viewModeTab, viewMode === 'week' && styles.viewModeTabActive]}
-          onPress={() => setViewMode('week')}>
-          <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>{t('calendar.week')}</Text>
-        </AnimatedPressable>
-        <AnimatedPressable
-          style={[styles.viewModeTab, viewMode === 'month' && styles.viewModeTabActive]}
-          onPress={() => {
-            // 월간뷰로 들어갈 때마다 예전에 보던 달이 아니라 항상 지금 달부터 보여준다
-            const now = new Date();
-            const y = now.getFullYear();
-            const m = now.getMonth() + 1;
-            setYear(y);
-            setMonth(m);
-            setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
-            setViewMode('month');
-          }}>
-          <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>{t('calendar.month')}</Text>
-        </AnimatedPressable>
-      </View>
+      <GestureDetector gesture={viewModeSwipeGestureTop}>
+        <View style={styles.viewModeTabs}>
+          <AnimatedPressable
+            style={[styles.viewModeTab, viewMode === 'week' && styles.viewModeTabActive]}
+            onPress={() => setViewMode('week')}>
+            <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>{t('calendar.week')}</Text>
+          </AnimatedPressable>
+          <AnimatedPressable
+            style={[styles.viewModeTab, viewMode === 'month' && styles.viewModeTabActive]}
+            onPress={goToMonthView}>
+            <Text style={[styles.viewModeTabText, viewMode === 'month' && styles.viewModeTabTextActive]}>{t('calendar.month')}</Text>
+          </AnimatedPressable>
+        </View>
+      </GestureDetector>
 
       {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
           쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
           캘린더가 차지할 세로 공간을 더 확보한다.
-          ⚠️ 예전엔 주간뷰에서만 보였는데, 그래서 월간뷰엔 이 카드만큼의 높이가 통째로
-          빠져있어 "다완료/일부완료/필수놓침" 범례 위치가 두 모드에서 서로 달라졌다 —
-          두 모드 모두 항상 보여줘서 범례 위까지의 구조를 똑같이 맞춘다 */}
-      <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
-        {bestStreakEver !== null && bestStreakEver > 0 ? (
-          <View style={styles.streakHeroRow}>
-            <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
-            <View style={styles.streakHeroNumRow}>
-              <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-              <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+          월간뷰는 요청으로 이 카드를 다시 숨긴다(2026-09-21) — 예전엔 범례 위치를 주간뷰와
+          맞추려고 두 모드 모두 보여줬지만, 월간뷰 높이는 이제 MONTH_CALENDAR_HEIGHT 고정값
+          하나로만 관리되므로 이 카드가 없어도 월간뷰 자체 높이는 안 흔들린다 */}
+      {viewMode === 'week' && (
+        <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
+          {bestStreakEver !== null && bestStreakEver > 0 ? (
+            <View style={styles.streakHeroRow}>
+              <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
+              <View style={styles.streakHeroNumRow}>
+                <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
+                <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+              </View>
             </View>
-          </View>
-        ) : (
-          <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
-        )}
-      </ShadowCard>
+          ) : (
+            <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
+          )}
+        </ShadowCard>
+      )}
 
       {viewMode === 'month' && (
-        // 높이를 고정해서(MONTH_CALENDAR_HEIGHT) 달마다 셀 내용이 늦게 채워져도 이 박스
-        // 자체는 안 움직이게 한다
-        <View style={{ height: MONTH_CALENDAR_HEIGHT }}>
-          <CalendarList
-            horizontal
-            pagingEnabled
-            // 기본값(과거/미래 각 50개월, 총 101개월치)이 커스텀 dayComponent까지 겹쳐서 최초
-            // 진입 시 로딩이 유독 오래 걸리는 원인이었음 — 실제로 쓸 일 있는 범위로 줄임
-            pastScrollRange={24}
-            futureScrollRange={12}
-            calendarWidth={screenWidth}
-            current={calendarCursor}
-            onMonthChange={handleMonthChange}
-            dayComponent={renderDay}
-            theme={{
-              calendarBackground: Colors[theme].background,
-              dayTextColor: Colors[theme].text,
-              monthTextColor: Colors[theme].text,
-              textDisabledColor: theme === 'dark' ? '#555' : '#ccc',
-              arrowColor: accent,
-              todayTextColor: accent,
-            }}
-          />
-        </View>
+        <MonthCalendarSection
+          height={MONTH_GRID_HEIGHT}
+          screenWidth={screenWidth}
+          calendarCursor={calendarCursor}
+          calendarTheme={calendarTheme}
+          onMonthChange={handleMonthChange}
+          monthAccum={deferredMonthAccum}
+          monthMemosAccum={monthMemosAccum}
+          monthDiaryAccum={monthDiaryAccum}
+          monthPhotoDiaryAccum={monthPhotoDiaryAccum}
+          selectedDate={deferredSelectedDate}
+          theme={theme}
+          todayStr={todayStr}
+          accent={accent}
+          styles={styles}
+          onSelectDate={setSelectedDate}
+        />
       )}
       {viewMode === 'week' && (
         <View style={styles.weekContainer}>
@@ -795,7 +1060,11 @@ export default function CalendarScreen() {
                     style={[
                       styles.weekColumn,
                       dateStr === todayStr && styles.weekColumnToday,
-                      { minHeight: weekColumnTargetHeight },
+                      // minHeight는 바닥값일 뿐이라 루틴이 많은 날은 칸이 그만큼 더 길어져서
+                      // 요일마다 칸 높이가 들쭉날쭉해지던 버그가 있었음 — height로 고정해서
+                      // 루틴 개수와 무관하게 항상 같은 높이가 되게 한다(넘치는 목록은 내부
+                      // ScrollView가 이미 알아서 스크롤 처리한다)
+                      { height: weekColumnTargetHeight },
                     ]}
                     onPress={() => setSelectedDate(dateStr)}>
                     <View style={styles.weekColumnHeader}>
@@ -865,20 +1134,28 @@ export default function CalendarScreen() {
         </View>
       )}
 
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.done }]} />
-          <Text style={styles.legendText}>{t('calendar.legendDone')}</Text>
+      {/* 범례 박스뿐 아니라 그 아래 화면 끝까지 남는 빈 공간까지 전부(flex:1) 스와이프
+          영역으로 잡는다 — "달력 그리드/주간 칸(실제 탭 대상)만 빼고 나머지는 다 되게"라는
+          요청(2026-09-21). 화면 양 끝에는 안 닿도록 좌우 여백만 유지해서 안드로이드 시스템
+          뒤로가기 제스처 영역과는 안 겹치게 한다 */}
+      <GestureDetector gesture={viewModeSwipeGestureBottom}>
+        <View style={styles.legendSwipeZone}>
+          <View style={styles.legend}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.done }]} />
+              <Text style={styles.legendText}>{t('calendar.legendDone')}</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.partial }]} />
+              <Text style={styles.legendText}>{t('calendar.legendPartial')}</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.missed_required }]} />
+              <Text style={styles.legendText}>{t('calendar.legendMissed')}</Text>
+            </View>
+          </View>
         </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.partial }]} />
-          <Text style={styles.legendText}>{t('calendar.legendPartial')}</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: STATUS_COLORS.missed_required }]} />
-          <Text style={styles.legendText}>{t('calendar.legendMissed')}</Text>
-        </View>
-      </View>
+      </GestureDetector>
 
       <Modal
         visible={selectedDate !== null}
@@ -890,6 +1167,10 @@ export default function CalendarScreen() {
             style={[StyleSheet.absoluteFill, styles.modalBackdrop]}
             onPress={() => setSelectedDate(null)}
           />
+          {/* 트래킹 입력 중 바깥(리스트 빈 공간·헤더 등)을 탭하면 입력을 마무리하고 키보드를
+              내린다 — 실제 버튼/행은 더 안쪽에 있는 자기 자신의 Pressable이 터치를 먼저
+              가져가므로 이 바깥 탭 처리와 안 부딪힌다(2026-09-21) */}
+          <TouchableWithoutFeedback onPress={commitOrCancelTrackingEdit}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{selectedDate}</Text>
@@ -906,7 +1187,11 @@ export default function CalendarScreen() {
             </View>
             {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-            <ScrollView style={styles.detailList} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={styles.detailList}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              onScrollBeginDrag={commitOrCancelTrackingEdit}>
               <View style={styles.sectionLabelRow}>
                 <Ionicons name="bookmark-outline" size={13} color={Colors[theme].text} style={{ opacity: 0.7 }} />
                 <Text style={styles.sectionLabel}>{t('calendar.memoSection')}</Text>
@@ -1011,7 +1296,9 @@ export default function CalendarScreen() {
                             handleSaveTrackingForDate(routine.id, completion?.id ?? null, selectedDate)
                           }
                         />
-                        <Text style={styles.detailUnit}>{routine.tracking_unit}</Text>
+                        <Text style={styles.detailUnit} numberOfLines={1}>
+                          {truncateTrackingUnit(routine.tracking_unit)}
+                        </Text>
                       </View>
                     );
                   }
@@ -1026,8 +1313,8 @@ export default function CalendarScreen() {
                       {mainInfo}
                       {routine.block_type === 'tracking' &&
                         (completion?.tracking_value != null ? (
-                          <Text style={[styles.detailValue, isTrackingEditable && { color: accent }]}>
-                            ✓ {completion.tracking_value} {routine.tracking_unit}
+                          <Text style={[styles.detailValue, isTrackingEditable && { color: accent }]} numberOfLines={1}>
+                            ✓ {completion.tracking_value} {truncateTrackingUnit(routine.tracking_unit)}
                           </Text>
                         ) : isTrackingEditable ? (
                           <Text style={styles.detailTrackingPlaceholder}>탭해서 입력</Text>
@@ -1062,10 +1349,16 @@ export default function CalendarScreen() {
                 })
               )}
             </ScrollView>
-            <AnimatedPressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
-              <Text style={styles.closeButtonText}>{t('today.close')}</Text>
-            </AnimatedPressable>
+            {/* 트래킹 입력 중엔 키보드가 뜨면서 이 버튼이 바로 그 위로 밀려 올라와 어색하게
+                보이던 문제가 있었다(2026-09-21) — 입력 중엔 아예 숨기고, 목록 스크롤/바깥
+                탭으로 입력이 끝나면(commitOrCancelTrackingEdit) 다시 나타난다 */}
+            {!editingTrackingRoutineId && (
+              <AnimatedPressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
+                <Text style={styles.closeButtonText}>{t('today.close')}</Text>
+              </AnimatedPressable>
+            )}
           </View>
+          </TouchableWithoutFeedback>
         </View>
       </Modal>
     </View>
@@ -1291,6 +1584,13 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     gap: 16,
     paddingVertical: 12,
   },
+  // 범례 박스 그 자체를 넘어, 그 아래 화면 끝까지 남는 빈 공간 전체를 스와이프 영역으로
+  // 확보한다(flex:1) — 스와이프 범위가 너무 좁다는 피드백(2026-09-21). 좌우는 화면 양 끝에서
+  // 떨어뜨려서(marginHorizontal) 안드로이드 시스템 뒤로가기 제스처 영역과는 안 겹치게 한다
+  legendSwipeZone: {
+    flex: 1,
+    marginHorizontal: 18,
+  },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1483,10 +1783,15 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     opacity: 0.6,
     fontFamily: fontMono,
   },
+  // 트래킹 기록값 표시가 앞의 제목(detailMain, flex:1)이 나머지 공간을 다 차지한 뒤 남는
+  // 자리에 붙다 보니, 값 길이가 저마다 달라 시작 위치(왼쪽)가 행마다 들쭉날쭉해 보였다
+  // (2026-09-21) — 고정폭을 줘서 항상 같은 자리에서 시작하게 한다("탭해서 입력" placeholder도 동일)
   detailValue: {
+    width: 100,
     fontSize: 13,
   },
   detailTrackingPlaceholder: {
+    width: 100,
     fontSize: 12,
     color: accent,
     opacity: 0.7,
@@ -1501,7 +1806,10 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 14,
     textAlign: 'right',
   },
+  // 단위 글자 길이가 들쭉날쭉하면 그때그때 옆의 입력칸 위치가 흔들려 보인다(2026-09-21) —
+  // 고정폭을 줘서 입력칸은 항상 같은 자리에 있고 단위만 그 오른쪽 고정 자리에 채워지게 한다
   detailUnit: {
+    width: 32,
     fontSize: 12,
     opacity: 0.6,
   },
