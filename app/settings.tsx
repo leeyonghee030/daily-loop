@@ -2,7 +2,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, StyleSheet, Switch, View as RNView } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
@@ -126,10 +126,12 @@ export default function SettingsScreen() {
   // 소리/진동을 바꾸면 그 조합의 안드로이드 채널을 미리 만들어둔다 — 다음에 예약되는
   // 알림부터 바로 반영됨(이미 예약된 알림은 다음 재동기화 때 새 채널로 다시 예약됨)
   const handleNotifPrefChange = (partial: { soundEnabled?: boolean; vibrationEnabled?: boolean }) => {
+    closeInfoDescs();
     updateNotifPrefs(partial).then(() => setupNotificationChannel({ ...notifPrefs, ...partial }));
   };
 
   const openExactAlarmSettings = () => {
+    closeInfoDescs();
     if (Platform.OS !== 'android') return;
     Linking.sendIntent('android.settings.REQUEST_SCHEDULE_EXACT_ALARM').catch(() => Linking.openSettings());
   };
@@ -139,15 +141,36 @@ export default function SettingsScreen() {
     { id: 'en', label: t('settings.languageEnglish') },
   ];
 
-  // 기본 설정을 펼쳐둔 채로 카드 바깥의 빈 곳(다른 행들은 각자 onPress로 이 터치를
-  // 먼저 가져가므로 안 걸림)을 누르면 접히게 한다
-  const closeBasicSettingsIfOpen = () => {
+  // ⓘ 안내문들은 화면을 벗어나야만(useFocusEffect) 닫혀서, 같은 화면 안에서 다른 행을
+  // 눌러도 안 닫힌다는 피드백(2026-09-22) — 배경(빈 곳)뿐 아니라 각 섹션의 다른 조작
+  // (색상/폰트/언어 선택, 알림 스위치, 정확한 알람/알림 설정 이동)에서도 같이 닫히게
+  // 호출을 늘렸다. "기본 설정" 카드 자체는 그 안에서 색상/폰트/언어를 고르는 동작만으로
+  // 접히면 어색해서(고르는 도중 패널이 통째로 닫혀버림) 제외하고 ⓘ 안내문만 닫는다
+  const closeInfoDescs = () => {
+    if (showThemeDesc) setShowThemeDesc(false);
+    if (showFontDesc) setShowFontDesc(false);
+    if (showLanguageDesc) setShowLanguageDesc(false);
+    if (showNotifDesc) setShowNotifDesc(false);
+    if (showExactAlarmDesc) setShowExactAlarmDesc(false);
+    if (showNotifTroubleshootDesc) setShowNotifTroubleshootDesc(false);
+  };
+  // 화면 빈 곳을 누르면 "기본 설정" 카드까지 전부 접는다
+  const closeOpenPanelsIfAny = () => {
     if (showBasicSettings) setShowBasicSettings(false);
+    closeInfoDescs();
   };
 
   return (
-    <Pressable style={styles.pressableRoot} onPress={closeBasicSettingsIfOpen}>
-    <View style={styles.container}>
+    <Pressable style={styles.pressableRoot} onPress={closeOpenPanelsIfAny}>
+    {/* 화면 자체는 스크롤할 내용이 거의 없어서 일반 View였는데, 다른 화면들처럼 "펼친
+        안내문을 스크롤하면 접힌다" 동작을 여기서도 쓰고 싶다는 요청(2026-09-22)으로
+        ScrollView로 교체 — 내용이 짧으면 기존과 똑같이 보이고(contentContainerStyle의
+        flexGrow:1로 이메일/로그아웃 하단 고정 유지), 스크롤을 시도하면(당장 스크롤할
+        내용이 없어도 살짝 당기는 제스처 자체) 안내문이 닫힌다 */}
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.scrollContent}
+      onScrollBeginDrag={closeInfoDescs}>
       {/* iOS 설정 앱처럼, 관련 항목을 하나의 둥근 카드 안에 얇은 구분선으로 묶어서 보여준다.
           그룹 제목·설명은 항상 카드 "위"에 함께 둔다(카드 아래에 따로 떼어두면 붕 떠보여서) */}
       {/* 테마색/폰트/언어를 "기본 설정" 하나로 묶어 맨 위에 둠 — 눌러야만 펼쳐져서
@@ -180,7 +203,10 @@ export default function SettingsScreen() {
                   <AnimatedPressable
                     key={preset.id}
                     style={styles.accentSwatchItem}
-                    onPress={() => setAccentColor(preset.color)}>
+                    onPress={() => {
+                      closeInfoDescs();
+                      setAccentColor(preset.color);
+                    }}>
                     <View style={[styles.accentSwatchRing, preset.color === accent && styles.accentSwatchRingSelected]}>
                       <View style={[styles.accentSwatch, { backgroundColor: preset.color }]} />
                     </View>
@@ -207,7 +233,10 @@ export default function SettingsScreen() {
                   <AnimatedPressable
                     key={preset.id}
                     style={[styles.fontOptionButton, preset.id === fontPresetId && styles.fontOptionButtonActive]}
-                    onPress={() => setFontPresetId(preset.id)}>
+                    onPress={() => {
+                      closeInfoDescs();
+                      setFontPresetId(preset.id);
+                    }}>
                     <Text
                       style={[
                         styles.fontOptionText,
@@ -234,7 +263,10 @@ export default function SettingsScreen() {
                   <AnimatedPressable
                     key={option.id}
                     style={[styles.fontOptionButton, option.id === language && styles.fontOptionButtonActive]}
-                    onPress={() => setLanguage(option.id)}>
+                    onPress={() => {
+                      closeInfoDescs();
+                      setLanguage(option.id);
+                    }}>
                     <Text style={[styles.fontOptionText, option.id === language && styles.fontOptionTextActive]}>
                       {option.label}
                     </Text>
@@ -306,7 +338,12 @@ export default function SettingsScreen() {
           </View>
         )}
         <View style={styles.rowDivider}>
-          <AnimatedPressable style={styles.row} onPress={() => Linking.openSettings()}>
+          <AnimatedPressable
+            style={styles.row}
+            onPress={() => {
+              closeInfoDescs();
+              Linking.openSettings();
+            }}>
             <View style={styles.rowLeft}>
               <Ionicons
                 name={notifPermissionDenied ? 'notifications-off-outline' : 'notifications-outline'}
@@ -467,7 +504,7 @@ export default function SettingsScreen() {
           </ShadowCard>
         </RNView>
       </Modal>
-    </View>
+    </ScrollView>
     </Pressable>
   );
 }
@@ -479,6 +516,11 @@ function createStyles(accent: string) {
     },
     container: {
       flex: 1,
+    },
+    // flexGrow:1 없이는 내용이 화면보다 짧을 때 accountSection의 marginTop:'auto'(맨 아래
+    // 고정)가 안 먹혀서 스크롤뷰 내부에서 위쪽에 붙어버린다
+    scrollContent: {
+      flexGrow: 1,
       padding: 20,
       paddingBottom: 44,
     },

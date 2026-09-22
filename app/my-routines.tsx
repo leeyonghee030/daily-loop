@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, ScrollView, StyleSheet, View as RNView } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
@@ -16,6 +16,7 @@ import ReorderableList, {
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { useUndoToast } from '@/components/UndoToast';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
@@ -166,18 +167,6 @@ export default function MyRoutinesScreen() {
   const koreanFont = useKoreanFont();
   const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
-  // ReorderableList가 내부적으로 쓰는 드래그용 Pan 제스처가 기본값(즉시 반응)이라, 밖에
-  // 얹은 필터 스와이프가 루틴 목록 위에서는 전혀 인식되지 않는 문제가 있었다(2026-09-21) —
-  // 처음엔 라이브러리 문서의 activateAfterLongPress(시간차) 방식을 썼는데, 우리는 이미
-  // 드래그 핸들 자체의 길게 누르기(150ms)로 드래그를 직접 트리거하고 있어서, 이 내부 제스처가
-  // "길게 눌러야만 활성화"를 기다리는 동안 정작 드래그하려고 움직이는 손가락 자체가 그 대기를
-  // 깨버려(길게 누르기는 원래 가만히 있어야 하는 제스처라서) 드래그가 아예 안 되는 부작용이
-  // 있었다 — 시간이 아니라 방향으로 구분하는 방식(문서의 두 번째 대안)으로 교체: 세로 움직임은
-  // 즉시 반응(드래그). 가로 움직임 임계값을 처음엔 필터 스와이프(20px)와 똑같이 뒀더니, 안쪽
-  // (자식) 제스처가 같은 조건이면 바깥(부모) 제스처보다 먼저 이겨버려서 이번엔 반대로 스와이프가
-  // 안 되는 문제가 생겼다 — 가로 임계값을 필터 스와이프보다 훨씬 크게(60px) 벌려서, 가로로만
-  // 움직이는 스와이프는 이 임계값에 절대 못 닿고 그사이 바깥 스와이프 제스처가 먼저 이기게 한다
-  const reorderPanGesture = useMemo(() => Gesture.Pan().activeOffsetX([-60, 60]).activeOffsetY([0, 0]), []);
   const FILTERS = useMemo<{ value: FilterValue; label: string }[]>(
     () => [
       { value: 'all', label: t('myRoutines.filterAll') },
@@ -203,9 +192,13 @@ export default function MyRoutinesScreen() {
   const skippedTodayQueryKey = ['today-skips', userId, todayDateStr] as const;
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // 루틴 삭제 확인창 — 네이티브 Alert 대신 앱 테마색을 쓰는 커스텀 확인창(CategoryVideoGrid의
-  // 영상/카테고리 삭제 확인창과 같은 스타일). 모음집이 같이 비게 되는 경우엔 "모음집도 삭제"
-  // 버튼이 추가로 붙는다(extraLabel/onExtra)
+  // 단순 삭제(모음집에 영향 없는 경우)는 확인창 대신 "삭제됨 · 실행취소" 토스트로 바꿨다
+  // (2026-09-22) — 실제 서버 삭제(softDeleteRoutine)는 토스트가 떠 있는 동안(useUndoToast
+  // 내부에서 4초) 미뤄두고, "실행취소"를 안 누르면 그때 실행한다
+  const { showUndoToast, undoToastNode } = useUndoToast();
+  // 모음집이 같이 비는 경우는 "루틴만 삭제"/"모음집도 삭제" 중 골라야 하는 진짜 결정이라
+  // 토스트로는 표현이 안 돼서, 그 경우만 여전히 확인창을 쓴다 — 네이티브 Alert 대신 앱
+  // 테마색을 쓰는 커스텀 확인창(CategoryVideoGrid의 영상/카테고리 삭제 확인창과 같은 스타일)
   const [deleteConfirm, setDeleteConfirm] = useState<{
     title: string;
     message: string;
@@ -393,17 +386,28 @@ export default function MyRoutinesScreen() {
       return;
     }
 
-    const message =
-      language === 'ko'
-        ? `"${routine.title}"에 해당하는 모든 예정이 삭제돼요. "루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
-        : `All occurrences of "${routine.title}" will be deleted. You can restore it within 2 weeks from "Routine Recovery".`;
-    setDeleteConfirm({
-      title: t('myRoutines.deleteRoutineTitle'),
-      message,
-      primaryLabel: t('myRoutines.delete'),
-      onPrimary: () => {
-        setDeleteConfirm(null);
-        performDelete(routine, remaining);
+    // 모음집에 영향이 없는 단순 삭제는 확인창 없이 바로 목록에서 빼고, 실제 서버 삭제는
+    // 토스트가 떠 있는 동안(4초) 미뤄둔다 — "실행취소"를 누르면 서버엔 지운 적이 없으니
+    // 그냥 목록만 되돌리면 끝, 시간이 지나면 그때 진짜로 지운다(2026-09-22)
+    setRoutines(remaining);
+    showUndoToast({
+      message: `"${routine.title}" ${t('myRoutines.deletedToast')}`,
+      accentColor: accent,
+      undoLabel: t('myRoutines.undo'),
+      onUndo: () => {
+        setRoutines(routines);
+      },
+      onExpire: async () => {
+        // performDelete를 그대로 쓰면 실패 시 목록을 안 되돌려서(원래 흐름은 성공해야만
+        // setRoutines(remaining)을 부르므로 실패하면 목록이 그대로 남아있는 게 맞았는데,
+        // 여기선 이미 낙관적으로 지운 상태라 실패하면 반대로 되돌려야 한다) 실패 시엔
+        // 직접 목록을 복원한다
+        try {
+          await softDeleteRoutine(routine.id);
+        } catch {
+          setRoutines(routines);
+          setErrorMessage(t('myRoutines.errorDelete'));
+        }
       },
     });
   }
@@ -519,18 +523,19 @@ export default function MyRoutinesScreen() {
     .onEnd((e) => {
       runOnJS(handleFilterSwipe)(e.translationX);
     });
-  // 목록 위에서만은 여전히 라이브러리의 드래그 제스처(reorderPanGesture)와 같은 자리를
-  // 공유해서 인식이 불안정할 수 있다 — blocksExternalGesture로 "내가 인식되면 그 제스처는
-  // 취소시킨다"를 명시해서 우선순위를 확실히 정해준다(2026-09-22)
-  const filterSwipeGestureOnList = Gesture.Pan()
-    .activeOffsetX([-20, 20])
-    .failOffsetY([-15, 15])
-    .blocksExternalGesture(reorderPanGesture)
-    .onEnd((e) => {
-      runOnJS(handleFilterSwipe)(e.translationX);
-    });
+  // 목록 위 버전은 예전엔 목록 전체를 감싸서 드래그 제스처와 같은 영역을 두고 경쟁시켰다
+  // (hitSlop으로 범위를 나누거나 우선순위 관계로 승패를 정하는 방식 둘 다 안드로이드에서
+  // "되다가 갑자기 안 되는" 식으로 불안정했음, 2026-09-22) — 이제는 목록을 감싸지 않고,
+  // 각 행(RoutineRow)의 손잡이(≡)와 형제인 안쪽 그룹에만 이 제스처를 붙여서(onSwipe prop)
+  // 손잡이 쪽 터치와 애초에 겹치지 않게 만들었다
+  // 안내문을 펼쳐둔 채로 화면 빈 곳을 누르면 접히게 한다 — 기존엔 스크롤하거나 화면을
+  // 벗어나야만 접혔는데, 그 자리에서 바로 닫고 싶다는 피드백으로 추가(2026-09-22)
+  const closeSubtitleIfOpen = () => {
+    if (showSubtitle) setShowSubtitle(false);
+  };
 
   return (
+    <Pressable style={styles.pressableRoot} onPress={closeSubtitleIfOpen}>
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
@@ -669,56 +674,54 @@ export default function MyRoutinesScreen() {
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      {/* 안내문 줄에도 스와이프를 걸어두고(항상 자리를 차지하도록 최소 높이 확보), 루틴
-          목록 위에서도 스와이프되게 아래 블록 전체에도 같이 건다(2026-09-21) — 목록
-          쪽은 ReorderableList의 자체 드래그 제스처와 부딪힐 가능성이 있어(길게 눌러야
-          작동하는 제스처라 빠른 스와이프와는 시간상 안 겹치길 기대) 안내문 줄을 항상
-          동작하는 안전한 자리로 같이 남겨둔다 */}
+      {/* 좌우 스와이프를 루틴 목록 위에서도 되게 하려고 여러 방식(hitSlop으로 범위 나누기,
+          우선순위 관계, 손잡이만 구조적으로 분리하기 등)을 시도했는데(2026-09-22), 매번
+          드래그 정렬 아니면 스와이프 둘 중 하나가 불안정하게 깨졌다 — 이미 있던 드래그
+          정렬 기능이 더 중요하다고 판단해 목록 위 스와이프는 포기하고, 안내문 줄(목록과
+          안 겹치는 별도 영역)에서만 스와이프하도록 되돌렸다. 목록 자체는 아무 커스텀
+          제스처도 안 걸려 있어서 드래그는 이 세션 이전과 완전히 동일하게 동작한다 */}
       <GestureDetector gesture={filterSwipeGesture}>
         <View style={styles.filterSwipeStrip}>
           {!selectMode && filtered.length > 1 && <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>}
         </View>
       </GestureDetector>
 
-      <GestureDetector gesture={filterSwipeGestureOnList}>
-        <View style={styles.swipeArea}>
-          {isLoading ? (
-            <View style={styles.centered}>
-              <ActivityIndicator />
-            </View>
-          ) : filtered.length === 0 ? (
-            <View style={styles.centered}>
-              <Text style={styles.emptyText}>
-                {groupMode === 'preset' && presetFilter === null
-                  ? t('myRoutines.emptyChoosePreset')
-                  : t('myRoutines.emptyNoMatch')}
-              </Text>
-            </View>
-          ) : (
-            <ReorderableList
-              style={styles.list}
-              contentContainerStyle={styles.listContent}
-              data={filtered}
-              keyExtractor={(item) => item.id}
-              onReorder={handleReorder}
-              panGesture={reorderPanGesture}
-              onScrollBeginDrag={() => setShowSubtitle(false)}
-              renderItem={({ item }) => (
-                <RoutineRow
-                  routine={item}
-                  selectMode={selectMode}
-                  isSelected={selectedIds.has(item.id)}
-                  isSkippedToday={skippedTodayIds.has(item.id)}
-                  onEdit={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}
-                  onToggleSelect={() => toggleSelected(item.id)}
-                  onDelete={() => handleDelete(item)}
-                  onUnskip={() => handleUnskip(item)}
-                />
-              )}
-            />
-          )}
-        </View>
-      </GestureDetector>
+      <View style={styles.swipeArea}>
+        {isLoading ? (
+          <View style={styles.centered}>
+            <ActivityIndicator />
+          </View>
+        ) : filtered.length === 0 ? (
+          <View style={styles.centered}>
+            <Text style={styles.emptyText}>
+              {groupMode === 'preset' && presetFilter === null
+                ? t('myRoutines.emptyChoosePreset')
+                : t('myRoutines.emptyNoMatch')}
+            </Text>
+          </View>
+        ) : (
+          <ReorderableList
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            data={filtered}
+            keyExtractor={(item) => item.id}
+            onReorder={handleReorder}
+            onScrollBeginDrag={() => setShowSubtitle(false)}
+            renderItem={({ item }) => (
+              <RoutineRow
+                routine={item}
+                selectMode={selectMode}
+                isSelected={selectedIds.has(item.id)}
+                isSkippedToday={skippedTodayIds.has(item.id)}
+                onEdit={() => router.push({ pathname: '/routine-form', params: { id: item.id } })}
+                onToggleSelect={() => toggleSelected(item.id)}
+                onDelete={() => handleDelete(item)}
+                onUnskip={() => handleUnskip(item)}
+              />
+            )}
+          />
+        )}
+      </View>
 
       <Modal visible={!!deleteConfirm} transparent animationType="fade" onRequestClose={() => setDeleteConfirm(null)}>
         <RNView style={styles.confirmBackdrop}>
@@ -744,12 +747,18 @@ export default function MyRoutinesScreen() {
           )}
         </RNView>
       </Modal>
+
+      {undoToastNode}
     </View>
+    </Pressable>
   );
 }
 
 function createStyles(accent: string, fontKorean: KoreanFontValue) {
   return StyleSheet.create({
+  pressableRoot: {
+    flex: 1,
+  },
   container: {
     flex: 1,
     paddingTop: 20,

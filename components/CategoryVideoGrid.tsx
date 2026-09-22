@@ -501,7 +501,12 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         <RNView style={styles.modalBackdrop}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowTrashModal(false)} />
           <View style={styles.trashModalSheet}>
-            <Text style={styles.modalTitle}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
+            <View style={styles.trashModalHeaderRow}>
+              <Text style={styles.modalTitle}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
+              <AnimatedPressable onPress={() => setShowTrashModal(false)} hitSlop={8}>
+                <Text style={styles.trashModalCloseText}>{t('today.close')}</Text>
+              </AnimatedPressable>
+            </View>
             {trashLoading ? (
               <ActivityIndicator style={styles.loading} />
             ) : (
@@ -563,9 +568,6 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
                 )}
               </ScrollView>
             )}
-            <AnimatedPressable style={styles.modalCancelButton} onPress={() => setShowTrashModal(false)}>
-              <Text style={styles.modalCancelText}>{t('today.close')}</Text>
-            </AnimatedPressable>
           </View>
         </RNView>
       </Modal>
@@ -882,6 +884,20 @@ function createStyles(accent: string) {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
+  },
+  // 예전엔 하단에 테두리만 있는 "닫기" 버튼이 따로 있었는데, 그 스타일(modalCancelButton)이
+  // 가로 짝(모달 저장 버튼)과 함께 쓰일 때만 정상 동작하는 flex:1을 갖고 있어서 여기서
+  // 단독으로 쓰이면 버튼 높이가 0으로 찌그러져 테두리만 보이고 글자가 안 보이던 버그가
+  // 있었다 — FavoritePicker/VideoPicker와 같은 패턴(제목 옆 강조색 텍스트 링크)으로
+  // 교체해서 해결(2026-09-22)
+  trashModalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  trashModalCloseText: {
+    color: accent,
+    fontSize: 14,
   },
   trashSectionTitle: {
     marginTop: 20,

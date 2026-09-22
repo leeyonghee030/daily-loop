@@ -14,13 +14,13 @@ import {
   type DimensionValue,
 } from 'react-native';
 import { Gesture, GestureDetector, Swipeable } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
-import { border, cardRadius, dangerMuted, fontMono, textMuted, withAlpha } from '@/constants/theme';
+import { border, cardRadius, dangerMuted, fontMono, withAlpha } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useTranslation, type TranslationKey } from '@/lib/language';
@@ -262,7 +262,11 @@ const VIEW_MODE_HINT_DISMISSED_KEY = 'today_view_mode_hint_dismissed';
 // "+ 루틴 추가" FAB 위치 기억 — 기본 자리(오른쪽 아래)로부터의 이동량(translateX/Y)을 저장한다
 const FAB_POSITION_KEY = 'today_fab_position_v1';
 // FAB 이동/초기화 안내 배너 — "다시 보지 않음"을 체크하고 닫아야만 'true'로 저장된다
-const FAB_HINT_DISMISSED_KEY = 'today_fab_hint_dismissed_v3';
+// v3→v4: 예전 세션 테스트 중 "다시 보지 않음"으로 꺼둔 게 남아있어서 다시 안 뜨던 문제 —
+// 버전을 올려서 다시 보이게 함. v4→v5: FAB 탭 동작이 "루틴 추가로 바로 이동"에서 "루틴
+// 추가/카테고리 메뉴 펼치기"로 바뀌어서 안내 문구도 같이 바뀜. v5→v6: "말로 루틴
+// 추가하기" 위성 버튼 추가로 안내 문구가 또 바뀜(2026-09-22)
+const FAB_HINT_DISMISSED_KEY = 'today_fab_hint_dismissed_v6';
 const FAB_SIZE = 48;
 const FAB_DEFAULT_RIGHT = 16;
 const FAB_DEFAULT_BOTTOM = 76;
@@ -1539,27 +1543,29 @@ export default function TodayScreen() {
   // 최종적으로 설정 화면 회원탈퇴 안내(deleteAccountTooltip)와 같은 패턴으로 통일: 배경은
   // 항상 불투명한 흰색으로 고정하고 테마 주색은 테두리·아이콘·글자·닫기 버튼에만 입혀서,
   // 어떤 테마색을 골라도 흰 배경 위 텍스트라 대비가 항상 안정적으로 확보된다(2026-09-21)
-  // "다시 보지 않음"을 체크하고 닫아야만 다음부터 안 뜨고, 그냥 두면(또는 체크 안 하고
-  // 닫으면) 15초 뒤 자동으로 사라지되 다음에 오늘 탭에 들어오면 다시 뜬다. 다른 걸 눌러도
-  // 이 15초 동안은 그대로 떠 있게 둔다 — 읽고 "닫기"/"다시 보지 않음"을 누를 시간을 준다
-  // ("닫기"가 있으니 자동으로 안 사라져도 사용자가 직접 닫으면 되므로 여유있게 잡는다)
+  // "다시 보지 않음"을 체크하고 닫아야만 다음부터 안 뜨고, 그냥 "닫기"만 누르면 다음에
+  // 오늘 탭에 들어올 때 다시 뜬다. 시간이 지나면 자동으로 사라지게 했었는데(15초), "사용자가
+  // 닫기 누르기 전까진 계속 보이는 게 낫겠다"는 피드백으로 자동 사라짐을 없앴다(2026-09-22)
   const [showFabHint, setShowFabHint] = useState(false);
   const [dontShowFabHintAgain, setDontShowFabHintAgain] = useState(false);
-  const fabHintAutoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 마운트 시 1회만 실행되면, 회원탈퇴 후 재가입처럼 앱을 껐다 켜지 않고 로그인만 다시
+  // 하는 경우엔 이 오늘 탭 화면 자체가 다시 마운트되지 않아서(스택 최하단 화면이라 계속
+  // 살아있음) 안내가 다시 안 뜨는 문제가 있었다 — userId가 바뀔 때마다(로그아웃→로그인,
+  // 탈퇴→재가입 포함) 다시 실행되도록 의존성을 추가했다(2026-09-22)
   useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
     AsyncStorage.getItem(FAB_HINT_DISMISSED_KEY).then((dismissedForever) => {
-      if (dismissedForever === 'true') return;
+      if (cancelled || dismissedForever === 'true') return;
       setShowFabHint(true);
-      fabHintAutoHideTimerRef.current = setTimeout(() => setShowFabHint(false), 15000);
     });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   const hideFabHint = useCallback(() => {
-    if (fabHintAutoHideTimerRef.current) {
-      clearTimeout(fabHintAutoHideTimerRef.current);
-      fabHintAutoHideTimerRef.current = null;
-    }
     setShowFabHint(false);
   }, []);
 
@@ -1582,6 +1588,68 @@ export default function TodayScreen() {
     router.push('/routine-form');
   }
 
+  // 예전엔 FAB를 탭하면 바로 루틴 추가로 이동했는데(2026-09-21), 헤더에 따로 있던
+  // 영상/일기/모음집/내 루틴 4개 버튼을 여기로 합치면서(2026-09-22) FAB를 탭하면 "루틴
+  // 추가"/"카테고리" 두 개의 작은 원(위성 버튼)이 위로 펼쳐지도록 바꿨다. "카테고리"를
+  // 누르면 그 4개 목록이 뜨는 바텀시트가 열린다
+  const fabExpandProgress = useSharedValue(0);
+  const [fabExpanded, setFabExpanded] = useState(false);
+  const [showCategoryMenu, setShowCategoryMenu] = useState(false);
+
+  // 펼침 효과가 스프링(통통 튀는 느낌)이라 과하다는 피드백(2026-09-22) — 튀지 않는
+  // 단순한 timing으로 바꾸고, 아래 위성 버튼의 확대/회전 폭도 같이 줄였다.
+  // ⚠️ setFabExpanded의 함수형 업데이터 안에서 fabExpandProgress.value를 같이 바꾸던 것을
+  // (부수효과가 업데이터 함수 안에 있어서 호출 횟수를 신뢰할 수 없었음) 지금 렌더의
+  // fabExpanded 값을 그대로 읽는 방식으로 단순화 — "처음 눌렀을 때만 이상하게 동작한다"는
+  // 신고(2026-09-22)의 유력한 원인 중 하나로 보고 정리
+  function toggleFabExpanded() {
+    const next = !fabExpanded;
+    setFabExpanded(next);
+    fabExpandProgress.value = withTiming(next ? 1 : 0, { duration: 160 });
+  }
+
+  const collapseFab = useCallback(() => {
+    setFabExpanded(false);
+    fabExpandProgress.value = withTiming(0, { duration: 160 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleAddRoutinePress() {
+    collapseFab();
+    openAddRoutine();
+  }
+
+  // "말로 루틴 추가하기" 배너(llmBanner)와 같은 목적지 — 아래쪽 배너는 남은 사용 횟수까지
+  // 보여주는 정보성 카드라 그대로 두고, FAB에서도 빠르게 갈 수 있게 위성 버튼을 추가한다
+  // (2026-09-22)
+  function handleLlmInputPress() {
+    collapseFab();
+    router.push('/llm-input');
+  }
+
+  function handleCategoryPress() {
+    collapseFab();
+    setShowCategoryMenu(true);
+  }
+
+  // 바텀시트가 닫히는 애니메이션과 다음 화면이 뜨는 애니메이션이 동시에 겹치면 버벅였다
+  // (2026-09-22, "+ 버튼 후 일기장 열 때 렉" 신고로 확인) — 시트를 먼저 완전히 닫고,
+  // 그 애니메이션이 끝난 뒤에 이동하도록 살짝 지연을 둔다
+  function navigateAfterCategoryMenuCloses(action: () => void) {
+    setShowCategoryMenu(false);
+    setTimeout(action, 300);
+  }
+
+  function goToCategory(pathname: '/videos' | '/presets' | '/my-routines') {
+    navigateAfterCategoryMenuCloses(() => router.push(pathname));
+  }
+
+  function goToTodayDiary() {
+    navigateAfterCategoryMenuCloses(() =>
+      router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })
+    );
+  }
+
   // ⚠️ Gesture.Tap().numberOfTaps(2) + requireExternalGestureToFail로 싱글탭/더블탭을
   // 구분하려던 첫 시도는 "+" 버튼을 누르는 순간 에러가 났다 — 이어서 그 relation 하나를
   // 지워봤는데도(2026-09-21 이전 수정) 여전히 에러가 남아있었다. react-native-gesture-handler의
@@ -1589,26 +1657,25 @@ export default function TodayScreen() {
   // 버리고 이 화면의 다른 제스처들처럼 단순한 방식으로 바꾼다: 탭 자체는 순수 JS 타이머로
   // "직전 탭과 300ms 안이면 더블탭"만 판정하고, 길게 누르기+드래그(fabPan)만 제스처로 처리해서
   // Race로 묶는다(사진일기 화면에서 이미 검증된 조합 — Gesture.Race(pan, ..., singleTap))
+  // ⚠️ "탭하면 메뉴 펼치기"로 바뀌기 전엔 싱글탭 액션(루틴 추가 이동)을 300ms 지연시켰다가
+  // 그사이 두 번째 탭이 없으면 실행하는 방식이었다 — 화면 전환이라 지연이 크게 안 느껴졌는데,
+  // 지금은 "그 자리에서 바로 펼쳐지는" 반응이라 이 지연이 그대로 "첫 클릭이 안 먹히는"
+  // 것처럼 느껴지고, 딜레이 중에 답답해서 급하게 다시 누르면 더블탭으로 판정돼 펼치기 자체가
+  // 취소되는 버그로 이어졌다(2026-09-22, "처음 눌렀을 때 이상하게 돌아가고 두 번째 눌러야
+  // 실행된다"로 확인) — 싱글탭은 지연 없이 즉시 펼치고, "300ms 안에 또 눌렀다"는 것만
+  // 감지해서 위치 초기화를 추가로 실행하는 방식으로 바꿨다(두 번 탭하면 펼침이 두 번
+  // 토글돼 도로 접히면서 위치도 초기화됨 — 원래 의도한 "두 번 탭 = 초기화" 결과는 그대로)
   const fabLastTapAtRef = useRef(0);
-  const fabPendingTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function handleFabTap() {
     const now = Date.now();
     const sinceLastTap = now - fabLastTapAtRef.current;
     fabLastTapAtRef.current = now;
+    toggleFabExpanded();
     if (sinceLastTap < 300) {
-      if (fabPendingTapTimerRef.current) {
-        clearTimeout(fabPendingTapTimerRef.current);
-        fabPendingTapTimerRef.current = null;
-      }
       fabLastTapAtRef.current = 0;
       resetFabPosition();
-      return;
     }
-    fabPendingTapTimerRef.current = setTimeout(() => {
-      fabPendingTapTimerRef.current = null;
-      openAddRoutine();
-    }, 300);
   }
 
   const fabPan = Gesture.Pan()
@@ -1617,6 +1684,7 @@ export default function TodayScreen() {
       fabDragStartX.value = fabTranslateX.value;
       fabDragStartY.value = fabTranslateY.value;
       runOnJS(hideFabHint)();
+      runOnJS(collapseFab)();
     })
     .onUpdate((e) => {
       const clamped = clampFabTranslate(
@@ -1642,6 +1710,53 @@ export default function TodayScreen() {
     transform: [{ translateX: fabTranslateX.value }, { translateY: fabTranslateY.value }],
   }));
 
+  // "+"를 눌렀을 때 살짝만 회전해서 펼쳐진 상태라는 힌트만 주는 정도로 — 45도까지 크게
+  // 돌리니 효과가 과하다는 피드백(2026-09-22)으로 18도로 줄임
+  const fabMainIconStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${fabExpandProgress.value * 18}deg` }],
+  }));
+  // 위성 버튼 세 개(루틴 추가·말로 루틴 추가하기·카테고리)는 FAB의 드래그 위치
+  // (fabTranslateX/Y)를 따라가며 각자 정해진 자리에 뜬다. 순서는 "제일 많이 쓸 걸
+  // FAB에서 가장 가깝게"라는 기준으로 정했다 — 카테고리가 가장 가깝고(먼저 손이 닿게),
+  // 말로 루틴 추가하기가 그 위, 루틴 추가가 맨 위(2026-09-22, 처음엔 반대 순서였는데
+  // "카테고리를 제일 많이 쓸 거니까 가장 가깝게"라는 요청으로 뒤집었다)
+  // ⚠️ 처음엔 translateY 자체를 fabExpandProgress로 곱해서 "FAB 위치에서부터 떠오르며
+  // 나타나는" 연출이었는데, 그러면 접혀 있을 때(progress=0) 위성 세 개가 전부 FAB와
+  // 똑같은 자리에 겹쳐 있게 되고, pointerEvents가 'none'→'auto'로 바뀌는 시점과 실제로
+  // 제자리로 다 떠오르는 시점 사이에 시간차가 생겨서, 그 짧은 순간 FAB를 눌러도 그
+  // 자리에 겹쳐 있던(맨 위 zIndex인) "카테고리" 위성이 대신 눌리는 버그가 있었다
+  // (2026-09-22, "+ 한 번 눌러선 안 되고 한 번 더 눌러야 카테고리가 열림"으로 확인) —
+  // 자리는 항상 고정해두고 scale만 애니메이션한다.
+  // ⚠️ opacity도 같이 애니메이션했었는데, 안드로이드의 elevation(그림자)은 View 자체의
+  // opacity 애니메이션과 같이 안 옅어지고 먼저 다 보여버리는 경우가 있어서 "그림자만
+  // 먼저 보이고 글자는 하얗게 비어 보인다"는 버그로 이어졌다(2026-09-22) — opacity
+  // 애니메이션을 없애고, 대신 fabExpanded가 true일 때만 위성을 아예 화면에 그리도록
+  // (JSX에서 조건부 렌더링) 바꿔서 "반투명하게 걸쳐 있는" 중간 상태 자체를 없앴다.
+  // 각 함수는 useAnimatedStyle에 직접 넘기는 워클릿 안에서 .value를 곧바로 읽는다 —
+  // 별도 헬퍼 함수를 거치면(이전 방식) reanimated가 의존성을 못 잡아서 첫 번째 갱신만
+  // 반영이 안 되는 것처럼 보이는 사례가 있어(2026-09-22) 각자 인라인으로 풀어썼다
+  const fabCategorySatelliteStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: fabTranslateX.value },
+      { translateY: fabTranslateY.value - (FAB_SIZE + 14) },
+      { scale: 0.85 + 0.15 * fabExpandProgress.value },
+    ],
+  }));
+  const fabLlmInputSatelliteStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: fabTranslateX.value },
+      { translateY: fabTranslateY.value - (FAB_SIZE + 14) * 2 },
+      { scale: 0.85 + 0.15 * fabExpandProgress.value },
+    ],
+  }));
+  const fabRoutineSatelliteStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: fabTranslateX.value },
+      { translateY: fabTranslateY.value - (FAB_SIZE + 14) * 3 },
+      { scale: 0.85 + 0.15 * fabExpandProgress.value },
+    ],
+  }));
+
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   // 이미 오늘 기록이 있는 트래킹 루틴은 기본으로 "기록됨" 표시만 보여주고, 이 Set에 들어있는
@@ -1651,9 +1766,15 @@ export default function TodayScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   // "리스트/타임라인" 탭을 두 번 연속 탭하면 그걸 오늘 탭 기본 화면으로 저장한다(2026-09-22) —
-  // 앱을 껐다 켜도 저장된 쪽이 먼저 보이게 AsyncStorage에 저장. 어느 쪽이 기본인지 표시하는
-  // 작은 원(●)도 같이 보여준다
+  // 앱을 껐다 켜도 저장된 쪽이 먼저 보이게 AsyncStorage에 저장
   const [defaultViewMode, setDefaultViewMode] = useState<'list' | 'timeline' | null>(null);
+  // 어느 쪽이 기본인지 표시하는 작은 원(●) — 처음엔 기본값인 동안 항상 떠 있었는데,
+  // "안 그래도 알고 있는데 계속 떠 있어서 거슬린다"는 피드백(2026-09-22)으로 변경:
+  // 이제는 두 번 탭해서 "방금 기본값으로 저장했다"는 걸 알려주는 용도로만, 그 순간에
+  // 잠깐(6초) 나타났다 사라진다. 앱 시작 시 저장된 기본값을 불러올 때는 안 뜬다
+  // (기본값을 "설정할 때"만 뜨는 게 목적이라 불러오기는 대상이 아님)
+  const [showDefaultDot, setShowDefaultDot] = useState<'list' | 'timeline' | null>(null);
+  const defaultDotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listTapAtRef = useRef(0);
   const timelineTapAtRef = useRef(0);
   useEffect(() => {
@@ -1675,6 +1796,9 @@ export default function TodayScreen() {
       setDefaultViewMode(mode);
       AsyncStorage.setItem(DEFAULT_VIEW_MODE_KEY, mode);
       hideViewModeHint();
+      setShowDefaultDot(mode);
+      if (defaultDotTimerRef.current) clearTimeout(defaultDotTimerRef.current);
+      defaultDotTimerRef.current = setTimeout(() => setShowDefaultDot(null), 6000);
     }
   }
   // "두 번 탭하면 기본 화면으로 저장된다"는 걸 모르면 발견하기 어려운 기능이라, 최초 1회
@@ -1682,11 +1806,17 @@ export default function TodayScreen() {
   // (흰 배경+주색 테두리), "닫기"/"다시 보지 않음" 포함(2026-09-22)
   const [showViewModeHint, setShowViewModeHint] = useState(false);
   const [dontShowViewModeHintAgain, setDontShowViewModeHintAgain] = useState(false);
+  // FAB 안내와 같은 이유(userId 의존성 추가, 2026-09-22)로 회원탈퇴 후 재가입해도 다시 뜨게 함
   useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
     AsyncStorage.getItem(VIEW_MODE_HINT_DISMISSED_KEY).then((dismissed) => {
-      if (dismissed !== 'true') setShowViewModeHint(true);
+      if (!cancelled && dismissed !== 'true') setShowViewModeHint(true);
     });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
   function hideViewModeHint() {
     setShowViewModeHint(false);
   }
@@ -2234,76 +2364,71 @@ export default function TodayScreen() {
         fabContainerWidth.value = e.nativeEvent.layout.width;
         fabContainerHeight.value = e.nativeEvent.layout.height;
       }}>
-      {/* 예전엔 가로 스크롤 칩이었는데, 언어에 따라 글자 길이가 달라지면(한글은 짧아서 꽉
-          차 보이고, 영어는 짧게 줄여도 남는 공간이 생겨 어중간해 보였음) 매번 다르게 보이는
-          문제가 있어서, 4등분 flex로 바꿔 화면 폭을 항상 꽉 채우도록 통일했다 */}
-      <View style={styles.headerButtonsRow}>
-        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/videos')}>
-          <Ionicons name="film-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText} numberOfLines={1}>
-            {t('today.video')}
-          </Text>
-        </AnimatedPressable>
-        <AnimatedPressable
-          style={styles.presetButton}
-          onPress={() => router.push({ pathname: '/diary-form', params: { date: formatLocalDate(new Date()) } })}>
-          <Ionicons name="book-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText} numberOfLines={1}>
-            {t('today.diary')}
-          </Text>
-        </AnimatedPressable>
-        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/presets')}>
-          <Ionicons name="albums-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText} numberOfLines={1}>
-            {t('today.presets')}
-          </Text>
-        </AnimatedPressable>
-        <AnimatedPressable style={styles.presetButton} onPress={() => router.push('/my-routines')}>
-          <Ionicons name="list-outline" size={14} color={accent} />
-          <Text style={styles.presetButtonText} numberOfLines={1}>
-            {t('today.myRoutines')}
-          </Text>
-        </AnimatedPressable>
-      </View>
+      {/* 예전엔 영상/일기/모음집/내 루틴 4개 버튼이 여기 가로로 나열돼 있었는데(2026-09-22),
+          FAB를 탭하면 펼쳐지는 "카테고리" 메뉴(showCategoryMenu)로 옮겨서 화면 위쪽을 더
+          깔끔하게 정리했다 */}
 
-      <View style={styles.viewModeTabs}>
-        <AnimatedPressable
-          style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
-          onPress={() => handleViewModeTap('list')}>
-          {defaultViewMode === 'list' && (
-            <View style={[styles.viewModeDefaultDot, viewMode === 'list' && styles.viewModeDefaultDotActive]} />
-          )}
-          <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
-            {t('today.list')}
-          </Text>
-        </AnimatedPressable>
-        <AnimatedPressable
-          style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
-          onPress={() => handleViewModeTap('timeline')}>
-          {defaultViewMode === 'timeline' && (
-            <View style={[styles.viewModeDefaultDot, viewMode === 'timeline' && styles.viewModeDefaultDotActive]} />
-          )}
-          <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
-            {t('today.timeline')}
-          </Text>
-        </AnimatedPressable>
-      </View>
-
-      {showViewModeHint && (
-        <View style={styles.viewModeHintWrap}>
-          <Text style={styles.viewModeHintText}>{t('today.viewModeHintText')}</Text>
-          <View style={styles.viewModeHintFooter}>
-            <AnimatedPressable onPress={() => setDontShowViewModeHintAgain((v) => !v)} hitSlop={8}>
-              <Text style={styles.viewModeHintCheckboxLabel}>
-                {dontShowViewModeHintAgain ? '☑' : '☐'} {t('today.dontShowAgain')}
-              </Text>
-            </AnimatedPressable>
-            <AnimatedPressable style={styles.viewModeHintCloseButton} onPress={closeViewModeHint} hitSlop={8}>
-              <Text style={styles.viewModeHintCloseText}>{t('today.close')}</Text>
-            </AnimatedPressable>
-          </View>
+      {/* 안내 배지가 뜨면 예전엔 아래 "말로 루틴하기" 배너를 밀어내렸는데(레이아웃 흐름에
+          끼어듦), 그 배너 위를 덮는 방식으로 바꿨다(2026-09-22) — position:'relative'인
+          이 래퍼를 기준으로 안내 배지를 절대위치로 얹어서, 배지가 뜨거나 사라져도 아래
+          배너 위치가 안 흔들리고 그 자리 그대로 배지가 덮었다 걷혔다 한다 */}
+      <View style={styles.viewModeTabsWrap}>
+        <View style={styles.viewModeTabs}>
+          <AnimatedPressable
+            style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
+            onPress={() => handleViewModeTap('list')}>
+            {showDefaultDot === 'list' && (
+              <View style={[styles.viewModeDefaultDot, viewMode === 'list' && styles.viewModeDefaultDotActive]} />
+            )}
+            <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
+              {t('today.list')}
+            </Text>
+          </AnimatedPressable>
+          <AnimatedPressable
+            style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
+            onPress={() => handleViewModeTap('timeline')}>
+            {showDefaultDot === 'timeline' && (
+              <View style={[styles.viewModeDefaultDot, viewMode === 'timeline' && styles.viewModeDefaultDotActive]} />
+            )}
+            <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
+              {t('today.timeline')}
+            </Text>
+          </AnimatedPressable>
         </View>
-      )}
+
+        {showViewModeHint && (
+          <View style={styles.viewModeHintWrap}>
+            {/* 한 문장씩 줄바꿈되던 게 길이감이 안 예뻐서, 항목마다 작은 점(•)을 붙인
+                목록 형태로 바꿨다(2026-09-22) — 문구 자체(today.viewModeHintText)는
+                \n으로 구분된 문자열 하나라 여기서 줄 단위로 나눠 렌더링한다.
+                ⚠️ 문장 속에서 실제 화면의 "작은 점"을 가리키는 기호로 처음엔 "●"를 써서
+                따로 작게+위로 올려 흉내 냈는데, 중첩 Text의 세로 위치를 css처럼 정확히
+                맞추기가 안드로이드/iOS 양쪽에서 안정적이지 않았다 — 대신 애초에 본문
+                글자와 같은 크기에서도 작고 세로 중심에 자연스럽게 놓이는 문자
+                "·"(middle dot)로 바꿔서, 별도 스타일 없이 문제 자체를 없앴다 */}
+            <View style={styles.viewModeHintList}>
+              {t('today.viewModeHintText')
+                .split('\n')
+                .map((line, index) => (
+                  <View key={index} style={styles.viewModeHintRow}>
+                    <Text style={styles.viewModeHintBullet}>•</Text>
+                    <Text style={styles.viewModeHintLine}>{line}</Text>
+                  </View>
+                ))}
+            </View>
+            <View style={styles.viewModeHintFooter}>
+              <AnimatedPressable onPress={() => setDontShowViewModeHintAgain((v) => !v)} hitSlop={8}>
+                <Text style={styles.viewModeHintCheckboxLabel}>
+                  {dontShowViewModeHintAgain ? '☑' : '☐'} {t('today.dontShowAgain')}
+                </Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.viewModeHintCloseButton} onPress={closeViewModeHint} hitSlop={8}>
+                <Text style={styles.viewModeHintCloseText}>{t('today.close')}</Text>
+              </AnimatedPressable>
+            </View>
+          </View>
+        )}
+      </View>
 
       {/* 그림자+테두리(ShadowCard)까지 통째로 눌림 애니메이션 대상에 포함시켜야 함 — 안쪽 배너만
           줄어들면 그 밖의 정적인 테두리/그림자가 그대로 남아 테두리 선처럼 비쳐 보임 */}
@@ -2454,17 +2579,30 @@ export default function TodayScreen() {
       {/* FAB를 길게 눌러 옮기고 두 번 탭하면 초기화된다는 안내 + "다시 보지 않음" 체크.
           설정 화면 회원탈퇴 안내(deleteAccountTooltip)와 같은 디자인으로 통일 — 배경은
           항상 불투명한 흰색으로 고정하고 테마 주색은 테두리·아이콘·글자·닫기 버튼에만 입혀서
-          어떤 테마색을 고르든 대비가 안정적으로 확보된다(2026-09-21). 15초 지나거나
-          다른 걸 해도 그대로 떠 있다가 시간이 지나면 자동으로 사라지고, "다시 보지 않음"을
-          체크하고 닫아야만 그다음부터 완전히 안 뜬다 */}
+          어떤 테마색을 고르든 대비가 안정적으로 확보된다(2026-09-21). 자동으로는 안 사라지고
+          "닫기"를 누르거나 FAB를 실제로 드래그하기 전까진 계속 떠 있다가, "다시 보지 않음"을
+          체크하고 닫아야만 그다음부터 완전히 안 뜬다(2026-09-22) */}
       {showFabHint && (
         <View style={styles.fabHintWrap} pointerEvents="box-none">
           <View style={styles.fabHintCard}>
             <View style={styles.fabHintHeaderRow}>
               <Ionicons name="move-outline" size={15} color={accent} style={styles.fabHintIcon} />
-              <Text style={styles.fabHintText}>
-                길게 눌러서 원하는 위치로 옮기고,{'\n'}두 번 탭하면 원래 위치로 돌아와요
-              </Text>
+              {/* 리스트/타임라인 안내처럼 행마다 View로 감싸서 점(•)을 붙였더니, 이 카드는
+                  가로폭이 내용에 맞춰 줄어드는(alignItems:'flex-end', 고정 left가 없음)
+                  구조라 안쪽 flex:1 Text의 너비가 제대로 안 잡혀서 줄바꿈이 10번 넘게
+                  되는 버그가 있었다(2026-09-22) — 리스트/타임라인 안내는 left/right로
+                  폭이 고정돼 있어서 괜찮았지만 이 카드는 구조가 달라서 같은 방식이 안
+                  맞았다. flexShrink는 안쪽 두 Text가 아니라 이 둘을 감싸는 열(column)
+                  View 하나에만 줘서(각 Text는 그 열의 폭을 그대로 물려받음) 너비 문제
+                  없이 두 줄 사이에 살짝 여백만 추가했다 */}
+              <View style={styles.fabHintTextColumn}>
+                <Text style={styles.fabHintText}>
+                  • 탭하면 루틴 추가·말로 루틴 추가하기·카테고리 메뉴가 펼쳐져요
+                </Text>
+                <Text style={[styles.fabHintText, styles.fabHintTextSpaced]}>
+                  • 길게 눌러서 원하는 위치로 옮기고, 두 번 탭하면 원래 위치로 돌아와요
+                </Text>
+              </View>
             </View>
             <View style={styles.fabHintDivider} />
             <View style={styles.fabHintFooter}>
@@ -2481,19 +2619,123 @@ export default function TodayScreen() {
         </View>
       )}
 
-      {/* "루틴 추가"를 화면 위쪽 헤더 버튼에서 오른쪽 아래 떠 있는 뱃지(FAB)로 옮김 — 화면
-          상단이 더 깔끔해지고, 엄지로 누르기도 더 편한 위치. borderRadius+그림자를 같은
-          View에 같이 주면 안드로이드에서 그림자가 안 보이는 문제가 있어서(ShadowCard와 동일한
-          이유) 그림자 전용 바깥 껍데기와 색+아이콘 담당 안쪽 버튼을 분리한다.
-          짧게 탭하면 루틴 추가, 길게 누른 채 끌면 원하는 자리로 이동(화면 밖으론 못 나감),
-          두 번 연속 탭하면 기본 위치로 초기화된다(2026-09-21) */}
+      {/* 예전엔 위성 버튼들을 항상 그려두고 opacity만 0→1로 애니메이션했는데, 안드로이드의
+          elevation(그림자)이 View의 opacity 애니메이션과 같이 옅어지지 않고 먼저 다 보여서
+          "그림자만 먼저 보이고 글자는 안 보인다"는 버그로 이어졌다(2026-09-22) — fabExpanded가
+          true일 때만 이 블록 전체(배경 판+위성 3개)를 아예 그리도록 바꿔서, 반투명하게
+          걸쳐 있는 중간 상태 자체를 없앴다. 위치로 떠오르는 효과는 그대로 있고, 확대(scale)
+          효과만 fabExpandProgress로 애니메이션한다 */}
+      {fabExpanded && (
+        <>
+          {/* 배경 전체에 투명한 판을 깔아서, 위성 버튼이 아닌 다른 곳을 눌러도 자연스럽게
+              접히게 한다 */}
+          <AnimatedPressable style={styles.fabBackdrop} onPress={collapseFab} />
+
+          {/* "카테고리" 위성 버튼 — 제일 많이 쓸 거라 FAB에 가장 가깝게(먼저 닿는 자리)
+              배치했다(2026-09-22). 영상/일기/모음집/내 루틴으로 가는 목록을 바텀시트로 연다 */}
+          <Animated.View style={[styles.fabSatelliteWrap, fabCategorySatelliteStyle]}>
+            <View style={styles.fabSatelliteLabel}>
+              <Text style={styles.fabSatelliteLabelText} numberOfLines={1}>
+                {t('today.category')}
+              </Text>
+            </View>
+            <AnimatedPressable style={styles.fabSatelliteButton} onPress={handleCategoryPress}>
+              <Ionicons name="grid-outline" size={20} color="#fff" />
+            </AnimatedPressable>
+          </Animated.View>
+
+          {/* "말로 루틴 추가하기" 위성 버튼 — 아래쪽 llmBanner와 같은 목적지(/llm-input)로
+              가는 지름길 */}
+          <Animated.View style={[styles.fabSatelliteWrap, fabLlmInputSatelliteStyle]}>
+            <View style={styles.fabSatelliteLabel}>
+              <Text style={styles.fabSatelliteLabelText} numberOfLines={1}>
+                {t('today.llmBanner')}
+              </Text>
+            </View>
+            <AnimatedPressable style={styles.fabSatelliteButton} onPress={handleLlmInputPress}>
+              <Ionicons name="sparkles-outline" size={20} color="#fff" />
+            </AnimatedPressable>
+          </Animated.View>
+
+          {/* "루틴 추가" 위성 버튼 — 가장 멀리(맨 위) 배치 */}
+          <Animated.View style={[styles.fabSatelliteWrap, fabRoutineSatelliteStyle]}>
+            <View style={styles.fabSatelliteLabel}>
+              <Text style={styles.fabSatelliteLabelText} numberOfLines={1}>
+                {t('today.addRoutine')}
+              </Text>
+            </View>
+            <AnimatedPressable style={styles.fabSatelliteButton} onPress={handleAddRoutinePress}>
+              <Ionicons name="add" size={22} color="#fff" />
+            </AnimatedPressable>
+          </Animated.View>
+        </>
+      )}
+
+      {/* 화면 위쪽에 따로 있던 영상/일기/모음집/내 루틴 4개 버튼과 "루틴 추가"를 이 FAB
+          하나로 합침(2026-09-22) — 짧게 탭하면 위 두 위성 버튼이 펼쳐지고, 길게 누른 채
+          끌면 원하는 자리로 이동(화면 밖으론 못 나감), 두 번 연속 탭하면 기본 위치로
+          초기화된다. borderRadius+그림자를 같은 View에 같이 주면 안드로이드에서 그림자가
+          안 보이는 문제가 있어서(ShadowCard와 동일한 이유) 그림자 전용 바깥 껍데기와
+          색+아이콘 담당 안쪽 버튼을 분리한다 */}
       <GestureDetector gesture={fabGesture}>
         <Animated.View style={[styles.fabShadowWrap, fabAnimatedStyle]}>
           <View style={styles.fabButton}>
-            <Ionicons name="add" size={24} color="#fff" />
+            <Animated.View style={fabMainIconStyle}>
+              <Ionicons name="add" size={24} color="#fff" />
+            </Animated.View>
           </View>
         </Animated.View>
       </GestureDetector>
+
+      {/* "카테고리" 위성 버튼을 누르면 뜨는 바텀시트 — 영상/일기/모음집/내 루틴 4개를
+          2x2 타일로 보여준다(2026-09-22, 예전엔 화면 위쪽에 가로로 나열된 버튼이었음).
+          animationType="slide"는 뒤로가기로 닫을 때 배경 어둡게 깔린 판까지 시트와 같이
+          아래로 밀려나가면서 그 판 잔상이 순간 시커먼 그림자처럼 보이는 문제가 있었다
+          (RN Modal의 slide는 배경+시트를 한 덩어리로 통째로 움직이기 때문) — 배경은 그대로
+          두고 밝기만 옅어지는 fade로 바꿔서 해결(2026-09-22) */}
+      <Modal
+        visible={showCategoryMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCategoryMenu(false)}>
+        <View style={styles.categoryMenuBackdropInner}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryMenu(false)} />
+          <View style={styles.categoryMenuSheet}>
+            <View style={styles.categoryMenuHeaderRow}>
+              <Text style={styles.categoryMenuTitle}>{t('today.category')}</Text>
+              <AnimatedPressable onPress={() => setShowCategoryMenu(false)} hitSlop={8}>
+                <Text style={styles.categoryMenuCloseText}>{t('today.close')}</Text>
+              </AnimatedPressable>
+            </View>
+            <View style={styles.categoryMenuGrid}>
+              <AnimatedPressable style={styles.categoryMenuTile} onPress={() => goToCategory('/videos')}>
+                <View style={styles.categoryMenuTileIcon}>
+                  <Ionicons name="film-outline" size={22} color={accent} />
+                </View>
+                <Text style={styles.categoryMenuTileText}>{t('today.video')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.categoryMenuTile} onPress={goToTodayDiary}>
+                <View style={styles.categoryMenuTileIcon}>
+                  <Ionicons name="book-outline" size={22} color={accent} />
+                </View>
+                <Text style={styles.categoryMenuTileText}>{t('today.diary')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.categoryMenuTile} onPress={() => goToCategory('/presets')}>
+                <View style={styles.categoryMenuTileIcon}>
+                  <Ionicons name="albums-outline" size={22} color={accent} />
+                </View>
+                <Text style={styles.categoryMenuTileText}>{t('today.presets')}</Text>
+              </AnimatedPressable>
+              <AnimatedPressable style={styles.categoryMenuTile} onPress={() => goToCategory('/my-routines')}>
+                <View style={styles.categoryMenuTileIcon}>
+                  <Ionicons name="list-outline" size={22} color={accent} />
+                </View>
+                <Text style={styles.categoryMenuTileText}>{t('today.myRoutines')}</Text>
+              </AnimatedPressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -2552,31 +2794,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 13,
     flexShrink: 0,
   },
-  headerButtonsRow: {
-    flexDirection: 'row',
-    marginHorizontal: 20,
-    marginBottom: 12,
-    gap: 8,
-  },
-  presetButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderColor: accent,
-    borderRadius: cardRadius,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-  },
-  // 언어를 바꾸면 글자 길이가 달라져서(영어 "Routines"가 한글 "내 루틴"보다 김) 4등분 폭에서
-  // 살짝 빠듯할 수 있어 폰트를 조금 작게 잡는다
-  presetButtonText: {
-    color: textMuted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
   fabShadowWrap: {
     position: 'absolute',
     right: 16,
@@ -2599,6 +2816,111 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     backgroundColor: accent,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // FAB를 탭해서 펼쳤을 때 배경 전체를 덮는 투명 판 — 다른 곳을 누르면 접히게 한다.
+  // fabButton(zIndex 20)이나 위성 버튼(zIndex 21)보다는 아래, 나머지 화면 내용보다는
+  // 위에 있어야 해서 그 사이 값을 준다
+  fabBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 19,
+  },
+  // 위성 버튼(루틴 추가/카테고리) 한 쌍을 감싸는 자리 — FAB와 같은 오른쪽 아래 기준점에서
+  // 시작해 애니메이션(fabRoutineSatelliteStyle/fabCategorySatelliteStyle)으로 떠오른다.
+  // 라벨(글자)이 왼쪽, 동그란 버튼이 오른쪽에 오도록 가로 배치
+  fabSatelliteWrap: {
+    position: 'absolute',
+    right: 16,
+    bottom: 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 21,
+  },
+  fabSatelliteLabel: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  fabSatelliteLabelText: {
+    color: accent,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  fabSatelliteButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  // "카테고리" 위성 버튼을 눌렀을 때 뜨는 바텀시트(영상/일기/모음집/내 루틴 4개)
+  categoryMenuBackdropInner: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  categoryMenuSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 32,
+  },
+  categoryMenuHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  categoryMenuTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  categoryMenuCloseText: {
+    color: accent,
+    fontSize: 14,
+  },
+  categoryMenuGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  categoryMenuTile: {
+    width: '47%',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: `${accent}33`,
+  },
+  categoryMenuTileIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: `${accent}1A`,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryMenuTileText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   // FAB 위에 떠서 "옮길 수 있다"고 알려주는 말풍선.
   // ⚠️ 진짜 원인을 여기서 찾았다(2026-09-21): 이 파일의 View는 '@/components/Themed'의
@@ -2643,12 +2965,17 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     marginRight: 8,
     marginTop: 1,
   },
-  fabHintText: {
+  fabHintTextColumn: {
     flexShrink: 1,
+  },
+  fabHintText: {
     color: accent,
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '600',
+  },
+  fabHintTextSpaced: {
+    marginTop: 6,
   },
   fabHintDivider: {
     height: StyleSheet.hairlineWidth,
@@ -2679,6 +3006,11 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: accent,
     fontSize: 12,
     fontWeight: '700',
+  },
+  // 안내 배지를 이 안에서 절대위치로 띄우기 위한 기준점(position:'relative') — 배지가
+  // 뜨고 사라져도 이 래퍼의 높이는 안 바뀌어서 아래(말로 루틴하기 배너)가 안 밀린다
+  viewModeTabsWrap: {
+    position: 'relative',
   },
   viewModeTabs: {
     flexDirection: 'row',
@@ -2711,11 +3043,15 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     backgroundColor: '#fff',
   },
   // "두 번 탭하면 기본 화면 저장" 안내 — FAB 안내(fabHint)와 같은 흰 배경+주색 테두리
-  // 디자인으로 통일. 리스트/타임라인 박스 바로 아래에 흐름대로(비고정) 배치한다(2026-09-22)
+  // 디자인으로 통일. 예전엔 리스트/타임라인 박스 바로 아래에 흐름대로 배치해서 뜰 때마다
+  // 아래 "말로 루틴하기" 배너를 밀어냈는데, 절대위치로 바꿔서 그 배너 위를 덮게
+  // 했다(2026-09-22) — viewModeTabsWrap 바로 아래(탭 높이만큼) 위치에서 시작
   viewModeHintWrap: {
-    marginHorizontal: 20,
-    marginTop: -6,
-    marginBottom: 12,
+    position: 'absolute',
+    top: 52,
+    left: 20,
+    right: 20,
+    zIndex: 20,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: accent,
@@ -2728,7 +3064,24 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     shadowRadius: 6,
     elevation: 6,
   },
-  viewModeHintText: {
+  // 안내 항목을 점(•) 목록으로 표시(2026-09-22) — 문장을 한 줄로 이어붙이면 줄바꿈되는
+  // 위치가 매번 달라져서 지저분해 보였는데, 항목별로 나눠서 각자 한 덩어리로 보이게 함
+  viewModeHintList: {
+    gap: 6,
+  },
+  viewModeHintRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  viewModeHintBullet: {
+    color: accent,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+  viewModeHintLine: {
+    flex: 1,
     color: accent,
     fontSize: 12,
     lineHeight: 17,
@@ -2746,17 +3099,19 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 11,
     opacity: 0.75,
   },
+  // FAB 안내의 "닫기" 버튼(fabHintCloseButton/Text)과 크기가 서로 달랐다는 피드백(2026-09-22)
+  // — 두 안내가 같은 디자인 계열이니 크기도 통일
   viewModeHintCloseButton: {
     backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: accent,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 999,
   },
   viewModeHintCloseText: {
     color: accent,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   viewModeTabActive: {

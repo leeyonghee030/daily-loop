@@ -35,6 +35,7 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withDelay,
+  withRepeat,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
@@ -268,9 +269,14 @@ const ROUTINE_SWITCH_TRACK_WIDTH = 36;
 const ROUTINE_SWITCH_TRACK_HEIGHT = 14;
 const ROUTINE_SWITCH_THUMB = 22;
 const ROUTINE_SWITCH_THUMB_TRAVEL = ROUTINE_SWITCH_TRACK_WIDTH - ROUTINE_SWITCH_THUMB;
-// 사진일기 사용법을 처음 한 번만 자동으로 띄웠는지 기록하는 기기 저장 키(계정 구분 없음 —
-// 다른 "한 번만 보여주는 안내" 문구들과 같은 방식)
-const PHOTO_DIARY_HELP_SEEN_KEY = 'photo-diary-help-seen';
+// 사진일기 사용법을 처음 한 번만 자동으로 띄웠는지 기록하는 저장 키.
+// ⚠️ 원래는 계정 구분 없이 기기 하나에 고정된 키였는데, 회원탈퇴 후 재가입해도 이전
+// 계정에서 이미 "봤다"고 기록된 값이 그대로 남아있어서 새 계정에서도 안내가 다시 안
+// 뜨는 문제가 있었다(2026-09-22, 오늘 탭 FAB/리스트·타임라인 안내에서도 겪은 것과 같은
+// 종류의 문제) — userId를 키에 포함시켜서 계정마다 "봤는지"를 따로 기억하도록 고쳤다
+function photoDiaryHelpSeenKey(userId: string) {
+  return `photo-diary-help-seen:${userId}`;
+}
 
 // 사진 블록의 "지금 렌더링 크기"를 계산 — 가로/세로를 손잡이로 따로 조절한 적이 있으면 그
 // 값을 쓰고, 아직 없으면(예전 데이터 포함) 균등 확대/축소 배율(scale)로부터 기본 크기를 계산한다
@@ -857,15 +863,33 @@ export default function PhotoDiaryFormScreen() {
 
   const shotRef = useRef<ViewShot>(null);
 
+  // 최초 1회 안내를 대충 보고 닫으면 나중에 "이거 어디서 다시 보지"하기 쉽다는 피드백
+  // (2026-09-22) — 이 화면에 들어올 때마다(날짜 상관없이 매번) ⓘ 아이콘이 옅어졌다 원래
+  // 색으로 돌아오는 걸 반복해서 "여기 누르면 안내가 있다"는 걸 짧게 알려준다. 약 4초
+  // 동안(1초 주기 4번)만 반복하고 저절로 멈춘다
+  const helpIconOpacity = useSharedValue(1);
+  useEffect(() => {
+    helpIconOpacity.value = withRepeat(
+      withSequence(withTiming(0.3, { duration: 500 }), withTiming(1, { duration: 500 })),
+      4,
+      false
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const helpIconAnimatedStyle = useAnimatedStyle(() => ({ opacity: helpIconOpacity.value }));
+
   // 뒤로가기 버튼 오른쪽에 사진일기 사용법 안내 버튼(ⓘ)을 헤더에 얹는다
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
         <AnimatedPressable onPress={() => setShowHelpModal(true)} hitSlop={10} style={{ marginRight: 12 }}>
-          <Ionicons name="information-circle-outline" size={22} color={accent} />
+          <Animated.View style={helpIconAnimatedStyle}>
+            <Ionicons name="information-circle-outline" size={22} color={accent} />
+          </Animated.View>
         </AnimatedPressable>
       ),
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation, accent]);
 
   const diaryQuery = useQuery({
@@ -971,7 +995,14 @@ export default function PhotoDiaryFormScreen() {
     draftRestoredRef.current = true;
     AsyncStorage.getItem(draftKey)
       .then((raw) => {
-        if (!raw) return;
+        if (!raw) {
+          // 이어갈 임시저장도, 기존 항목도 없으면 "완전히 새로 만드는" 경우다 — 일기 화면의
+          // "사진일기 만들기" 버튼을 눌러 들어온 다음 여기서 또 "사진일기 만들기"(사진 고르기
+          // 팝업 트리거 버튼)를 한 번 더 눌러야 하는 게 불편하다는 피드백(2026-09-22)으로,
+          // 이 경우엔 사진 찍기/불러오기 팝업을 곧바로 띄운다
+          if (!diaryQuery.data) setShowSourceModal(true);
+          return;
+        }
         const draft = JSON.parse(raw);
         if (draft.photoUri) setPhotoUri(draft.photoUri);
         if (draft.photoSource !== undefined) setPhotoSource(draft.photoSource);
@@ -1043,16 +1074,17 @@ export default function PhotoDiaryFormScreen() {
   // "루틴 고르기"든 어느 쪽을 먼저 쓰든 상관없이 캔버스에 처음 들어온 그 순간 한 번만
   const helpAutoCheckedRef = useRef(false);
   useEffect(() => {
-    if (!mode || helpAutoCheckedRef.current) return;
+    if (!mode || !userId || helpAutoCheckedRef.current) return;
     helpAutoCheckedRef.current = true;
-    AsyncStorage.getItem(PHOTO_DIARY_HELP_SEEN_KEY)
+    const helpSeenKey = photoDiaryHelpSeenKey(userId);
+    AsyncStorage.getItem(helpSeenKey)
       .then((seen) => {
         if (seen) return;
         setShowHelpModal(true);
-        AsyncStorage.setItem(PHOTO_DIARY_HELP_SEEN_KEY, '1').catch(() => {});
+        AsyncStorage.setItem(helpSeenKey, '1').catch(() => {});
       })
       .catch(() => {});
-  }, [mode]);
+  }, [mode, userId]);
 
   async function pickFromLibrary() {
     setIsBusy(true);

@@ -3,7 +3,7 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Switch } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -213,6 +213,9 @@ export default function SlotSettingsScreen() {
   }
 
   return (
+    // 안내문을 스크롤로 접는 것 외에, 화면 빈 곳을 탭해도 접히게 한다(2026-09-22, 다른
+    // 화면들과 같은 패턴)
+    <Pressable style={styles.pressableRoot} onPress={collapseAllHints}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -328,11 +331,15 @@ export default function SlotSettingsScreen() {
         </ShadowCard>
       ))}
     </ScrollView>
+    </Pressable>
   );
 }
 
 function createStyles(accent: string) {
   return StyleSheet.create({
+    pressableRoot: {
+      flex: 1,
+    },
     container: {
       flex: 1,
     },
