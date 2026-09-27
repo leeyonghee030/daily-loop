@@ -24,6 +24,18 @@ export class QuotaExceededError extends Error {
   }
 }
 
+// AI 호출 자체가 실패한 상태(네트워크/타임아웃/동시 사용자 몰림 등, 한도초과와는 다름).
+// "AI로 정확하게 분석"을 직접 눌러서 실패한 경우에만 UI에 안내를 띄우는 용도라, 그 자리에서
+// 바로 쓸 수 있게 이미 계산해둔 정규식 결과(regexDraft)를 같이 들고 다닌다(2026-09-27)
+export class LlmUnavailableError extends Error {
+  regexDraft: ParsedRoutineDraft;
+  constructor(regexDraft: ParsedRoutineDraft) {
+    super('llm_unavailable');
+    this.name = 'LlmUnavailableError';
+    this.regexDraft = regexDraft;
+  }
+}
+
 // 남은 LLM 호출 횟수 조회 (배너/입력화면 표시용)
 export async function fetchLlmQuota(): Promise<LlmQuota | null> {
   const { data, error } = await supabase.rpc('get_llm_quota');
@@ -36,7 +48,20 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
   const { data, error } = await supabase.functions.invoke('parse-routine', {
     body: { text },
   });
-  if (error) throw error;
+  if (error) {
+    // "사용자 몰림"으로 뭉뚱그리기 전에 실제 원인을 알아야 해서(2026-09-27), Edge Function이
+    // 반환한 본문(상태코드+detail)까지 최대한 읽어서 콘솔에 남긴다 — FunctionsHttpError는
+    // error.context가 그 응답의 Response 객체다(네트워크 자체가 끊긴 FunctionsFetchError는
+    // context에 본문이 없어서 이 시도가 조용히 실패하고 아래 catch로 빠짐)
+    try {
+      const context = (error as { context?: Response }).context;
+      const body = await context?.clone().json();
+      console.error('[parse-routine] 호출 실패', { name: error.name, status: context?.status, body });
+    } catch {
+      console.error('[parse-routine] 호출 실패(본문 읽기 불가)', error);
+    }
+    throw error;
+  }
   if (data?.quotaExceeded) throw new QuotaExceededError(data.limit ?? 0);
   const d = data?.draft;
   if (!d) throw new Error('LLM 응답에 draft가 없습니다.');
@@ -69,11 +94,24 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
 //   1) 정규식/키워드 사전으로 먼저 시도 → 성공하면 LLM 호출 안 함(횟수 차감 X)
 //   2) 애매한 경우(needsLlmFallback)만 Edge Function으로 LLM 호출
 // forceLlm: 사용자가 "AI로 정확하게 분석" 버튼을 눌렀을 때 — 정규식 결과와 무관하게 무조건 LLM 호출
+//
+// ⚠️ 사용자가 몰려서 AI 호출 자체가 실패할 때의 처리를 분리했다(2026-09-27):
+// - 자동 경로(forceLlm=false, 문장이 애매해서 자동으로 AI까지 넘어간 경우)는 사용자가 AI를
+//   콕 집어 요청한 게 아니므로, 실패해도 조용히 정규식 결과로 대체해서 그냥 진행한다(에러 화면 X)
+// - "AI로 정확하게 분석"을 직접 누른 경우(forceLlm=true)는 사용자가 명시적으로 AI 결과를
+//   기대한 거라, 대신 정규식으로 조용히 바꿔치기하면 안 되고 LlmUnavailableError를 던져서
+//   화면이 "지금 사용자가 많아 잠시 어려워요" 안내 + 재시도/정규식으로 진행 선택지를 보여주게 한다
 export async function parseRoutine(text: string, forceLlm = false, language: Language = 'ko'): Promise<ParseResult> {
   const regex = language === 'en' ? parseRoutineInputEn(text) : parseRoutineInput(text);
   if (!forceLlm && !regex.needsLlmFallback) {
     return { draft: regex, source: 'regex' };
   }
-  const { draft, remaining } = await parseWithLlm(text);
-  return { draft, source: 'llm', quotaRemaining: remaining };
+  try {
+    const { draft, remaining } = await parseWithLlm(text);
+    return { draft, source: 'llm', quotaRemaining: remaining };
+  } catch (err) {
+    if (err instanceof QuotaExceededError) throw err;
+    if (!forceLlm) return { draft: regex, source: 'regex' };
+    throw new LlmUnavailableError(regex);
+  }
 }

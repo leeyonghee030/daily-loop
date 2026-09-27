@@ -12,10 +12,10 @@ import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useTranslation } from '@/lib/language';
-import { fetchLlmQuota, parseRoutine, QuotaExceededError, type LlmQuota } from '@/lib/llm';
+import { fetchLlmQuota, parseRoutine, LlmUnavailableError, QuotaExceededError, type LlmQuota } from '@/lib/llm';
 import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
 
-type ErrorState = 'none' | 'quota' | 'error';
+type ErrorState = 'none' | 'quota' | 'error' | 'overloaded';
 
 // 화면을 벗어났다 뒤로가기로 돌아와도 마지막 입력을 복원하기 위한 모듈 스코프 저장소
 let persistedText = '';
@@ -56,6 +56,9 @@ export default function LlmInputScreen() {
   const [loadingMode, setLoadingMode] = useState<'none' | 'auto' | 'ai'>('none');
   const isLoading = loadingMode !== 'none';
   const [errorState, setErrorState] = useState<ErrorState>('none');
+  // "AI로 정확하게 분석"이 사용자 몰림 등으로 실패했을 때, 이미 계산해둔 정규식 결과를
+  // "정규식으로 진행" 버튼에서 바로 쓸 수 있게 들고 있는다
+  const [pendingRegexDraft, setPendingRegexDraft] = useState<ParsedRoutineDraft | null>(null);
 
   const quotaQuery = useQuery({
     queryKey: llmQuotaQueryKey,
@@ -81,7 +84,10 @@ export default function LlmInputScreen() {
     const trimmed = text.trim();
     if (!trimmed || isLoading) return;
     setLoadingMode(forceLlm ? 'ai' : 'auto');
-    setErrorState('none');
+    // 여기서 미리 setErrorState('none')으로 지웠다가 실패하면 다시 채워 넣던 게, "다시 시도"를
+    // 누르면 안내 박스가 사라졌다 나타났다 깜빡이는 것처럼 보이는 원인이었다(2026-09-27) —
+    // 성공하면 화면을 아예 벗어나고(router.push) 실패하면 catch에서 알맞은 상태로 바꿔주므로,
+    // 미리 지울 필요 없이 그대로 두면 같은 실패가 반복돼도 박스가 안 끊기고 계속 떠 있는다
     try {
       const result = await parseRoutine(trimmed, forceLlm, language);
       if (result.source === 'llm' && result.quotaRemaining !== undefined) {
@@ -96,6 +102,9 @@ export default function LlmInputScreen() {
     } catch (err) {
       if (err instanceof QuotaExceededError) {
         setErrorState('quota');
+      } else if (err instanceof LlmUnavailableError) {
+        setPendingRegexDraft(err.regexDraft);
+        setErrorState('overloaded');
       } else {
         setErrorState('error');
       }
@@ -106,6 +115,11 @@ export default function LlmInputScreen() {
 
   function goManualAdd() {
     router.replace('/routine-form');
+  }
+
+  function useRegexDraftInstead() {
+    if (!pendingRegexDraft) return;
+    router.push({ pathname: '/routine-form', params: draftToParams(pendingRegexDraft) });
   }
 
   // 한도 소진 상태 (4-13 요금제 안내)
@@ -163,7 +177,24 @@ export default function LlmInputScreen() {
             <AnimatedPressable style={styles.errorPrimaryButton} onPress={goManualAdd}>
               <Text style={styles.errorPrimaryButtonText}>{t('llmInput.addManually')}</Text>
             </AnimatedPressable>
-            <AnimatedPressable style={styles.secondaryButton} onPress={() => handleSubmit()}>
+            <AnimatedPressable style={styles.secondaryButton} onPress={() => handleSubmit()} disabled={isLoading}>
+              <Text style={styles.secondaryButtonText}>{t('llmInput.retry')}</Text>
+            </AnimatedPressable>
+          </View>
+        </View>
+      )}
+
+      {/* "AI로 정확하게 분석"을 직접 눌렀는데 사용자가 몰려서 실패한 경우 전용 안내(2026-09-27) —
+          위 일반 에러(errorState==='error')와 달리 "다시 시도"(같은 AI 재요청)와 "규칙 기반으로
+          진행"(이미 계산해둔 정규식 결과를 그대로 씀) 두 선택지를 준다 */}
+      {errorState === 'overloaded' && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorText}>{t('llmInput.overloadedBody')}</Text>
+          <View style={styles.errorButtons}>
+            <AnimatedPressable style={styles.errorPrimaryButton} onPress={useRegexDraftInstead}>
+              <Text style={styles.errorPrimaryButtonText}>{t('llmInput.useRegexInstead')}</Text>
+            </AnimatedPressable>
+            <AnimatedPressable style={styles.secondaryButton} onPress={() => handleSubmit(true)}>
               <Text style={styles.secondaryButtonText}>{t('llmInput.retry')}</Text>
             </AnimatedPressable>
           </View>
@@ -300,31 +331,45 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     lineHeight: 20,
     paddingHorizontal: 10,
   },
+  // 이 안내(errorBox)는 처음엔 어두운/빨간 배경이었는데, 앱의 다른 안내문(설정 화면
+  // 회원탈퇴 안내, FAB 안내 등)과 통일해서 흰 배경+주색 테두리, 글자는 무채색으로 바꿨다
+  // (2026-09-27) — 어떤 테마색을 고르든 대비가 안정적으로 확보된다
   errorBox: {
     marginTop: 20,
     padding: 14,
     borderRadius: cardRadius,
-    backgroundColor: 'rgba(255,107,107,0.1)',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: accent,
     gap: 12,
   },
   errorText: {
-    color: '#FF6B6B',
-    fontSize: 14,
+    color: '#222',
+    fontSize: 14 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
     lineHeight: 20,
   },
   errorButtons: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
     backgroundColor: 'transparent',
   },
+  // errorButtons가 flexDirection만 row이고 alignItems 지정이 없으면 기본값(stretch)이 적용돼
+  // 두 버튼이 서로 다른 높이로 늘어나고, 그 안의 글자는 위쪽에 붙어 세로 중심이 안 맞아
+  // 보였다(2026-09-27) — 버튼 자체에 center 정렬을 명시해서 높이가 달라도 글자가 항상
+  // 버튼 한가운데 오게 한다
   errorPrimaryButton: {
     backgroundColor: accent,
     borderRadius: cardRadius,
     paddingHorizontal: 18,
     paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   errorPrimaryButtonText: {
     color: '#fff',
+    fontFamily: fontKorean.fontFamily,
     fontWeight: '700',
   },
   secondaryButton: {
@@ -333,6 +378,8 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     borderRadius: cardRadius,
     paddingHorizontal: 16,
     paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   secondaryButtonText: {
     color: accent,

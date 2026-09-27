@@ -115,7 +115,11 @@ function RootLayoutNav() {
       return;
     }
 
-    if (session && !onboardingSeen && segments[0] !== 'onboarding') {
+    // 온보딩 마지막(테마/폰트/언어 고르기) 화면에서 "시작하기"를 누르면 바로 오늘 탭이 아니라
+    // 기능 소개 투어(feature-tour)로 먼저 이동한다 — 이때 아직 onboarding_completed는 true로
+    // 안 바뀐 상태(투어의 마지막 화면에서 markSeen 호출)라, feature-tour도 onboarding과 똑같이
+    // "아직 안 끝난 것으로 보고 리다이렉트하지 않을" 예외 화면으로 취급해야 한다(2026-09-27)
+    if (session && !onboardingSeen && segments[0] !== 'onboarding' && segments[0] !== 'feature-tour') {
       router.replace('/onboarding');
       return;
     }
@@ -136,6 +140,7 @@ function RootLayoutNav() {
           }}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
+          <Stack.Screen name="feature-tour" options={{ headerShown: false, gestureEnabled: false }} />
           <Stack.Screen name="login" options={{ headerShown: false }} />
           <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
           <Stack.Screen

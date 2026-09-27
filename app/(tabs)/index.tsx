@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   Dimensions,
   Keyboard,
   Modal,
@@ -13,6 +14,7 @@ import {
   TextInput,
   type DimensionValue,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Gesture, GestureDetector, Swipeable } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,8 +22,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { useToast } from '@/components/Toast';
 import { border, cardRadius, dangerMuted, fontMono, withAlpha } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
+import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useTranslation, type TranslationKey } from '@/lib/language';
 import { useAuth } from '@/lib/auth-context';
@@ -120,9 +124,12 @@ const EXPANDED_ROW_GAP = 4;
 // 한 번 늘렸는데도 여전히 붙어 보인다는 신고가 있어(2026-09-21) 한 번 더 늘림(위아래 각각 10px)
 const INSTANT_HOUR_HEIGHT = 54;
 // 아침/저녁처럼 루틴이 드문드문 있으면 그 사이 빈 시간대까지 전부 HOUR_HEIGHT만큼 그려서
-// 스크롤을 한참 해야 했음 — 루틴이 하나도 없는 시간대가 이만큼(시간) 연달아 이어지면
-// 한 덩어리로 압축해서 짧게 보여준다(COLLAPSED_GAP_HEIGHT)
-const MIN_EMPTY_HOURS_TO_COLLAPSE = 2;
+// 스크롤을 한참 해야 했음 — 루틴이 하나도 없는 시간대는 길이와 상관없이 전부 이 높이
+// 하나로 압축해서 짧게 보여준다(COLLAPSED_GAP_HEIGHT).
+// ⚠️ 예전엔 "2시간 이상 비어야만" 압축하고 1시간짜리 공백은 그대로 HOUR_HEIGHT(56px)로 뒀는데,
+// 그러면 1시간 공백(56px)이 오히려 3시간·10시간 공백(28px로 압축)보다 더 크게 보이는
+// 역전 현상이 생겨 일관성이 없어 보였다(2026-09-27) — 길이 조건을 없애고 빈 시간대는
+// 무조건 압축해서, 공백 길이와 무관하게 항상 같은 짧은 높이로 통일한다
 const COLLAPSED_GAP_HEIGHT = 28;
 
 // 시간대별로 실제 무엇이 있는지 분류 — 'full'은 실제 소요시간이 있는 루틴이 걸쳐있는 시간
@@ -130,9 +137,11 @@ const COLLAPSED_GAP_HEIGHT = 28;
 // 없으면 압축(collapse) 대상
 type HourKind = 'full' | 'instant';
 
-// 시간축 좌표 계산을 "빈 시간대 압축 + 시각체크 시간대 축소"까지 감안해서 한 곳에 모아둔 것.
-// 압축 안 하는 짧은 공백(1시간 이하)은 기존처럼 HOUR_HEIGHT로 그대로 둬서 평소 느낌을 유지한다
-type HourSegment = { hour: number; hourSpan: number; pixelHeight: number };
+// 시간축 좌표 계산을 "빈 시간대 압축 + 시각체크 시간대 축소"까지 감안해서 한 곳에 모아둔 것
+// isGap을 따로 두는 이유: 압축된 공백이 정확히 1시간짜리면 hourSpan도 1이 되어 실제 내용이
+// 있는 시간(마찬가지로 hourSpan:1)과 구분이 안 되므로, 렌더링에서 "시각 눈금+라벨" vs
+// "압축된 공백 띠"를 나눌 때 hourSpan 대신 이 값을 기준으로 삼는다(2026-09-27)
+type HourSegment = { hour: number; hourSpan: number; pixelHeight: number; isGap: boolean };
 
 function buildHourSegments(minHour: number, maxHour: number, hourKinds: Map<number, HourKind>): HourSegment[] {
   const segments: HourSegment[] = [];
@@ -140,18 +149,18 @@ function buildHourSegments(minHour: number, maxHour: number, hourKinds: Map<numb
   while (h < maxHour) {
     const kind = hourKinds.get(h);
     if (kind) {
-      segments.push({ hour: h, hourSpan: 1, pixelHeight: kind === 'instant' ? INSTANT_HOUR_HEIGHT : HOUR_HEIGHT });
+      segments.push({
+        hour: h,
+        hourSpan: 1,
+        pixelHeight: kind === 'instant' ? INSTANT_HOUR_HEIGHT : HOUR_HEIGHT,
+        isGap: false,
+      });
       h += 1;
       continue;
     }
     let runEnd = h;
     while (runEnd < maxHour && !hourKinds.has(runEnd)) runEnd += 1;
-    const runLength = runEnd - h;
-    if (runLength >= MIN_EMPTY_HOURS_TO_COLLAPSE) {
-      segments.push({ hour: h, hourSpan: runLength, pixelHeight: COLLAPSED_GAP_HEIGHT });
-    } else {
-      for (let i = h; i < runEnd; i++) segments.push({ hour: i, hourSpan: 1, pixelHeight: HOUR_HEIGHT });
-    }
+    segments.push({ hour: h, hourSpan: runEnd - h, pixelHeight: COLLAPSED_GAP_HEIGHT, isGap: true });
     h = runEnd;
   }
   return segments;
@@ -466,12 +475,14 @@ function TimelineView({
       if (!hourExactTimeLabel.has(endH2)) {
         hourExactTimeLabel.set(endH2, entry.range.end <= entry.range.start ? '24:00' : entry.range.end);
       }
-      // 끝나는 시각이 정각(예: 08:00)이면 그 루틴은 그 시(8시)를 실제로 전혀 차지하지
-      // 않아서 위 hourKinds 루프에 안 잡히고, 빈 시간대 압축 로직에 묻혀 끝 시각 라벨
-      // 자체가 안 보이는 버그가 있었다(2026-09-21, "07:00-08:00인데 시작만 나온다") —
-      // 그 시(hour)만 별도로 짧게(instant) 확보해서 압축 대상에서 빼고, 정확한 끝
-      // 시각이 항상 자기 칸을 갖고 보이게 한다
-      if (!hourKinds.has(endH2)) hourKinds.set(endH2, 'instant');
+      // ⚠️ 예전엔 끝나는 시각이 정각(예: 19:00)이면 그 시(19시)를 실제로 차지하는 루틴이
+      // 없어도 "그 시각 라벨을 보여줘야 한다"는 이유로 억지로 짧은 칸(instant) 하나를
+      // 예약해뒀었다(2026-09-21) — 그런데 그 바로 뒤가 진짜로 오래 비어있는 구간이면
+      // (예: 19:00에 끝나고 다음 루틴이 21:15 시작), 이 예약된 칸이 압축 대상에서 빠지면서
+      // "19:00~21:15 비었는데 안 짧게 보인다"는 버그로 이어졌다(2026-09-27) — 정확한 끝
+      // 시각은 hourExactTimeLabel에 남겨두되(그 시간이 다른 이유로 실제 내용 칸이 되면
+      // 그때 사용됨), 내용이 하나도 없는 시(hour)까지 억지로 예약하진 않아서 뒤에 이어지는
+      // 빈 구간과 자연스럽게 하나로 압축되게 한다
     }
   }
   if (showNowLine) hourKinds.set(Math.floor(nowMinutes / 60), 'full');
@@ -492,7 +503,7 @@ function TimelineView({
   {
     let cursor = 0;
     for (const seg of segments) {
-      if (seg.hourSpan === 1) instantSegmentTopByHour.set(seg.hour, cursor);
+      if (!seg.isGap) instantSegmentTopByHour.set(seg.hour, cursor);
       cursor += seg.pixelHeight;
     }
   }
@@ -770,8 +781,8 @@ function TimelineView({
         return segments.map((seg) => {
           const segTop = cursor;
           cursor += seg.pixelHeight;
-          // 루틴 있는 시간(또는 짧은 공백)은 기존처럼 매 정시마다 눈금선+시각 표시
-          if (seg.hourSpan === 1) {
+          // 루틴이 실제로 있는 시간만 매 정시마다 눈금선+시각 표시(공백은 길이 무관하게 전부 압축)
+          if (!seg.isGap) {
             // 이 시간에 시작하거나 끝나는 루틴이 있으면 정시("14:00") 대신 그 정확한 시각
             // ("14:15")을 축 라벨로 보여준다 — 정시 눈금 + 블록 시작 + 테마색 끝 표시까지
             // 숫자가 3~4개나 보여서 헷갈린다는 피드백으로, 끝 표시를 따로 안 두고 이 정시
@@ -798,12 +809,15 @@ function TimelineView({
           );
         });
       })()}
-
-      {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
       </View>
       </GestureDetector>
 
-      <View style={timelineStyles.blocksArea}>
+      {/* pointerEvents="box-none"이 없으면 이 View 자체가 (자식 블록이 없는 빈 구간까지 포함해서)
+          자기 영역 전체의 터치를 그냥 삼켜버려서, 그 아래 깔린 배경 탭 감지(collapseExpandedClustersTap)
+          레이어까지 터치가 전달이 안 됐다 — "+N 더보기로 펼친 뒤 빈 곳을 탭해도 안 접힌다"는
+          버그의 원인이었다(2026-09-27). box-none으로 자기 자신은 투명하게 두고 자식(블록)만
+          터치를 받게 한다 */}
+      <View style={timelineStyles.blocksArea} pointerEvents="box-none">
         {Array.from(clusterBlocks.entries()).map(([clusterId, clusterItems]) => {
           const totalCols = columns.get(clusterItems[0].key)?.totalCols ?? 1;
           const sortedItems = [...clusterItems].sort(
@@ -880,6 +894,13 @@ function TimelineView({
           );
         })}
       </View>
+
+      {/* 예전엔 이 선을 축(시간 눈금) 레이어 안에서 그렸는데, blocksArea(루틴 블록들)가 그
+          레이어보다 나중에 그려져 위에 얹히다 보니, 마침 지금 시각에 루틴이 진행 중이면 그
+          블록의 불투명 배경이 선을 완전히 가려서 "루틴이 없는 시간에만 보이고 루틴이 있는
+          시간엔 안 보인다"는 버그가 있었다(2026-09-27) — blocksArea보다 더 뒤(이 자리)에 얹어서
+          루틴이 있든 없든 항상 위에 보이게 한다 */}
+      {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
       </View>
       </ScrollView>
 
@@ -1340,6 +1361,9 @@ type ListRowProps = {
   swipeRefsRef: MutableRefObject<Record<string, Swipeable | null>>;
   swipeAutoCloseTimersRef: MutableRefObject<Record<string, ReturnType<typeof setTimeout>>>;
   trackingInputRefsRef: MutableRefObject<Record<string, TextInput | null>>;
+  selectMode: boolean;
+  isSelected: boolean;
+  onToggleSelect: (routine: Routine) => void;
   onEdit: (routine: Routine) => void;
   onToggleCheck: (routine: Routine) => void;
   onSkipToday: (routine: Routine) => void;
@@ -1370,6 +1394,9 @@ const ListRow = memo(function ListRow({
   swipeRefsRef,
   swipeAutoCloseTimersRef,
   trackingInputRefsRef,
+  selectMode,
+  isSelected,
+  onToggleSelect,
   onEdit,
   onToggleCheck,
   onSkipToday,
@@ -1389,6 +1416,13 @@ const ListRow = memo(function ListRow({
     <Swipeable
       ref={(instance) => {
         swipeRefsRef.current[item.id] = instance;
+      }}
+      enabled={!selectMode}
+      // onSwipeableOpen은 다 열리는 애니메이션(settle)이 끝난 뒤에야 불려서 진동이 한 박자
+      // 늦게 느껴졌다(2026-09-27) — 스와이프가 열림 기준선을 넘는 순간 바로 불리는
+      // onSwipeableWillOpen으로 옮겨서 스와이프 동작과 거의 동시에 느껴지게 한다
+      onSwipeableWillOpen={() => {
+        hapticLight();
       }}
       onSwipeableOpen={() => {
         clearTimeout(swipeAutoCloseTimersRef.current[item.id]);
@@ -1417,6 +1451,11 @@ const ListRow = memo(function ListRow({
         </View>
       )}>
       <View style={[styles.row, isNow && !flat && styles.rowHighlighted, flat && styles.rowFlat]}>
+        {selectMode && (
+          <View style={[styles.selectRowCheckbox, isSelected && styles.selectRowCheckboxChecked]}>
+            {isSelected && <Text style={styles.checkmark}>✓</Text>}
+          </View>
+        )}
         <View style={styles.timeColumn}>
           <Text style={styles.time} numberOfLines={1}>
             {timeLabel(item, t)}
@@ -1493,6 +1532,9 @@ const ListRow = memo(function ListRow({
             </>
           )
         ) : null}
+        {selectMode && (
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => onToggleSelect(item)} />
+        )}
       </View>
     </Swipeable>
   );
@@ -1506,6 +1548,7 @@ export default function TodayScreen() {
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
   const { t } = useTranslation();
+  const { show: showToast, toastNode } = useToast();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   // "+ 루틴 추가" FAB를 길게 눌러서 원하는 자리로 옮길 수 있게 한다(2026-09-21) — 화면 크기에
@@ -1604,6 +1647,7 @@ export default function TodayScreen() {
   // 신고(2026-09-22)의 유력한 원인 중 하나로 보고 정리
   function toggleFabExpanded() {
     const next = !fabExpanded;
+    hapticLight();
     setFabExpanded(next);
     fabExpandProgress.value = withTiming(next ? 1 : 0, { duration: 160 });
   }
@@ -1765,6 +1809,38 @@ export default function TodayScreen() {
   const [editingTrackingIds, setEditingTrackingIds] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
+  // 다중 선택 — 리스트 화면 전용(타임라인은 지원 안 함, 2026-09-27). "내 루틴" 화면과 같은
+  // 패턴(선택모드 토글 + 전체선택/일괄체크/오늘삭제)
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function toggleSelectMode() {
+    setSelectMode((prev) => !prev);
+    setSelectedIds(new Set());
+  }
+
+  // 다중 선택 중 안드로이드 뒤로가기를 누르면 오늘 탭이 이 앱의 루트 화면이라 그대로 앱이
+  // 꺼져버렸다(2026-09-27) — 선택모드가 켜져 있을 때만 뒤로가기를 가로채 선택모드부터
+  // 끄고, 그 다음 뒤로가기부터 원래 동작(앱 종료)이 되게 한다
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (!selectMode) return false;
+        toggleSelectMode();
+        return true;
+      });
+      return () => sub.remove();
+    }, [selectMode])
+  );
+
+  const toggleRowSelected = useCallback((routine: Routine) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(routine.id)) next.delete(routine.id);
+      else next.add(routine.id);
+      return next;
+    });
+  }, []);
   // "리스트/타임라인" 탭을 두 번 연속 탭하면 그걸 오늘 탭 기본 화면으로 저장한다(2026-09-22) —
   // 앱을 껐다 켜도 저장된 쪽이 먼저 보이게 AsyncStorage에 저장
   const [defaultViewMode, setDefaultViewMode] = useState<'list' | 'timeline' | null>(null);
@@ -1792,6 +1868,7 @@ export default function TodayScreen() {
     const isDoubleTap = now - tapAtRef.current < 300;
     tapAtRef.current = isDoubleTap ? 0 : now;
     setViewMode(mode);
+    if (mode === 'timeline' && selectMode) toggleSelectMode();
     if (isDoubleTap) {
       setDefaultViewMode(mode);
       AsyncStorage.setItem(DEFAULT_VIEW_MODE_KEY, mode);
@@ -2267,25 +2344,48 @@ export default function TodayScreen() {
     setTrackingInputs((prev) => ({ ...prev, [routineId]: text }));
   }, []);
 
-  // 체크박스를 빠르게 두 번 누르면, 첫 번째 요청의 서버 응답이 오기 전에 두 번째 요청이 "아직
-  // 체크 안 된 상태"인 completionsRef를 보고 또 새로 체크 요청을 보내서 같은 날짜에 중복 기록이
-  // 들어가려다 실패하고, 그 실패로 화면 상태가 꼬여 새로고침 전까지 계속 실패하는 문제가 있었음
-  // — 처리 중인 루틴 id를 기록해두고, 응답이 오기 전 같은 루틴에 대한 요청은 그냥 무시한다
+  // 트래킹 "기록삭제" 버튼을 빠르게 두 번 누르는 것만 막는 용도(아래 handleCancelTracking
+  // 전용) — 체크박스 쪽은 더 이상 이 가드를 안 쓴다(바로 아래 handleToggleCheck 주석 참고)
   const pendingToggleIdsRef = useRef<Set<string>>(new Set());
 
+  // ⚠️ 예전엔 이 함수도 pendingToggleIdsRef로 "서버 응답 오기 전엔 재탭 무시"했는데, 일괄
+  // 체크로 한 번에 여러 루틴을 요청하면 브라우저/RN의 동시 연결 수 제한 때문에 뒤쪽 요청들은
+  // 몇 초씩 대기열에 걸려있게 되고, 그동안 그 루틴들을 개별적으로 해제하려는 탭이 전부
+  // 조용히 무시돼 "많은 루틴이 취소가 안 된다"는 버그로 보였다(2026-09-27). 삭제가 이제
+  // (routine_id, completed_date) 기준이라 서버 응답을 기다리지 않고 바로바로 눌러도
+  // 안전해서, 이 함수에서는 그 대기 가드를 없애고 탭할 때마다 즉시 반영한다
   const handleToggleCheck = useCallback((routine: Routine) => {
-    if (pendingToggleIdsRef.current.has(routine.id)) return;
-    pendingToggleIdsRef.current.add(routine.id);
     const existing = completionsRef.current[routine.id] ?? null;
-    toggleCheckMutation.mutate(
-      { routineId: routine.id, existingId: existing?.id ?? null },
-      { onSettled: () => pendingToggleIdsRef.current.delete(routine.id) }
-    );
+    hapticSelection();
+    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null });
   }, []);
 
   const handleSkipToday = useCallback((routine: Routine) => {
     skipTodayMutation.mutate(routine.id);
   }, []);
+
+  // 다중 선택 일괄 작업(2026-09-27) — 체크형만 일괄 체크 가능(트래킹형은 값 입력이 필요해서 제외).
+  // 선택 안에 아직 안 한 것이 하나라도 있으면 그것들만 체크(이미 한 건 안 건드림), 선택된
+  // 체크형이 전부 이미 완료된 상태라면(direct 눌러도 대상이 없어 아무 반응 없던 버그, 2026-09-27)
+  // 그 전부를 반대로 해제하는 "일괄 체크취소"로 동작한다 — 버튼 하나가 상황에 따라 토글됨
+  function handleBulkCheck() {
+    const selectedCheckable = routines.filter((r) => selectedIds.has(r.id) && r.block_type === 'check');
+    const notDone = selectedCheckable.filter((r) => !completionsRef.current[r.id]);
+    const targets = notDone.length > 0 ? notDone : selectedCheckable;
+    targets.forEach((routine) => handleToggleCheck(routine));
+    toggleSelectMode();
+  }
+
+  function handleBulkSkipToday() {
+    const targets = routines.filter((r) => selectedIds.has(r.id));
+    targets.forEach((routine) => handleSkipToday(routine));
+    toggleSelectMode();
+    if (targets.length === 1) {
+      showToast(t('today.skippedTodaySingleToast'), accent);
+    } else if (targets.length >= 2) {
+      showToast(`${targets.length}${t('today.skippedTodayCountSuffix')}`, accent);
+    }
+  }
 
   // 트래킹 기록을 완전히 지운다(체크형의 "다시 눌러서 해제"에 해당) — 저장된 값 자체를 없애고
   // 싶을 때 쓰는 용도라, 값을 지우는 completion 삭제(toggleCheckCompletion의 delete 경로)를
@@ -2341,6 +2441,12 @@ export default function TodayScreen() {
     [router]
   );
 
+  // "일괄 체크" 버튼 라벨을 상황에 맞게 토글(2026-09-27) — 선택한 체크형이 전부 이미
+  // 완료 상태면 이 버튼을 누르는 순간 전부 해제되므로, 라벨도 "일괄 체크취소"로 미리 알려준다
+  const selectedCheckableRoutines = routines.filter((r) => selectedIds.has(r.id) && r.block_type === 'check');
+  const allSelectedCheckableDone =
+    selectedCheckableRoutines.length > 0 && selectedCheckableRoutines.every((r) => completions[r.id]);
+
   // flat=true면 "지금" 그룹 박스 안에 여러 개가 같이 들어있는 경우 — 그룹 박스 자체가 이미
   // 강조 테두리를 그려주므로 각 행은 자기만의 테두리 없이 밋밋하게(flat) 그린다
   if (todayQuery.isLoading) {
@@ -2373,27 +2479,37 @@ export default function TodayScreen() {
           이 래퍼를 기준으로 안내 배지를 절대위치로 얹어서, 배지가 뜨거나 사라져도 아래
           배너 위치가 안 흔들리고 그 자리 그대로 배지가 덮었다 걷혔다 한다 */}
       <View style={styles.viewModeTabsWrap}>
-        <View style={styles.viewModeTabs}>
-          <AnimatedPressable
-            style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
-            onPress={() => handleViewModeTap('list')}>
-            {showDefaultDot === 'list' && (
-              <View style={[styles.viewModeDefaultDot, viewMode === 'list' && styles.viewModeDefaultDotActive]} />
-            )}
-            <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
-              {t('today.list')}
-            </Text>
-          </AnimatedPressable>
-          <AnimatedPressable
-            style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
-            onPress={() => handleViewModeTap('timeline')}>
-            {showDefaultDot === 'timeline' && (
-              <View style={[styles.viewModeDefaultDot, viewMode === 'timeline' && styles.viewModeDefaultDotActive]} />
-            )}
-            <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
-              {t('today.timeline')}
-            </Text>
-          </AnimatedPressable>
+        <View style={styles.viewModeTabsRow}>
+          <View style={styles.viewModeTabs}>
+            <AnimatedPressable
+              style={[styles.viewModeTab, viewMode === 'list' && styles.viewModeTabActive]}
+              onPress={() => handleViewModeTap('list')}>
+              {showDefaultDot === 'list' && (
+                <View style={[styles.viewModeDefaultDot, viewMode === 'list' && styles.viewModeDefaultDotActive]} />
+              )}
+              <Text style={[styles.viewModeTabText, viewMode === 'list' && styles.viewModeTabTextActive]}>
+                {t('today.list')}
+              </Text>
+            </AnimatedPressable>
+            <AnimatedPressable
+              style={[styles.viewModeTab, viewMode === 'timeline' && styles.viewModeTabActive]}
+              onPress={() => handleViewModeTap('timeline')}>
+              {showDefaultDot === 'timeline' && (
+                <View style={[styles.viewModeDefaultDot, viewMode === 'timeline' && styles.viewModeDefaultDotActive]} />
+              )}
+              <Text style={[styles.viewModeTabText, viewMode === 'timeline' && styles.viewModeTabTextActive]}>
+                {t('today.timeline')}
+              </Text>
+            </AnimatedPressable>
+          </View>
+          {viewMode === 'list' && (
+            <AnimatedPressable
+              style={[styles.selectModeToggle, selectMode && styles.selectModeToggleActive]}
+              onPress={toggleSelectMode}
+              hitSlop={6}>
+              <Ionicons name={selectMode ? 'close' : 'checkbox-outline'} size={18} color={selectMode ? '#fff' : accent} />
+            </AnimatedPressable>
+          )}
         </View>
 
         {showViewModeHint && (
@@ -2467,7 +2583,54 @@ export default function TodayScreen() {
         </View>
       )}
 
-      {viewMode === 'timeline' ? (
+      {selectMode && viewMode === 'list' && (
+        <View style={styles.selectToolbar}>
+          <Text style={styles.selectToolbarCount}>
+            {selectedIds.size}
+            {t('myRoutines.selectedCountSuffix')}
+          </Text>
+          <AnimatedPressable
+            style={styles.selectToolbarButton}
+            onPress={() =>
+              setSelectedIds(selectedIds.size === routines.length ? new Set() : new Set(routines.map((r) => r.id)))
+            }>
+            <Text style={styles.selectToolbarButtonText}>
+              {selectedIds.size === routines.length ? t('myRoutines.deselectAll') : t('myRoutines.selectAll')}
+            </Text>
+          </AnimatedPressable>
+          <AnimatedPressable
+            style={styles.selectToolbarButton}
+            disabled={selectedIds.size === 0}
+            onPress={handleBulkCheck}>
+            <Text style={styles.selectToolbarButtonText}>
+              {allSelectedCheckableDone ? t('today.bulkUncheck') : t('today.bulkCheck')}
+            </Text>
+          </AnimatedPressable>
+          <AnimatedPressable
+            style={styles.selectToolbarButton}
+            disabled={selectedIds.size === 0}
+            onPress={handleBulkSkipToday}>
+            <Text style={styles.selectToolbarButtonText}>{t('today.bulkSkipToday')}</Text>
+          </AnimatedPressable>
+        </View>
+      )}
+
+      {/* 예전엔 이 둘을 삼항연산자로 조건부 렌더링해서, 리스트/타임라인을 오갈 때마다 안 보이는
+          쪽은 완전히 없어지고 보이는 쪽은 매번 처음부터 다시 마운트됐다 — 특히 타임라인은 블록마다
+          Swipeable(네이티브 제스처 핸들러)을 새로 만들어야 해서 전환할 때마다 눈에 띄게 버벅였다
+          (2026-09-27). 처음엔 둘 다 flex 형제로 두고 안 보이는 쪽만 display:'none'으로
+          치우는 방식을 시도했는데, 숨긴 쪽이 완전히 0이 안 되고 자기 몫의 공간을 계속 차지해서
+          보이는 쪽이 반 토막으로 눌려 보이는 버그가 있었다 — flex 분배에 기대는 대신, 공통
+          부모(flex:1) 하나 안에서 둘 다 절대위치(absoluteFillObject)로 정확히 같은 자리를
+          꽉 채우게 하고, 안 보이는 쪽만 투명(opacity:0)+터치 무시(pointerEvents:'none')로
+          숨긴다 — flex 계산과 완전히 무관해져서 이 문제 자체가 생길 수 없다 */}
+      <View style={{ flex: 1 }}>
+      <View
+        style={[
+          StyleSheet.absoluteFillObject,
+          { opacity: viewMode === 'timeline' ? 1 : 0 },
+        ]}
+        pointerEvents={viewMode === 'timeline' ? 'auto' : 'none'}>
         <TimelineView
           routines={routines}
           completions={completions}
@@ -2485,10 +2648,11 @@ export default function TodayScreen() {
           onBlurTracking={handleBlurTracking}
           repositionToken={repositionToken}
         />
-      ) : (
+      </View>
       <ScrollView
         ref={listScrollRef}
-        style={styles.list}
+        style={[styles.list, StyleSheet.absoluteFillObject, { opacity: viewMode === 'timeline' ? 0 : 1 }]}
+        pointerEvents={viewMode === 'timeline' ? 'none' : 'auto'}
         contentContainerStyle={routines.length === 0 ? styles.emptyContainer : undefined}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
         keyboardShouldPersistTaps="handled"
@@ -2542,6 +2706,9 @@ export default function TodayScreen() {
                       swipeRefsRef={swipeRefsRef}
                       swipeAutoCloseTimersRef={swipeAutoCloseTimersRef}
                       trackingInputRefsRef={trackingInputRefsRef}
+                      selectMode={selectMode}
+                      isSelected={selectedIds.has(item.id)}
+                      onToggleSelect={toggleRowSelected}
                       onEdit={handleEditRoutine}
                       onToggleCheck={handleToggleCheck}
                       onSkipToday={handleSkipToday}
@@ -2565,7 +2732,7 @@ export default function TodayScreen() {
             의도한 여유만큼 못 올라간다) */}
         {keyboardHeight > 0 && <View style={{ height: keyboardHeight + KEYBOARD_GROWTH_SAFETY_MARGIN }} />}
       </ScrollView>
-      )}
+      </View>
 
       {routines.length > 0 && (
         <View style={styles.summaryBar}>
@@ -2736,6 +2903,7 @@ export default function TodayScreen() {
           </View>
         </View>
       </Modal>
+      {toastNode}
     </View>
   );
 }
@@ -3012,14 +3180,33 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   viewModeTabsWrap: {
     position: 'relative',
   },
-  viewModeTabs: {
+  // 다중 선택 토글 버튼을 옆에 나란히 놓기 위한 행 — marginHorizontal/marginBottom을
+  // 여기로 옮기고, viewModeTabs는 flex:1로 남은 폭을 채운다(2026-09-27)
+  viewModeTabsRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     marginHorizontal: 20,
     marginBottom: 12,
+    gap: 8,
+  },
+  viewModeTabs: {
+    flex: 1,
+    flexDirection: 'row',
     borderRadius: cardRadius,
     backgroundColor: 'rgba(169, 196, 224, 0.08)',
     padding: 4,
     gap: 4,
+  },
+  selectModeToggle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(169, 196, 224, 0.08)',
+  },
+  selectModeToggleActive: {
+    backgroundColor: accent,
   },
   viewModeTab: {
     flex: 1,
@@ -3137,6 +3324,30 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   errorBannerText: {
     color: '#fff',
     fontSize: 16 + fontKorean.sizeAdjust,
+    fontFamily: fontKorean.fontFamily,
+  },
+  // "내 루틴" 화면의 다중선택 툴바(toolbarRow)와 같은 패턴(2026-09-27)
+  selectToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    gap: 12,
+    marginBottom: 8,
+  },
+  selectToolbarCount: {
+    fontSize: 12,
+    opacity: 0.6,
+    marginRight: 'auto',
+    fontFamily: fontKorean.fontFamily,
+  },
+  selectToolbarButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
+  selectToolbarButtonText: {
+    fontSize: 13,
+    color: accent,
+    fontWeight: '600',
     fontFamily: fontKorean.fontFamily,
   },
   holidayBanner: {
@@ -3304,6 +3515,21 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
+  },
+  // 다중 선택 모드 전용 체크박스(2026-09-27) — 오른쪽의 체크형 루틴용 checkbox와는 별개로,
+  // 항상 맨 왼쪽에 뜬다
+  selectRowCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  selectRowCheckboxChecked: {
+    backgroundColor: accent,
   },
   swipeActionsRow: {
     flexDirection: 'row',

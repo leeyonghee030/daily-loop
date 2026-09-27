@@ -48,6 +48,7 @@ import {
   formatLocalDate,
   routinesForDate,
   fetchAllRoutinesForCalendar,
+  fetchHolidaysInRange,
   fetchMonthData,
   fetchWeekData,
   toggleCheckCompletion,
@@ -288,6 +289,10 @@ type MonthCalendarSectionProps = {
   calendarTheme: object;
   onMonthChange: (date: DateData) => void;
   monthAccum: MonthData;
+  // 공휴일 표시만 monthAccum(useDeferredValue로 낮은 우선순위인 값)과 별개로 즉시 값을 받는다
+  // — 안 그러면 monthQuery(루틴 로딩 필요)가 끝나기 전엔 monthAccum 전체가 안 바뀌어서, 공휴일이
+  // 먼저 도착해도 그리드에 반영되는 게 그만큼 늦어 보였다(2026-09-27)
+  holidayDates: Record<string, true>;
   monthMemosAccum: Record<string, DateMemo[]>;
   monthDiaryAccum: Set<string>;
   monthPhotoDiaryAccum: Set<string>;
@@ -313,6 +318,7 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
   calendarTheme,
   onMonthChange,
   monthAccum,
+  holidayDates,
   monthMemosAccum,
   monthDiaryAccum,
   monthPhotoDiaryAccum,
@@ -330,8 +336,9 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
       const status = dateStr <= todayStr ? computeDayStatus(dateStr, monthAccum) : null;
       const memoColors = (monthMemosAccum[dateStr] ?? []).slice(0, 5).map((memo) => memo.color);
       const isDisabled = state === 'disabled';
-      // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외
-      const isHoliday = !isDisabled && !!monthAccum.holidayDates[dateStr];
+      // 공휴일이면 날짜 숫자를 주색으로 — 흐리게 처리되는 이전/다음 달 날짜는 예외.
+      // (deferred되는 monthAccum이 아니라 즉시 값인 holidayDates prop을 따로 사용)
+      const isHoliday = !isDisabled && !!holidayDates[dateStr];
       // 기본 줄 높이(46)는 5줄짜리 달 기준으로 맞춰져 있어서, 6줄이 필요한 달(예: 8월)은
       // 그대로 두면 총 높이가 MONTH_CALENDAR_HEIGHT를 넘어 마지막 줄이 잘려 보인다 —
       // 6줄인 달만 그 비율만큼 줄 높이를 줄여서 항상 같은 박스 안에 다 들어가게 한다
@@ -360,7 +367,7 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
         />
       );
     },
-    [monthAccum, monthMemosAccum, monthDiaryAccum, monthPhotoDiaryAccum, selectedDate, theme, todayStr, accent, styles, onSelectDate]
+    [monthAccum, holidayDates, monthMemosAccum, monthDiaryAccum, monthPhotoDiaryAccum, selectedDate, theme, todayStr, accent, styles, onSelectDate]
   );
 
   return (
@@ -453,19 +460,33 @@ export default function CalendarScreen() {
     queryFn: () => fetchAllRoutinesForCalendar(userId!),
     enabled: !!userId,
   });
+  // ⚠️ enabled에 calendarRoutinesQuery.data 도착 여부를 안 걸었더니, 캘린더 탭에 처음 들어올 때
+  // calendarRoutinesQuery와 monthQuery가 거의 동시에 시작되면서 monthQuery의 queryFn이 아직
+  // undefined인 calendarRoutinesQuery.data를 받아 fetchMonthData 내부에서 루틴 목록을 "또"
+  // 통째로 다시 조회하고 있었다(fetchRangeData의 `routines ?? await fetchAllRoutinesForCalendar(...)`
+  // 폴백) — 안 그래도 calendarRoutinesQuery가 같은 걸 따로 받아오는 중이라 완전히 중복 요청이었고,
+  // 그 안에서마저 그 요청이 끝난 뒤에야 완료기록/공휴일 3개를 순차로 더 받아와서 첫 진입이 유독
+  // 느렸다(2026-09-27). calendarRoutinesQuery가 먼저 끝나야 시작하게 묶어서 중복 요청을 없앤다
   const monthQuery = useQuery({
     queryKey: ['month-data', userId, year, month],
     queryFn: () => fetchMonthData(userId!, year, month, calendarRoutinesQuery.data),
-    enabled: !!userId && viewMode === 'month',
+    enabled: !!userId && viewMode === 'month' && !!calendarRoutinesQuery.data,
   });
   const weekQuery = useQuery({
     queryKey: ['week-data', userId, weekStart],
     queryFn: () => fetchWeekData(userId!, weekStart, calendarRoutinesQuery.data),
-    enabled: !!userId && viewMode === 'week',
+    enabled: !!userId && viewMode === 'week' && !!calendarRoutinesQuery.data,
   });
   // 메모/일기 표시는 부가 정보 — 월/주 각각 자기 범위만큼만 따로 쿼리한다(예전엔 전역
   // Map/Set에 "새로 불러온 범위만 교체"하는 방식으로 손으로 병합했었는데, 이제 범위별로
   // 쿼리 키가 다르니 react-query가 알아서 캐시를 나눠서 관리해준다)
+  // 루틴 목록과 무관하게 독립적으로, 최대한 빨리 따로 조회한다(monthQuery는 calendarRoutinesQuery가
+  // 끝나야 시작하지만 공휴일은 그걸 기다릴 이유가 없음, 2026-09-27)
+  const monthHolidaysQuery = useQuery({
+    queryKey: ['holidays', monthStart, monthEnd],
+    queryFn: () => fetchHolidaysInRange(monthStart, monthEnd),
+    enabled: viewMode === 'month',
+  });
   const monthMemosQuery = useQuery({
     queryKey: ['memos', userId, monthStart, monthEnd],
     queryFn: () => fetchMemosInRange(userId!, monthStart, monthEnd),
@@ -523,14 +544,22 @@ export default function CalendarScreen() {
     const data = monthQuery.data;
     if (data) {
       monthAccumRef.current = {
+        ...monthAccumRef.current,
         routines: data.routines,
         completionsByRoutine: mergeRangeNestedRecord(monthAccumRef.current.completionsByRoutine, data.completionsByRoutine, monthStart, monthEnd),
         skipDatesByRoutine: mergeRangeNestedRecord(monthAccumRef.current.skipDatesByRoutine, data.skipDatesByRoutine, monthStart, monthEnd),
-        holidayDates: mergeRangeRecord(monthAccumRef.current.holidayDates, data.holidayDates, monthStart, monthEnd),
+      };
+    }
+    // 공휴일은 monthQuery(루틴 로딩을 기다려야 함)가 아니라 독립적인 monthHolidaysQuery에서
+    // 채운다 — 도착하는 즉시(루틴 로딩과 무관하게) 반영해서 공휴일 표시가 더 빨리 뜨게 한다
+    if (monthHolidaysQuery.data) {
+      monthAccumRef.current = {
+        ...monthAccumRef.current,
+        holidayDates: mergeRangeRecord(monthAccumRef.current.holidayDates, monthHolidaysQuery.data, monthStart, monthEnd),
       };
     }
     return monthAccumRef.current;
-  }, [monthQuery.data, monthStart, monthEnd]);
+  }, [monthQuery.data, monthHolidaysQuery.data, monthStart, monthEnd]);
 
   // 체크/트래킹을 누르면 모달의 체크표시는 monthAccum이 바뀌자마자 그 즉시(높은 우선순위로)
   // 반영돼야 답답하지 않은데, 월간뷰 그리드(MonthCalendarSection)는 3개월치를 다시 계산해야 해서
@@ -937,12 +966,20 @@ export default function CalendarScreen() {
     setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
     setViewMode('month');
   }
+  // "주" 탭도 "월" 탭과 같은 원칙 — 예전에 보던 주가 아니라 항상 이번 주부터 보여준다(2026-09-27,
+  // "오늘로 이동" 버튼 대신 주/월 탭 자체가 각각 이번 주/이번 달로 리셋되길 원하는 요청으로 변경).
+  // 하단 탭을 눌러 캘린더로 돌아올 때 쓰는 tabPress 리스너와 같은 리셋 로직을 공유한다
+  function goToWeekView() {
+    setWeekStart(formatLocalDate(sundayOf(new Date())));
+    setViewMode('week');
+    scrollWeekToTodayRef.current();
+  }
   // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
   // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
   // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
   function handleViewModeSwipe(translationX: number) {
     if (translationX < -40) goToMonthView();
-    else if (translationX > 40) setViewMode('week');
+    else if (translationX > 40) goToWeekView();
   }
   // 위(탭 박스)와 아래(범례+그 밑 빈 공간) 두 군데에 같은 동작을 걸되, 하나의 제스처
   // 인스턴스를 두 GestureDetector에 같이 물리면 충돌할 수 있어 각자 따로 만든다(2026-09-21) —
@@ -967,7 +1004,7 @@ export default function CalendarScreen() {
         <View style={styles.viewModeTabs}>
           <AnimatedPressable
             style={[styles.viewModeTab, viewMode === 'week' && styles.viewModeTabActive]}
-            onPress={() => setViewMode('week')}>
+            onPress={goToWeekView}>
             <Text style={[styles.viewModeTabText, viewMode === 'week' && styles.viewModeTabTextActive]}>{t('calendar.week')}</Text>
           </AnimatedPressable>
           <AnimatedPressable
@@ -978,48 +1015,58 @@ export default function CalendarScreen() {
         </View>
       </GestureDetector>
 
-      {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
-          쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
-          캘린더가 차지할 세로 공간을 더 확보한다.
-          월간뷰는 요청으로 이 카드를 다시 숨긴다(2026-09-21) — 예전엔 범례 위치를 주간뷰와
-          맞추려고 두 모드 모두 보여줬지만, 월간뷰 높이는 이제 MONTH_CALENDAR_HEIGHT 고정값
-          하나로만 관리되므로 이 카드가 없어도 월간뷰 자체 높이는 안 흔들린다 */}
-      {viewMode === 'week' && (
-        <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
-          {bestStreakEver !== null && bestStreakEver > 0 ? (
-            <View style={styles.streakHeroRow}>
-              <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
-              <View style={styles.streakHeroNumRow}>
-                <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-                <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+      {/* 예전엔 월간뷰(MonthCalendarSection)/주간뷰를 각각 조건부 렌더링해서, 전환할 때마다
+          안 보이는 쪽은 없어지고 보이는 쪽은 매번 새로 마운트됐다 — 특히 월간뷰의 CalendarList는
+          최대 36개월치 날짜 칸을 커스텀 렌더링으로 미리 그려두는 무거운 컴포넌트라, 전환할
+          때마다 이걸 통째로 다시 만드느라 눈에 띄게 버벅였다(2026-09-27, 오늘 탭 리스트/타임라인
+          전환과 같은 원인). 오늘 탭과 같은 방식으로 고정 높이 하나(MONTH_GRID_HEIGHT — 두 모드가
+          이미 같은 높이가 되도록 위에서 계산해둔 값) 안에 둘 다 절대위치로 늘 마운트해두고,
+          안 보이는 쪽만 투명(opacity:0)+터치 무시(pointerEvents:'none')로 숨긴다 */}
+      <View style={{ height: MONTH_GRID_HEIGHT }}>
+        <View
+          style={[StyleSheet.absoluteFillObject, { opacity: viewMode === 'month' ? 1 : 0 }]}
+          pointerEvents={viewMode === 'month' ? 'auto' : 'none'}>
+          <MonthCalendarSection
+            height={MONTH_GRID_HEIGHT}
+            screenWidth={screenWidth}
+            calendarCursor={calendarCursor}
+            calendarTheme={calendarTheme}
+            onMonthChange={handleMonthChange}
+            monthAccum={deferredMonthAccum}
+            holidayDates={monthAccum.holidayDates}
+            monthMemosAccum={monthMemosAccum}
+            monthDiaryAccum={monthDiaryAccum}
+            monthPhotoDiaryAccum={monthPhotoDiaryAccum}
+            selectedDate={deferredSelectedDate}
+            theme={theme}
+            todayStr={todayStr}
+            accent={accent}
+            styles={styles}
+            onSelectDate={setSelectedDate}
+          />
+        </View>
+        <View
+          style={[StyleSheet.absoluteFillObject, { opacity: viewMode === 'week' ? 1 : 0 }]}
+          pointerEvents={viewMode === 'week' ? 'auto' : 'none'}>
+          {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
+              쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
+              캘린더가 차지할 세로 공간을 더 확보한다.
+              월간뷰는 요청으로 이 카드를 다시 숨긴다(2026-09-21) — 예전엔 범례 위치를 주간뷰와
+              맞추려고 두 모드 모두 보여줬지만, 월간뷰 높이는 이제 MONTH_CALENDAR_HEIGHT 고정값
+              하나로만 관리되므로 이 카드가 없어도 월간뷰 자체 높이는 안 흔들린다 */}
+          <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
+            {bestStreakEver !== null && bestStreakEver > 0 ? (
+              <View style={styles.streakHeroRow}>
+                <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
+                <View style={styles.streakHeroNumRow}>
+                  <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
+                  <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+                </View>
               </View>
-            </View>
-          ) : (
-            <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
-          )}
-        </ShadowCard>
-      )}
-
-      {viewMode === 'month' && (
-        <MonthCalendarSection
-          height={MONTH_GRID_HEIGHT}
-          screenWidth={screenWidth}
-          calendarCursor={calendarCursor}
-          calendarTheme={calendarTheme}
-          onMonthChange={handleMonthChange}
-          monthAccum={deferredMonthAccum}
-          monthMemosAccum={monthMemosAccum}
-          monthDiaryAccum={monthDiaryAccum}
-          monthPhotoDiaryAccum={monthPhotoDiaryAccum}
-          selectedDate={deferredSelectedDate}
-          theme={theme}
-          todayStr={todayStr}
-          accent={accent}
-          styles={styles}
-          onSelectDate={setSelectedDate}
-        />
-      )}
-      {viewMode === 'week' && (
+            ) : (
+              <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
+            )}
+          </ShadowCard>
         <View style={styles.weekContainer}>
           <View style={styles.weekHeader}>
             <AnimatedPressable onPress={() => shiftWeek(-7)} hitSlop={8}>
@@ -1132,7 +1179,8 @@ export default function CalendarScreen() {
             </View>
           )}
         </View>
-      )}
+        </View>
+      </View>
 
       {/* 범례 박스뿐 아니라 그 아래 화면 끝까지 남는 빈 공간까지 전부(flex:1) 스와이프
           영역으로 잡는다 — "달력 그리드/주간 칸(실제 탭 대상)만 빼고 나머지는 다 되게"라는

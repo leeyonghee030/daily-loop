@@ -8,7 +8,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const MODEL = "claude-haiku-4-5"; // 기획서: 비용 최적화용 소형 모델
+const MODEL = "claude-haiku-4-5-20251001"; // 기획서: 비용 최적화용 소형 모델
 
 const SYSTEM_PROMPT = `너는 한국어 루틴 문장을 구조화된 JSON으로 바꾸는 파서다.
 사용자가 자유롭게 적은 한 문장을 받아 루틴 1개의 초안으로 변환한다.

@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
+import { useToast } from '@/components/Toast';
 import { border, cardRadius, textMuted } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { useAuth } from '@/lib/auth-context';
@@ -58,6 +59,7 @@ export default function RoutineTrashScreen() {
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
   const { t, language } = useTranslation();
+  const { show: showToast, toastNode } = useToast();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
   const trashQueryKey = ['deleted-routines', userId] as const;
 
@@ -110,6 +112,7 @@ export default function RoutineTrashScreen() {
           routines: old.routines.filter((r) => r.preset_id !== preset.id),
         };
       });
+      showToast(t('routineTrash.restoredToast'), accent);
     },
     onError: () => setErrorMessage(t('routineTrash.errorRestore')),
   });
@@ -121,6 +124,7 @@ export default function RoutineTrashScreen() {
         if (!old) return old;
         return { ...old, routines: old.routines.filter((r) => r.id !== routine.id) };
       });
+      showToast(t('routineTrash.restoredToast'), accent);
     },
     onError: () => setErrorMessage(t('routineTrash.errorRestore')),
   });
@@ -407,6 +411,7 @@ export default function RoutineTrashScreen() {
           );
         })}
       </ScrollView>
+      {toastNode}
     </View>
   );
 }

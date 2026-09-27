@@ -148,6 +148,9 @@ export default function RoutineFormScreen() {
   const TRACKING_UNIT_PRESETS = useMemo(() => TRACKING_UNIT_KEYS.map((key) => t(key)), [t]);
   const params = useLocalSearchParams<{
     id?: string;
+    // "내 루틴"의 "복제" 버튼에서 넘어옴 — id는 안 주고 이 값만 준다. isEditing은 그대로
+    // false로 남아 저장 시 새 루틴으로 생성되고, 아래 로딩 로직만 이 루틴의 값을 불러와 채운다
+    duplicateFrom?: string;
     // LLM 미리보기에서 넘어온 프리필 값 (app/llm-input.tsx)
     title?: string;
     repeatType?: string;
@@ -158,8 +161,10 @@ export default function RoutineFormScreen() {
     blockType?: string;
     trackingUnit?: string;
   }>();
-  const { id } = params;
+  const { id, duplicateFrom } = params;
   const isEditing = Boolean(id);
+  const isDuplicating = !isEditing && Boolean(duplicateFrom);
+  const sourceRoutineId = id ?? duplicateFrom;
   const prefilled = useRef(false);
   const savedRef = useRef(false);
   const redirectingRef = useRef(false);
@@ -301,11 +306,11 @@ export default function RoutineFormScreen() {
   }, [favoritesQuery.isError]);
 
   const routineQuery = useQuery({
-    queryKey: ['routine', id],
-    queryFn: () => fetchRoutineById(id!),
-    enabled: !!id,
+    queryKey: ['routine', sourceRoutineId],
+    queryFn: () => fetchRoutineById(sourceRoutineId!),
+    enabled: !!sourceRoutineId,
   });
-  const isLoading = isEditing && routineQuery.isLoading;
+  const isLoading = Boolean(sourceRoutineId) && routineQuery.isLoading;
 
   const videoQuery = useQuery({
     queryKey: ['video', routineQuery.data?.video_id],
@@ -320,7 +325,7 @@ export default function RoutineFormScreen() {
   useEffect(() => {
     const routine = routineQuery.data;
     if (!routine) return;
-    setTitle(routine.title);
+    setTitle(isDuplicating ? `${routine.title} ${t('routineForm.duplicateSuffix')}` : routine.title);
     setBlockType(routine.block_type);
     setRepeatType(routine.repeat_type);
     setRepeatDays(routine.repeat_days ?? []);
@@ -342,7 +347,9 @@ export default function RoutineFormScreen() {
       setTimeMode('slot');
       setSlotId(routine.slot_id);
     }
-    if (routine.scheduled_date) {
+    // 1회성 루틴을 복제할 땐 예전 날짜를 그대로 들고 오면 헷갈리니(이미 지난 날짜일 수도 있음)
+    // 오늘 날짜 기본값을 그대로 둔다 — 필요하면 사용자가 직접 다시 고르면 됨
+    if (routine.scheduled_date && !isDuplicating) {
       setScheduledDate(new Date(routine.scheduled_date));
     }
   }, [routineQuery.data]);

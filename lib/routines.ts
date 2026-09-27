@@ -431,10 +431,16 @@ export async function toggleCheckCompletion(
   date: string = formatLocalDate(new Date())
 ): Promise<RoutineCompletion | null> {
   if (existingCompletionId) {
+    // id가 아니라 (routine_id, completed_date)로 지운다 — 낙관적 업데이트 중엔 이 id가 서버가
+    // 아직 안 준 임시값("optimistic-...")일 수 있어서, 그 값 그대로 id 컬럼(uuid)에 넣어
+    // 삭제를 시도하면 형식 오류로 실패해 "체크가 안 풀리는" 버그로 이어졌다(2026-09-27, 일괄
+    // 체크 후 빠르게 해제할 때 다발적으로 재현). (routine_id, completed_date)는 유니크 제약이라
+    // 항상 최대 한 행만 가리키므로 실제 완료기록의 진짜 id를 몰라도 안전하게 지울 수 있다
     const { error } = await supabase
       .from('routine_completions')
       .delete()
-      .eq('id', existingCompletionId);
+      .eq('routine_id', routineId)
+      .eq('completed_date', date);
     if (error) throw error;
     return null;
   }
@@ -658,6 +664,18 @@ export async function fetchAllRoutinesForCalendar(userId: string): Promise<Routi
   const { data, error } = await supabase.from('routines').select('*, slots(*)').eq('user_id', userId);
   if (error) throw error;
   return (data ?? []) as Routine[];
+}
+
+// 공휴일은 유저/루틴과 전혀 무관한 독립적인 데이터인데, fetchRangeData 안에 같이 묶여있으면
+// "루틴 목록을 먼저 다 받아와야만" 그 뒤에야 공휴일도 조회되는 구조라, 월 캘린더 첫 진입 시
+// 공휴일 표시가 루틴 로딩 속도에 발목 잡혀 늦게 떴다(2026-09-27) — calendar.tsx에서 이 함수를
+// 따로, 더 일찍 독립적으로 호출해서 공휴일만 먼저 빠르게 보이게 한다
+export async function fetchHolidaysInRange(rangeStart: string, rangeEnd: string): Promise<Record<string, true>> {
+  const { data, error } = await supabase.from('holidays').select('date').gte('date', rangeStart).lte('date', rangeEnd);
+  if (error) throw error;
+  const holidayDates: Record<string, true> = {};
+  for (const row of data ?? []) holidayDates[row.date] = true;
+  return holidayDates;
 }
 
 // routines를 안 넘기면(예: notifications.ts처럼 세션 캐시가 없는 1회성 호출) 직접 받아온다 —

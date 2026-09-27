@@ -39,7 +39,6 @@ import { border, cardRadius, textMuted } from '@/constants/theme';
 import { ACCENT_PRESETS, ACCENT_LABEL_KEYS, useAccentColorSetting } from '@/lib/accent-color';
 import { getFontPresets, useKoreanFontSetting } from '@/lib/korean-font';
 import { translate, useTranslation, type Language, type TranslationKey } from '@/lib/language';
-import { useOnboarding } from '@/lib/onboarding';
 
 const LANGUAGE_OPTIONS: { id: Language; labelKey: 'settings.languageKorean' | 'settings.languageEnglish' }[] = [
   { id: 'ko', labelKey: 'settings.languageKorean' },
@@ -61,16 +60,17 @@ export default function OnboardingScreen() {
   const [fontPresetId, setFontPresetId] = useState(defaultFontPresetId);
   const [previewLanguage, setPreviewLanguage] = useState<Language>(defaultLanguage);
   const fontPresets = useMemo(() => getFontPresets(previewLanguage), [previewLanguage]);
-  const { markSeen } = useOnboarding();
   const t = useMemo(() => (key: TranslationKey) => translate(previewLanguage, key), [previewLanguage]);
   const styles = useMemo(() => createStyles(accent), [accent]);
 
-  async function handleStart() {
+  // 온보딩 완료(markSeen)는 여기서 바로 안 하고 기능 소개 투어(feature-tour)의 마지막 화면에서
+  // 한다 — 안 그러면 이 화면 이후 "아직 온보딩 안 끝남" 리다이렉트 로직(app/_layout.tsx)이
+  // 투어를 건너뛰고 오늘 탭으로 보내버린다
+  function handleStart() {
     persistAccentColor(accent);
     persistFontPresetId(fontPresetId);
     persistLanguage(previewLanguage);
-    await markSeen();
-    router.replace('/(tabs)');
+    router.replace('/feature-tour');
   }
 
   return (
