@@ -42,6 +42,7 @@ import { fetchDiaryDatesInRange } from '@/lib/diary';
 import { fetchPhotoDiaryDatesInRange } from '@/lib/photo-diary';
 import { syncSlotAlarms } from '@/lib/notifications';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { hapticSelection } from '@/lib/haptics';
 import {
   computeDayStatus,
   fetchStats,
@@ -418,6 +419,24 @@ export default function CalendarScreen() {
   const [weekStart, setWeekStart] = useState(() => formatLocalDate(sundayOf(today)));
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 체크/트래킹 직후 화면 반영이 react-query 캐시 갱신 → 리렌더 경로를 거치면서 한 박자
+  // (체감상 1초 가까이) 늦게 보인다는 신고가 반복됐다(2026-09-28) — 그 경로가 정확히 왜 느린지와
+  // 무관하게, 여기서는 그 경로를 아예 거치지 않는 순수 로컬 state로 탭한 즉시 화면부터 확실히
+  // 바꾼다. key가 있으면 그 값으로 덮어쓰고, 서버 응답이 오거나 실패해서 진짜 값(캐시)으로
+  // 되돌아갈 때 그 routineId 키를 지워서 다시 진짜 값을 따라가게 한다
+  const [localOverride, setLocalOverride] = useState<Record<string, RoutineCompletion | null>>({});
+  // ⚠️ 임시 진단 로그(2026-09-28) — 실제로 리렌더/커밋이 언제 일어나는지 확인용. 원인 확인되면 지울 것
+  useEffect(() => {
+    console.log('[calendar-perf] localOverride 반영된 렌더 커밋', Date.now());
+  }, [localOverride]);
+  function clearLocalOverride(routineId: string) {
+    setLocalOverride((prev) => {
+      if (!(routineId in prev)) return prev;
+      const next = { ...prev };
+      delete next[routineId];
+      return next;
+    });
+  }
   const [memoText, setMemoText] = useState('');
   const [memoColor, setMemoColor] = useState<MemoColor>('yellow');
   // 날짜 상세 시트에서 트래킹형 루틴을 탭하면 숫자 입력창으로 바뀌는데, 그 입력창 상태
@@ -541,6 +560,9 @@ export default function CalendarScreen() {
     holidayDates: {},
   });
   const monthAccum = useMemo(() => {
+    // ⚠️ 임시 진단 로그(2026-09-28) — 체크/트래킹 반응이 계속 느리다는 신고가 반복돼서, 추측 대신
+    // 실제 기기에서 이 계산이 몇 ms 걸리는지 직접 측정한다. 원인 확인되면 지울 것
+    const __t0 = Date.now();
     const data = monthQuery.data;
     if (data) {
       monthAccumRef.current = {
@@ -550,6 +572,12 @@ export default function CalendarScreen() {
         skipDatesByRoutine: mergeRangeNestedRecord(monthAccumRef.current.skipDatesByRoutine, data.skipDatesByRoutine, monthStart, monthEnd),
       };
     }
+    console.log(
+      '[calendar-perf] monthAccum recompute',
+      Date.now() - __t0,
+      'ms, routineCount=',
+      Object.keys(monthAccumRef.current.completionsByRoutine).length
+    );
     // 공휴일은 monthQuery(루틴 로딩을 기다려야 함)가 아니라 독립적인 monthHolidaysQuery에서
     // 채운다 — 도착하는 즉시(루틴 로딩과 무관하게) 반영해서 공휴일 표시가 더 빨리 뜨게 한다
     if (monthHolidaysQuery.data) {
@@ -793,6 +821,10 @@ export default function CalendarScreen() {
   // 탭은 이미 낙관적 업데이트를 쓰고 있었는데 캘린더 쪽만 빠져있었다) — 결과를 기다리지 않고
   // 먼저 화면부터 바꾼 뒤, 서버 응답이 오면 진짜 값으로 다시 맞추고, 실패하면 원래대로 되돌린다
   async function handleToggleCompletionForDate(routineId: string, existingCompletionId: string | null, date: string) {
+    // ⚠️ 임시 진단 로그(2026-09-28) — 원인 확인되면 지울 것
+    const __tapStart = Date.now();
+    // 오늘 탭 체크박스와 달리 이 화면엔 진동이 아예 안 붙어있었다(2026-09-28 QA) — 같은 손맛을 위해 추가
+    hapticSelection();
     const monthKey = ['month-data', userId, year, month] as const;
     const weekKey = ['week-data', userId, weekStart] as const;
     const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion | null) => {
@@ -814,17 +846,29 @@ export default function CalendarScreen() {
     const optimisticResult: RoutineCompletion | null = existingCompletionId
       ? null
       : { id: `optimistic-${Date.now()}`, routine_id: routineId, completed_date: date, tracking_value: null };
-    queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
-    queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    // 지금 안 보고 있는 화면(월/주 중 하나)까지 매번 같이 갱신하면, 월간뷰는 몇 달치 데이터를
+    // 계속 누적해서 들고 있다가 매번 다시 병합하는 monthAccum 계산까지 딸려와서(위 monthAccum
+    // useMemo 참고) 지금 보이지도 않는 화면 때문에 탭 반응이 느려지는 느낌을 줬다(2026-09-28) —
+    // 지금 보이는 화면만 즉시(낙관적으로) 갱신하고, 안 보이는 쪽은 서버 응답이 돌아온 뒤
+    // 진짜 값으로 한 번만 맞춘다(그사이 그 화면으로 전환해도 어차피 그때 다시 조회된다)
+    const activeKey = viewMode === 'month' ? monthKey : weekKey;
+    queryClient.setQueryData(activeKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    // 위 캐시 갱신과 별개로, 날짜상세 모달은 이 로컬 override부터 즉시 따라가게 한다
+    // (localOverride 선언부 주석 참고 — 캐시 경로의 반영 지연과 무관하게 항상 즉시 반영 보장)
+    setLocalOverride((prev) => ({ ...prev, [routineId]: optimisticResult }));
+    console.log('[calendar-perf] optimistic set 완료, tap부터', Date.now() - __tapStart, 'ms');
 
     try {
       const result = await toggleCheckCompletion(routineId, existingCompletionId, date);
+      console.log('[calendar-perf] 서버 응답 도착, tap부터', Date.now() - __tapStart, 'ms');
       queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.invalidateQueries({ queryKey: ['stats', userId] });
+      clearLocalOverride(routineId);
     } catch {
       queryClient.setQueryData(monthKey, prevMonth);
       queryClient.setQueryData(weekKey, prevWeek);
+      clearLocalOverride(routineId);
       setErrorMessage(t('calendar.errorCheck'));
     }
   }
@@ -839,6 +883,7 @@ export default function CalendarScreen() {
       if (existingCompletionId) await handleToggleCompletionForDate(routineId, existingCompletionId, date);
       return;
     }
+    hapticSelection();
     const monthKey = ['month-data', userId, year, month] as const;
     const weekKey = ['week-data', userId, weekStart] as const;
     const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion) => {
@@ -858,17 +903,21 @@ export default function CalendarScreen() {
       completed_date: date,
       tracking_value: value,
     };
-    queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
-    queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    // 체크형과 같은 이유로(위 handleToggleCompletionForDate 주석 참고) 지금 보이는 화면만 즉시 갱신
+    const activeKey = viewMode === 'month' ? monthKey : weekKey;
+    queryClient.setQueryData(activeKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
+    setLocalOverride((prev) => ({ ...prev, [routineId]: optimisticResult }));
 
     try {
       const result = await saveTrackingValue(routineId, existingCompletionId, value, date);
       queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
       queryClient.invalidateQueries({ queryKey: ['stats', userId] });
+      clearLocalOverride(routineId);
     } catch {
       queryClient.setQueryData(monthKey, prevMonth);
       queryClient.setQueryData(weekKey, prevWeek);
+      clearLocalOverride(routineId);
       setErrorMessage(t('calendar.errorCheck'));
     }
   }
@@ -919,7 +968,16 @@ export default function CalendarScreen() {
 
   const todayStr = formatLocalDate(today);
 
-  const detail = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
+  // 메모 입력, 트래킹 입력값 등 이 화면 안의 다른 상태가 바뀔 때마다(모달과 무관해도) 매번
+  // 다시 계산되고 있었다 — selectedDate/activeData가 실제로 안 바뀌면 재사용한다(2026-09-28).
+  // localOverride에 값이 있는 루틴은(방금 탭해서 서버 응답을 기다리는 중) 캐시에서 온 값 대신
+  // 그 값을 우선한다 — 위 localOverride 선언부 주석 참고
+  const detail = useMemo(() => {
+    const base = selectedDate && activeData ? routinesForDate(selectedDate, activeData) : [];
+    return base.map((entry) =>
+      entry.routine.id in localOverride ? { ...entry, completion: localOverride[entry.routine.id] } : entry
+    );
+  }, [selectedDate, activeData, localOverride]);
   const selectedMemos = selectedDate ? activeMemosByDate[selectedDate] ?? [] : [];
 
   // 트래킹 입력 중 바깥을 탭하거나 목록을 스크롤하면 키보드를 내리면서 입력을 마무리한다 —
@@ -1217,7 +1275,11 @@ export default function CalendarScreen() {
           />
           {/* 트래킹 입력 중 바깥(리스트 빈 공간·헤더 등)을 탭하면 입력을 마무리하고 키보드를
               내린다 — 실제 버튼/행은 더 안쪽에 있는 자기 자신의 Pressable이 터치를 먼저
-              가져가므로 이 바깥 탭 처리와 안 부딪힌다(2026-09-21) */}
+              가져가므로 이 바깥 탭 처리와 안 부딪힌다(2026-09-21).
+              ⚠️ 2026-09-28: TouchableWithoutFeedback→Pressable 교체를 시도했는데, 검증도 안 된
+              상태에서 캘린더 배경이 회색으로 뜨고 박스가 따로 노는 새 레이아웃 버그가 나서
+              원복한다 — Pressable 쪽이 원인인지 100% 확정은 아니지만, 이 교체로 얻은 확실한
+              이득이 없었던(느낌 개선 미확인) 상태라 안전하게 되돌린다 */}
           <TouchableWithoutFeedback onPress={commitOrCancelTrackingEdit}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>

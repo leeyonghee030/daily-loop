@@ -445,9 +445,14 @@ export async function toggleCheckCompletion(
     return null;
   }
 
+  // 화면 갱신이 한 박자 늦게 보이는 동안(낙관적 업데이트가 렌더에 반영되기 전) 사용자가
+  // "체크가 안 된 줄 알고" 같은 루틴을 다시 눌러서, 같은 (routine_id, completed_date)로
+  // insert가 두 번 나가는 경우가 있었다 — 유니크 제약 위반으로 두 번째 요청이 실패해
+  // "체크 처리에 실패했어요" 에러가 뜨던 버그(2026-09-28). insert 대신 upsert를 써서, 이미
+  // 그 행이 있으면(방금 내 요청이든 다른 기기든) 에러 없이 있는 행을 그대로 반환하게 한다
   const { data, error } = await supabase
     .from('routine_completions')
-    .insert({ routine_id: routineId, completed_date: date })
+    .upsert({ routine_id: routineId, completed_date: date }, { onConflict: 'routine_id,completed_date' })
     .select()
     .single();
   if (error) throw error;
@@ -781,13 +786,14 @@ export async function saveTrackingValue(
     return data;
   }
 
+  // toggleCheckCompletion과 같은 이유(위 주석 참고)로 insert 대신 upsert — 중복 저장 시도가
+  // 유니크 제약 위반으로 실패하는 대신, 있는 행의 값을 최신 값으로 갱신한다
   const { data, error } = await supabase
     .from('routine_completions')
-    .insert({
-      routine_id: routineId,
-      completed_date: date,
-      tracking_value: value,
-    })
+    .upsert(
+      { routine_id: routineId, completed_date: date, tracking_value: value },
+      { onConflict: 'routine_id,completed_date' }
+    )
     .select()
     .single();
   if (error) throw error;
