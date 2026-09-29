@@ -694,8 +694,23 @@ export default function RoutineFormScreen() {
           <Text style={styles.favoriteHint}>{t('routineForm.favoriteHintLoad')}</Text>
         </>
       )}
-
-      <Text style={styles.label}>{t('favoriteForm.titleLabel')}</Text>
+      {/* "내 루틴" 목록 행에 바로 보이던 복제(📋) 아이콘이 항상 노출돼있어 보기 싫다는 피드백
+          (2026-09-30) — 목록에서는 빼고, 대신 그 루틴을 수정하러 들어온 이 화면에서만 보이게
+          옮겼다. 기존 "복제" 흐름(routine-form을 duplicateFrom 파라미터로 다시 열기)은 그대로
+          재사용. 처음엔 favoriteButton(가로 꽉 채우는 큰 버튼) 스타일 → 오른쪽 위 작은 칩으로
+          축소했는데, 그래도 혼자 한 줄을 다 차지해서 공간이 아깝다는 피드백(2026-09-30) — 제목
+          라벨과 같은 줄에 나란히 놓아서 별도 줄을 아예 안 쓰게 한다 */}
+      <View style={styles.titleLabelRow}>
+        <Text style={[styles.label, styles.titleLabelInRow]}>{t('favoriteForm.titleLabel')}</Text>
+        {isEditing && (
+          <AnimatedPressable
+            style={styles.duplicateButton}
+            onPress={() => router.push({ pathname: '/routine-form', params: { duplicateFrom: id } })}>
+            <Ionicons name="copy-outline" size={12} color={textMuted} />
+            <Text style={styles.duplicateButtonText}>{t('routineForm.duplicateButton')}</Text>
+          </AnimatedPressable>
+        )}
+      </View>
       <TextInput
         style={styles.input}
         value={title}
@@ -1099,6 +1114,36 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     opacity: 0.55,
     marginTop: 6,
     lineHeight: 16,
+  },
+  // 제목 라벨과 한 줄에 나란히 놓아서 이 버튼이 따로 줄을 안 쓰게 한다(2026-09-30)
+  titleLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  // label의 marginTop/marginBottom은 위 titleLabelRow가 대신 갖고 있으므로 안쪽 Text는 0으로 죽인다
+  titleLabelInRow: {
+    marginTop: 0,
+    marginBottom: 0,
+  },
+  // "이 루틴 복사" — 이 화면의 핵심 동작(저장)이 아니라서 테두리/배경 없이 아이콘+글자만 은은하게
+  // 보이는 링크 느낌으로 뺀다(2026-09-30, 테두리 있는 칩 → 더 단순하고 튀지 않게).
+  // ⚠️ AnimatedPressable은 내부적으로 자기만의 opacity 애니메이션 값을 style 배열 맨 뒤에
+  // 덧붙이는 구조라, 여기 opacity를 줘도 평소(안 눌렀을 때)엔 그 값(1)에 덮여 무시된다 —
+  // 대신 색 자체를 테마 강조색이 아닌 무채색(textMuted)으로 낮춰서 은은하게 만든다
+  duplicateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  duplicateButtonText: {
+    color: textMuted,
+    fontSize: 12,
+    fontWeight: '500',
   },
   switchRowLabelColumn: {
     flex: 1,

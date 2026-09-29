@@ -104,7 +104,6 @@ function RoutineRow({
   onToggleSelect,
   onDelete,
   onUnskip,
-  onDuplicate,
 }: {
   routine: Routine;
   selectMode: boolean;
@@ -114,7 +113,6 @@ function RoutineRow({
   onToggleSelect: () => void;
   onDelete: () => void;
   onUnskip: () => void;
-  onDuplicate: () => void;
 }) {
   // react-native-reorderable-list가 제공하는 훅 — 이 핸들을 길게 누르면 그 항목의 드래그가 시작됨
   const drag = useReorderableDrag();
@@ -149,11 +147,6 @@ function RoutineRow({
       {!selectMode && isSkippedToday && (
         <AnimatedPressable style={styles.unskipButton} onPress={onUnskip} hitSlop={8}>
           <Text style={styles.unskipButtonText}>{t('myRoutines.addToToday')}</Text>
-        </AnimatedPressable>
-      )}
-      {!selectMode && (
-        <AnimatedPressable style={styles.duplicateButton} onPress={onDuplicate} hitSlop={8}>
-          <Ionicons name="copy-outline" size={15} color={accent} />
         </AnimatedPressable>
       )}
       {!selectMode && (
@@ -724,7 +717,6 @@ export default function MyRoutinesScreen() {
                 onToggleSelect={() => toggleSelected(item.id)}
                 onDelete={() => handleDelete(item)}
                 onUnskip={() => handleUnskip(item)}
-                onDuplicate={() => router.push({ pathname: '/routine-form', params: { duplicateFrom: item.id } })}
               />
             )}
           />
@@ -1034,17 +1026,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     fontSize: 12,
     color: '#fff',
     fontWeight: '600',
-  },
-  // "복제" 버튼(2026-09-27) — 텍스트 버튼 대신 아이콘 하나로 좁게 만들어서, 삭제/오늘목록추가
-  // 버튼과 나란히 있어도 행이 너무 붐비지 않게 한다
-  duplicateButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: accent,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   unskipButton: {
     borderWidth: 1,

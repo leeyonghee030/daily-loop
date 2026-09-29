@@ -1,7 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
 import {
   ActivityIndicator,
   BackHandler,
@@ -13,6 +23,8 @@ import {
   StyleSheet,
   TextInput,
   type DimensionValue,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Gesture, GestureDetector, Swipeable } from 'react-native-gesture-handler';
@@ -312,6 +324,56 @@ function truncateTrackingUnit(unit?: string | null): string {
   return unit.length > TRACKING_UNIT_MAX_CHARS ? `${unit.slice(0, TRACKING_UNIT_MAX_CHARS)}...` : unit;
 }
 
+// 타임라인의 blocksArea(절대 위치 + pointerEvents="box-none" + ScrollView 중첩)는 일반 RN
+// Pressable 기반 터치(AnimatedPressable)가 응답자 체인을 못 잡고 탭을 그냥 흘려보내는 문제가
+// 있었다(2026-09-29, 여러 차례 확인함) — 반면 같은 자리의 "+N" 버튼(react-native-gesture-handler의
+// Gesture.Tap+GestureDetector)은 항상 정상 작동했다. blocksArea 안에서 탭이 필요한 요소는
+// 전부 이 방식으로 통일한다.
+// ⚠️ 2026-09-29 — 매 렌더마다 Gesture.Tap()을 새로 만들었더니, 탭 한 번에 onPress가 2~3번
+// 중복 호출되는 버그가 있었다(체크박스 진단 로그로 확인) — 탭 처리 도중 상태가 바뀌어 이
+// 컴포넌트가 다시 렌더링되면(예: setInfoRoutine으로 팝업이 뜸) 새 Gesture 객체가 만들어지는데,
+// 이때 이전 Gesture 객체의 네이티브 인식이 아직 안 끝난 상태였을 수 있어 둘 다 발동한 것으로
+// 추정된다. Gesture 객체 자체는 최초 1번만 만들고(useMemo), 최신 onPress는 ref로 참조해서
+// 재생성 없이도 항상 최신 콜백을 호출하도록 분리한다
+function GestureTapView({
+  onPress,
+  style,
+  hitSlop,
+  children,
+}: {
+  onPress: () => void;
+  style?: StyleProp<ViewStyle>;
+  hitSlop?: number;
+  children?: ReactNode;
+}) {
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+  const callOnPress = useCallback(() => {
+    onPressRef.current();
+  }, []);
+  const tap = useMemo(
+    () =>
+      Gesture.Tap()
+        .hitSlop(hitSlop ?? 0)
+        .onEnd((_e, success) => {
+          if (success) runOnJS(callOnPress)();
+        }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [callOnPress]
+  );
+  return (
+    <GestureDetector gesture={tap}>
+      {/* ⚠️ 2026-09-30 — components/Themed.tsx의 View는 style에 backgroundColor가 없으면
+          테마 기본 배경색(라이트 모드 흰색)을 자동으로 깔아버린다 — 이 컴포넌트는 여기저기서
+          단순 탭 영역으로 쓰이는데(제목/체크박스/트래킹값 등), 그 자리마다 의도치 않은 흰
+          배경이 깔려서 "지금" 시간대 주황 배경 위에 흰 박스로 튀어 보이는 원인이었다. 기본값을
+          투명으로 깔고 style을 그 위에 얹어서, 정말로 배경이 필요한 곳(예: blockCheckboxDone)만
+          style로 직접 지정하면 되게 한다 */}
+      <View style={[{ backgroundColor: 'transparent' }, style]}>{children}</View>
+    </GestureDetector>
+  );
+}
+
 // 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
 function TimelineView({
   routines,
@@ -329,6 +391,7 @@ function TimelineView({
   onFocusTracking,
   onBlurTracking,
   repositionToken,
+  isActive,
 }: {
   routines: Routine[];
   completions: Record<string, RoutineCompletion>;
@@ -345,49 +408,125 @@ function TimelineView({
   onFocusTracking: (routineId: string) => void;
   onBlurTracking: (routineId: string) => void;
   repositionToken: number;
+  // 오늘 탭이 리스트/타임라인을 항상 둘 다 마운트해두고 안 보이는 쪽만 투명+pointerEvents:'none'
+  // 으로 숨기는데(성능을 위해, 2026-09-27), 이 화면의 터치는 GestureTapView(react-native-
+  // gesture-handler 기반)라 pointerEvents='none'을 무시하고 숨겨져 있어도 계속 터치를 받을 수
+  // 있다(2026-09-30, 리스트 쪽 ListRow의 Swipeable에서 동일 증상 확인) — 리스트 화면을 보는
+  // 동안 타임라인이 안 보이게 숨어서도 반응하는 것(예: 간단안내 팝업이 엉뚱하게 뜸)을 막기 위해
+  // 이 값으로 직접 막는다
+  isActive: boolean;
 }) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
-  // 스와이프로 연 수정/기록삭제/오늘삭제 버튼을 오늘 탭 리스트뷰와 동일하게 2초 방치하면
-  // 자동으로 닫히게 한다(2026-09-21)
-  const swipeRefsRef = useRef<Record<string, Swipeable | null>>({});
-  const swipeAutoCloseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  // 배경(빈 자리) 탭 시 펼친 "+N 더보기" 목록을 접는다. 이 화면 블록들이 전부
-  // react-native-gesture-handler 기반 Swipeable이라, 일반 RN Touchable로는 터치를 못 받아서
-  // (2026-09-21) 같은 체계인 Gesture.Tap()으로 맞췄다.
-  // ⚠️ 처음엔 runOnJS(setExpandedClusters)(new Set())처럼 Set 인스턴스를 워클릿(UI 스레드)에서
-  // JS 스레드로 직접 건넸는데, "expandedClusters.has is not a function(undefined)" 렌더
-  // 에러가 났다 — Reanimated의 워클릿↔JS 브리지는 원시값/일반 객체만 안전하게 넘기고 Set 같은
-  // 내장 클래스 인스턴스는 제대로 안 넘어가는 것으로 보인다. new Set()을 JS 스레드 쪽 함수
-  // 안에서 직접 만들도록 바꿔서(인자로는 아무것도 안 넘김) 해결한다
-  function collapseExpandedClusters() {
-    setExpandedClusters(new Set());
+  // 오늘 탭 리스트뷰엔 트래킹 입력창이 키보드에 가려지면 자동으로 위로 스크롤해주는 기능이
+  // 있는데(TodayScreen의 scrollTrackingInputAboveKeyboard), 그건 리스트 전용 ScrollView(listScrollRef)만
+  // 스크롤하고 이 화면의 TextInput은 그 ref 목록에 등록조차 안 돼 있어서, 타임라인에서는 이
+  // 기능이 아예 동작한 적이 없었다(2026-09-30) — 같은 기능을 이 화면 전용으로 독립 구현한다
+  const trackingScrollYRef = useRef(0);
+  const focusedTrackingIdRef = useRef<string | null>(null);
+  const trackingInputRefsRef = useRef<Record<string, TextInput | null>>({});
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const keyboardScrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // renderBlock은 매 렌더마다 다시 실행되는 일반 함수라, TextInput의 ref 콜백을 그 자리에서
+  // 인라인으로 만들면 매번 다른 함수 참조가 되어 React가 매 렌더마다 "떼었다 다시 붙이는"(ref를
+  // null로 한 번 부르고 다시 인스턴스로 부름) 동작을 한다 — 이게 포커스 직후 원인 불명의 blur를
+  // 유발하는 것으로 의심돼(2026-09-30), 루틴 id별로 콜백 함수 자체를 캐싱해서 항상 같은 참조를
+  // 쓰게 한다
+  const trackingInputRefCallbacksRef = useRef<Record<string, (instance: TextInput | null) => void>>({});
+  function getTrackingInputRefCallback(routineId: string) {
+    if (!trackingInputRefCallbacksRef.current[routineId]) {
+      trackingInputRefCallbacksRef.current[routineId] = (instance) => {
+        trackingInputRefsRef.current[routineId] = instance;
+      };
+    }
+    return trackingInputRefCallbacksRef.current[routineId];
   }
-  function expandCluster(clusterId: number) {
-    setExpandedClusters((prev) => new Set(prev).add(clusterId));
-  }
-  // 기본 Tap은 손가락이 살짝만 움직여도(약 10px) "탭 실패"로 처리해서 안 접혔다 —
-  // 스크롤할 내용이 없어서 실제 스크롤(onScrollBeginDrag)이 안 걸리는 화면에서, 스크롤하듯
-  // 문지르기만 해도 접히길 원해서(2026-09-21) maxDistance를 넉넉히 늘려 손을 뗄 때까지는
-  // 계속 "탭"으로 인정되게 한다. 실제 스크롤이 되는 경우는 ScrollView가 이 제스처보다 먼저
-  // 드래그를 가져가므로(onScrollBeginDrag) 이 값이 커도 스크롤 자체를 방해하지 않는다
-  // ⚠️ 2026-09-28 원인 조사 — 3차례(Swipeable 제거/enabled=false/activeOffsetX 극단값) 전부
-  // "펼친 목록 안 제목·체크박스 탭이 JS까지 아예 안 옴" 실패로 끝남 — 블록 자체가 아니라 이
-  // 배경 탭(축/빈 공간 전체를 덮는 Gesture.Tap, maxDistance 200이라 인식 범위가 넓음)이 같은
-  // 좌표의 터치를 함께 인식해서 자식(블록)보다 먼저(또는 대신) 낚아채고 있을 가능성으로 재조사 —
-  // 펼쳐진 목록이 있는 동안만 이 배경 제스처를 꺼서 진짜 원인인지 확인한다(꺼도 "다른 블록
-  // 탭"/"스크롤"로 여전히 닫을 수 있어 기능 손실은 적음)
-  const collapseExpandedClustersTap = Gesture.Tap()
-    .maxDistance(200)
-    .enabled(expandedClusters.size === 0)
-    .onEnd((_e, success) => {
-      if (success) runOnJS(collapseExpandedClusters)();
+
+  // 리스트뷰(KEYBOARD_GROWTH_SAFETY_MARGIN=56)와 달리, 이 화면은 나중에 키보드가 더 커질
+  // 여지(자동완성 줄 등)를 그렇게 넉넉히 안 잡아도 돼서, 여유를 더 작게 둔다 — 이 값이 스크롤을
+  // 얼마나 "더" 당길지와, 스크롤을 다 당겼을 때 입력창 밑에 남는 빈 공간 크기를 같이 결정한다
+  // (여유가 클수록 밑에 남는 빈 공간도 그만큼 커 보인다, 2026-09-30 피드백으로 축소)
+  const TIMELINE_KEYBOARD_SAFETY_MARGIN = 16;
+
+  function scrollTrackingInputAboveKeyboard(routineId: string, keyboardHeightNow: number, attemptsLeft = 6): void {
+    const node = trackingInputRefsRef.current[routineId];
+    if (!node) return;
+    node.measureInWindow((_x, y, _width, height) => {
+      if (y === 0 && height === 0) {
+        if (attemptsLeft > 0) {
+          setTimeout(() => scrollTrackingInputAboveKeyboard(routineId, keyboardHeightNow, attemptsLeft - 1), 60);
+        }
+        return;
+      }
+      const screenHeight = Dimensions.get('window').height;
+      const visibleBottom = screenHeight - keyboardHeightNow - TIMELINE_KEYBOARD_SAFETY_MARGIN - 24;
+      const overlap = y + height - visibleBottom;
+      if (overlap > 0) {
+        scrollRef.current?.scrollTo({ y: Math.max(0, trackingScrollYRef.current + overlap), animated: true });
+      }
     });
+  }
+
+  useEffect(() => {
+    const handleKeyboardHeight = (height: number) => {
+      setKeyboardHeight(height);
+      const id = focusedTrackingIdRef.current;
+      if (!id || height <= 0) return;
+      if (keyboardScrollSettleTimerRef.current) clearTimeout(keyboardScrollSettleTimerRef.current);
+      keyboardScrollSettleTimerRef.current = setTimeout(() => {
+        keyboardScrollSettleTimerRef.current = null;
+        if (focusedTrackingIdRef.current === id) scrollTrackingInputAboveKeyboard(id, height);
+      }, 150);
+    };
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => handleKeyboardHeight(e.endCoordinates?.height ?? 0));
+    const changeFrameSub = Keyboard.addListener('keyboardDidChangeFrame', (e) =>
+      handleKeyboardHeight(e.endCoordinates?.height ?? 0)
+    );
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      changeFrameSub.remove();
+      hideSub.remove();
+      if (keyboardScrollSettleTimerRef.current) clearTimeout(keyboardScrollSettleTimerRef.current);
+    };
+  }, []);
+  // "+N 더보기"로 겹친 루틴 목록을 볼 땐 그 자리 바로 밑으로 펼쳐서 보여준다(인라인). 예전엔
+  // (2026-09-21~28) 이 방식이 renderBlock의 터치 처리(그때는 Swipeable→AnimatedPressable 순으로
+  // 바뀜)가 blocksArea 안에서 불안정해서 여러 번 실패했는데, 지금은 renderBlock이 GestureTapView
+  // (react-native-gesture-handler 기반)로 통일돼 있어 같은 자리에 겹쳐 그려도 zIndex만으로
+  // 정상적으로 눌린다(2026-09-29, 체크박스/제목 탭이 이 방식으로 이미 확인됨) — 별도 레이어
+  // (Modal/오버레이)로 빼는 시도를 이제 그만두고 원래 요청대로 인라인 확장으로 되돌린다
+  const [expandedClusterId, setExpandedClusterId] = useState<number | null>(null);
+  function toggleCluster(clusterId: number) {
+    if (!isActive) return;
+    setExpandedClusterId((prev) => (prev === clusterId ? null : clusterId));
+  }
+  function closeCluster() {
+    setExpandedClusterId(null);
+  }
+  // 안드로이드 뒤로가기 버튼으로도 닫히게 한다 — 펼쳐진 동안만 이벤트를 가로채 화면 이탈 대신 닫기만 한다
+  useEffect(() => {
+    if (expandedClusterId === null) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeCluster();
+      return true;
+    });
+    return () => sub.remove();
+  }, [expandedClusterId]);
   // 타임라인에서 루틴을 탭하면 바로 수정 화면으로 들어가던 걸, 실수로 잘못 눌러도 부담 없게
   // 먼저 간단한 정보만 보여주는 팝업으로 바꿨다 — 여기서 "수정"을 눌러야 실제 수정 화면으로 감
   const [infoRoutine, setInfoRoutine] = useState<Routine | null>(null);
+  // ⚠️ 2026-09-29 — 루틴을 한 번 탭했는데 간단안내 팝업이 뜨면서 동시에(또는 곧바로) "수정"
+  // 버튼까지 눌린 것처럼 처리되는 증상이 보고됨 — 팝업을 여는 탭과 팝업 위의 버튼을 누르는 탭이
+  // 물리적으로는 분명 별개의 터치인데, 안드로이드에서 Modal이 탭과 같은 프레임에 뜨면 그 자리의
+  // 터치가 새 Modal로 넘어가 버리는 사례가 있어(정확한 메커니즘은 미확정) 방어적으로, 팝업이
+  // 뜬 직후 아주 짧은 시간(250ms) 동안은 팝업 안 버튼(닫기/수정) 탭을 무시한다
+  const infoOpenedAtRef = useRef(0);
+  function showInfoRoutine(routine: Routine) {
+    infoOpenedAtRef.current = Date.now();
+    setInfoRoutine(routine);
+  }
   const accent = useAccentColor();
   const { t } = useTranslation();
   const koreanFont = useKoreanFont();
@@ -544,17 +683,18 @@ function TimelineView({
     clusterBlocks.get(clusterId)!.push(block);
   }
 
-  // 펼친 목록(+N)은 압축된 원래 자리보다 훨씬 아래까지 늘어나는데, 스크롤 가능한 전체 높이
-  // (totalHeight, 시간축 기준으로만 계산됨)는 그 늘어난 만큼을 모르고 있어서, 펼친 목록의
-  // 아랫부분이 스크롤 가능한 범위 밖으로 밀려나 "화면 밖"에 있는 것처럼 아예 닿지 않는 버그가
-  // 있었다(2026-09-28) — 지금 펼쳐진 클러스터들의 실제 하단 위치를 계산해서, 그중 가장 아래까지
-  // 스크롤 콘텐츠 높이를 늘려준다(시간축 계산인 totalHeight 자체는 건드리지 않는다)
+  // "+N 더보기"로 펼친 목록은 압축된 원래 자리보다 훨씬 아래까지 늘어나는데, 스크롤 가능한
+  // 전체 높이(totalHeight, 시간축 기준으로만 계산됨)는 그 늘어난 만큼을 모르고 있어서, 펼친
+  // 목록의 아랫부분이 스크롤 범위 밖으로 밀려나는 문제가 있었다(2026-09-28) — 지금 펼쳐진
+  // 클러스터의 실제 하단 위치를 계산해서 스크롤 콘텐츠 높이를 늘려준다
   let timelineScrollContentHeight = totalHeight;
-  for (const [clusterId, items] of clusterBlocks.entries()) {
-    if (!expandedClusters.has(clusterId) || items.length <= 1) continue;
-    const clusterTop = Math.min(...items.map((b) => b.top));
-    const expandedTotalHeight = items.length * ROW_HEIGHT + (items.length - 1) * EXPANDED_ROW_GAP;
-    timelineScrollContentHeight = Math.max(timelineScrollContentHeight, clusterTop + expandedTotalHeight);
+  if (expandedClusterId !== null) {
+    const items = clusterBlocks.get(expandedClusterId);
+    if (items && items.length > 1) {
+      const clusterTop = Math.min(...items.map((b) => b.top));
+      const expandedTotalHeight = items.length * ROW_HEIGHT + (items.length - 1) * EXPANDED_ROW_GAP;
+      timelineScrollContentHeight = Math.max(timelineScrollContentHeight, clusterTop + expandedTotalHeight);
+    }
   }
 
   // 화면을 처음 열 때(마운트), 그리고 다른 탭 갔다가 돌아왔을 때(repositionToken 증가) 매번
@@ -581,8 +721,13 @@ function TimelineView({
   }
 
   // 지금 시간대에 해당하는 블록은 색/밑줄로 눈에 띄게 강조.
-  // "더보기"로 펼친 블록(expanded)은 실제 시간 위치와 무관하게 겹쳐 그려지므로, 아래 깔린
-  // 다른 글자가 비치지 않도록 불투명한 카드로 그 자리를 가리고 글자색도 카드에 맞춰 고정한다
+  // ⚠️ 2026-09-29 — 여기서 Swipeable(react-native-gesture-handler)로 감싸서 스와이프 액션(수정/
+  // 오늘삭제)을 제공하던 게, 이 블록들이 놓인 자리(절대 위치 + pointerEvents="box-none" 부모)에서
+  // 제목/체크박스 탭 자체가 아예 안 먹히는 원인이었다 — Swipeable을 걷어내고 일반 View+Pressable로
+  // 바꿔서 해결했다. 대신 스와이프로 하던 "수정"은 제목 탭 → 간단안내 팝업의 "수정" 버튼으로,
+  // "오늘삭제"/"기록삭제"는 당분간 타임라인에서 빠지고 "내 루틴"/오늘 리스트뷰에서만 가능하다.
+  // "+N" 펼친 목록(zIndex 있는 경우)도 이 함수로 그린다 — Swipeable을 안 쓰는 일반 View라서
+  // 다른 블록과 겹쳐도 zIndex로 위에 그려지면 터치도 그대로 그 블록이 받는다(2026-09-29)
   function renderBlock(
     block: TimelineBlock,
     pos: {
@@ -591,53 +736,57 @@ function TimelineView({
       left: DimensionValue;
       width: DimensionValue;
       showTime: boolean;
-      expanded?: boolean;
       zIndex?: number;
+      // "+N"을 펼쳤을 때 나오는 줄이면 true — 이 줄을 눌러도 방금 편 그 목록 자체를 닫으면 안
+      // 되므로(여러 개를 이어서 체크하고 싶을 수 있음), "다른 블록을 누르면 펼친 목록이 닫힌다"
+      // 처리(아래 closeOverlayFirst)를 이 값으로 구분한다(2026-09-29)
+      isOverlayRow?: boolean;
     }
   ) {
     const routine = block.items[0].routine;
     const isInstant = block.items[0].isInstant;
     const isNowBlock = isNowWithinRange(block.items[0].range, isInstant);
-    const blockCompletion = completions[routine.id];
-    const isBlockDone = Boolean(blockCompletion);
-    // 배경(빈 자리) 탭으로만 "+N 더보기" 목록이 닫혀서, 다른 루틴을 눌러도 안 닫힌다는
-    // 피드백(2026-09-21) — 지금 펼쳐진 목록 소속이 아닌 블록을 누르면(체크/제목/트래킹 등
-    // 실제 동작과 함께) 그 목록도 같이 접는다. 펼쳐진 목록 "안"의 항목(pos.expanded)을 누를
-    // 땐 계속 그 목록을 보면서 여러 개 체크할 수 있어야 하므로 안 접는다
-    const collapseFirstIfNeeded = () => {
-      if (!pos.expanded && expandedClusters.size > 0) setExpandedClusters(new Set());
+    // 펼쳐진 목록 "안"의 줄이 아닌데 어떤 클러스터가 펼쳐져 있으면, 이 블록에 어떤 동작을
+    // 하든(체크/제목탭/트래킹 등) 먼저 그 목록부터 접는다 — 명시적 "접기" 버튼 없이 "다른
+    // 루틴을 누르면 닫힌다"를 만족시킨다(2026-09-29)
+    const closeOverlayFirst = () => {
+      if (!pos.isOverlayRow && expandedClusterId !== null) closeCluster();
     };
-    const innerContent = (
+    return (
       <View
+        key={block.key}
         style={[
           timelineStyles.block,
-          // Swipeable의 containerStyle이 이미 위치(top/left)와 크기(width/height)를 절대값으로
-          // 잡아주므로, 안쪽 블록은 그 안을 꽉 채우기만 하면 된다 — block 스타일에 남아있는
-          // position:'absolute'를 그대로 두면 이 View 자신은 크기 기준(top/left)이 없어 내용물
-          // 크기로 쪼그라들어서, 제목/시간/버튼이 한 지점에 겹쳐 보이는 버그가 있었다(2026-09-21)
-          timelineStyles.blockFill,
+          {
+            position: 'absolute',
+            top: pos.top,
+            height: pos.height,
+            left: pos.left,
+            width: pos.width,
+          },
+          pos.zIndex !== undefined && { zIndex: pos.zIndex, elevation: pos.zIndex },
           isNowBlock && timelineStyles.blockNow,
-          pos.expanded && timelineStyles.blockExpanded,
         ]}>
         {block.items.map(({ routine }, index) => {
           const completion = completions[routine.id];
           const isDone = Boolean(completion);
           return (
             <View key={routine.id} style={[timelineStyles.blockRow, isDone && timelineStyles.blockRowDone]}>
-              <AnimatedPressable
+              <GestureTapView
                 style={timelineStyles.blockContent}
                 onPress={() => {
-                  // ⚠️ 임시 진단 로그(2026-09-28) — 원인 확인되면 지울 것
-                  console.log('[timeline-click] 제목 탭', routine.title, routine.id, 'expanded=', pos.expanded);
-                  collapseFirstIfNeeded();
-                  setInfoRoutine(routine);
+                  if (!isActive) return;
+                  // ⚠️ 임시 진단 로그(2026-09-29) — 원인 확인되면 지울 것
+                  console.log('[tl-debug] 일반블록 제목 탭', routine.title, routine.id);
+                  closeOverlayFirst();
+                  showInfoRoutine(routine);
                 }}>
                 {pos.showTime && index === 0 && (
                   // 블록 안엔 시작 시각만 짧게 표시 — 끝나는 시각은 왼쪽 시간축의 해당 정시
                   // 라벨 자리를 그대로 대신해서 보여준다(hourExactTimeLabel 참고). 시각 체크(⏱)는
                   // 시작~끝이 있는 일반 시각형과 달리 "그 순간 하나"만 있다는 걸 알기 어려워서
                   // 이모지로 구분해준다
-                  <Text style={[timelineStyles.blockTime, pos.expanded && timelineStyles.blockTextExpanded]}>
+                  <Text style={timelineStyles.blockTime}>
                     {isInstant ? '⏱ ' : ''}
                     {formatTime(block.start)}
                   </Text>
@@ -647,122 +796,79 @@ function TimelineView({
                     timelineStyles.blockTitle,
                     isDone && timelineStyles.blockTitleDone,
                     isNowBlock && timelineStyles.blockTitleNow,
-                    pos.expanded && timelineStyles.blockTextExpanded,
                   ]}
                   numberOfLines={1}>
                   {routine.title}
                 </Text>
-              </AnimatedPressable>
+              </GestureTapView>
               {routine.video_id && (
-                <AnimatedPressable
+                <GestureTapView
                   hitSlop={6}
                   style={timelineStyles.blockPlayButton}
-                  onPress={() => onPlayVideo(routine.video_id!)}>
+                  onPress={() => {
+                    if (!isActive) return;
+                    closeOverlayFirst();
+                    onPlayVideo(routine.video_id!);
+                  }}>
                   <Text style={timelineStyles.blockPlayButtonText}>▶</Text>
-                </AnimatedPressable>
+                </GestureTapView>
               )}
               {routine.block_type === 'check' ? (
-                <AnimatedPressable
-                  hitSlop={8}
+                <GestureTapView
+                  hitSlop={16}
                   style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
                   onPress={() => {
-                    // ⚠️ 임시 진단 로그(2026-09-28) — 원인 확인되면 지울 것
-                    console.log('[timeline-click] 체크박스 탭', routine.title, routine.id, 'expanded=', pos.expanded);
-                    collapseFirstIfNeeded();
+                    if (!isActive) return;
+                    // ⚠️ 임시 진단 로그(2026-09-29) — 원인 확인되면 지울 것
+                    console.log('[tl-debug] 일반블록 체크박스 탭', routine.title, routine.id);
+                    closeOverlayFirst();
                     onToggleCheck(routine);
                   }}>
                   {isDone && <Text style={timelineStyles.blockCheckmark}>✓</Text>}
-                </AnimatedPressable>
+                </GestureTapView>
               ) : editingTrackingIds.has(routine.id) ? (
                 // 타임라인에선 그동안 값을 보여주기만 하고 실제로 적을 방법이 없었다(2026-09-21) —
                 // 오늘 탭 리스트뷰와 같은 입력 상태(trackingInputs 등)를 그대로 공유해서, 숫자
                 // 키패드의 "완료"를 누르면 저장되게 한다
                 <TextInput
+                  ref={getTrackingInputRefCallback(routine.id)}
                   style={timelineStyles.blockTrackingInput}
                   keyboardType="numeric"
                   value={trackingInputs[routine.id] ?? ''}
                   onChangeText={(text) => onChangeTrackingInput(routine.id, text)}
-                  onFocus={() => onFocusTracking(routine.id)}
-                  onBlur={() => onBlurTracking(routine.id)}
+                  onFocus={() => {
+                    focusedTrackingIdRef.current = routine.id;
+                    onFocusTracking(routine.id);
+                  }}
+                  onBlur={() => {
+                    // ⚠️ 2026-09-30 — 포커스 직후 알 수 없는 이유로 onBlur가 곧바로 한 번 더
+                    // 불려서(리렌더로 ref 콜백이 재부착되는 것과 겹치는 것으로 추정) 키보드가
+                    // 뜨는 시점엔 이미 focusedTrackingIdRef가 null이 되어 스크롤 보정이 아예 실행
+                    // 안 되는 버그가 있었다 — 여기서 null로 되돌리지 않고, 다음 입력창이 포커스될
+                    // 때 자연히 그 id로 덮어써지게만 둔다(블러 후 키보드가 완전히 내려가면 그냥
+                    // 아무 일도 안 일어나므로 안전함)
+                    onBlurTracking(routine.id);
+                  }}
                   onSubmitEditing={() => onSaveTracking(routine)}
                   placeholder="0"
                   autoFocus
                 />
               ) : (
-                <AnimatedPressable
+                <GestureTapView
                   onPress={() => {
-                    collapseFirstIfNeeded();
+                    if (!isActive) return;
+                    closeOverlayFirst();
                     onStartEditTracking(routine);
                   }}>
-                  <Text
-                    style={[timelineStyles.blockTrackingValue, pos.expanded && timelineStyles.blockTextExpanded]}>
+                  <Text style={timelineStyles.blockTrackingValue}>
                     {completion?.tracking_value ?? '-'} {truncateTrackingUnit(routine.tracking_unit)}
                   </Text>
-                </AnimatedPressable>
+                </GestureTapView>
               )}
             </View>
           );
         })}
       </View>
-    );
-
-    const absolutePos = {
-      position: 'absolute' as const,
-      top: pos.top,
-      height: pos.height,
-      left: pos.left,
-      width: pos.width,
-    };
-
-    // ⚠️ 2026-09-28 원인 조사 기록 — 진단 로그로 "펼친 목록 안에서는 onPress 자체가 전혀 안 불린다"는
-    // 걸 실제 기기에서 확인함(제목 탭/체크박스 탭 로그가 단 한 번도 안 찍힘) — 데이터 오류가
-    // 아니라 터치 전달 문제로 확정. 1차(Swipeable 제거→일반 View)는 blocksArea의
-    // pointerEvents="box-none" 통과 경로가 깨져서 실패, 2차(enabled={false})는 RNGH의 "비활성화된
-    // 핸들러가 터치 응답자 체인에 남아 오히려 막는" 함정으로 실패 — 이번엔 "비활성화"가 아니라
-    // "스와이프가 사실상 절대 활성화되지 않을 만큼 드래그 임계값을 늘려서 항상 실패 처리되게" 하는
-    // 방식으로 시도한다. PanGestureHandler가 "실패"하면 그 순간 잡고 있던 응답자 권한을 정상적으로
-    // 내려놓고 자식(TapGestureHandler→우리 onPress)에게 넘어가는 것이 RNGH의 정상 동작이라,
-    // "비활성화"보다 안전하게 통과될 가능성이 높다. Swipeable은 activeOffsetX를 내부적으로
-    // dragOffsetFromLeftEdge/RightEdge로 계산해서 PanGestureHandler에 넘기는데, 우리가 activeOffsetX를
-    // 직접 props로 주면 {...this.props} 스프레드 순서상 그 값이 그대로 덮어써진다(Swipeable.tsx 확인함)
-    return (
-      <Swipeable
-        key={block.key}
-        {...(pos.expanded ? { activeOffsetX: [-999999, 999999] as [number, number] } : null)}
-        ref={(instance) => {
-          swipeRefsRef.current[block.key] = instance;
-        }}
-        onSwipeableOpen={() => {
-          clearTimeout(swipeAutoCloseTimersRef.current[block.key]);
-          swipeAutoCloseTimersRef.current[block.key] = setTimeout(() => {
-            swipeRefsRef.current[block.key]?.close();
-          }, 1500);
-        }}
-        onSwipeableClose={() => {
-          clearTimeout(swipeAutoCloseTimersRef.current[block.key]);
-          delete swipeAutoCloseTimersRef.current[block.key];
-        }}
-        containerStyle={[absolutePos, pos.expanded ? { zIndex: pos.zIndex ?? 10, elevation: 4 } : null]}
-        overshootRight={false}
-        renderRightActions={() => (
-          <View style={timelineStyles.blockSwipeActionsRow}>
-            <AnimatedPressable style={timelineStyles.blockEditAction} onPress={() => onEdit(routine)}>
-              <Text style={timelineStyles.blockEditActionText}>{t('today.edit')}</Text>
-            </AnimatedPressable>
-            {routine.block_type === 'tracking' && isBlockDone && (
-              <AnimatedPressable
-                style={timelineStyles.blockCancelTrackingAction}
-                onPress={() => onCancelTracking(routine)}>
-                <Text style={timelineStyles.blockEditActionText}>{t('today.cancelRecord')}</Text>
-              </AnimatedPressable>
-            )}
-            <AnimatedPressable style={timelineStyles.blockDeleteAction} onPress={() => onSkipToday(routine)}>
-              <Text style={timelineStyles.blockDeleteActionText}>{t('today.skipToday')}</Text>
-            </AnimatedPressable>
-          </View>
-        )}>
-        {innerContent}
-      </Swipeable>
     );
   }
 
@@ -796,25 +902,18 @@ function TimelineView({
         // 스크롤뷰의 "콘텐츠 영역" 밖이라 그 안의 배경 탭 제스처가 아예 닿지 않았다(2026-09-21)
         // — flexGrow로 콘텐츠 영역 자체를 화면 높이만큼 늘려서 그 여백도 탭 가능하게 한다
         contentContainerStyle={{ minHeight: timelineScrollContentHeight + 20, flexGrow: 1 }}
+        onScroll={(e) => {
+          trackingScrollYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         onScrollBeginDrag={() => {
-          if (expandedClusters.size > 0) setExpandedClusters(new Set());
+          if (expandedClusterId !== null) closeCluster();
         }}>
       {/* 자식들이 전부 position:absolute라서 이 View에 실제 크기를 안 주면 0x0으로 잡혀
           제스처가 인식할 영역 자체가 없어져 탭이 전혀 안 먹히는 문제가 있었다(2026-09-21) —
           minHeight+flex:1로 콘텐츠 영역(위 contentContainerStyle과 동일하게 늘어난 만큼)
           전체를 채워서 루틴 없는 흰 배경까지 전부 탭 가능하게 한다 */}
       <View style={{ width: '100%', minHeight: timelineScrollContentHeight, flex: 1 }}>
-      {/* "+N 더보기"로 펼친 목록을 스크롤하면 닫히던 것과 같은 이유로, 빈 자리를 탭해도 닫히게
-          하고 싶었는데, 이 화면은 블록마다 Swipeable(react-native-gesture-handler)을 쓰고 있어서
-          일반 RN Touchable(TouchableWithoutFeedback)로 배경을 감싸면 제스처 체계가 달라 터치를
-          아예 못 받는 문제가 있었다(2026-09-21) — 사진일기 화면의 배경 탭 해제와 동일하게
-          같은 gesture-handler 체계의 Gesture.Tap()으로 통일해서 해결한다. 단, 펼친 목록의
-          체크박스/트래킹 입력처럼 실제 눌러야 하는 요소까지 이 감지 영역 "안"에 있으면 같은
-          터치가 두 체계(RNGH 제스처 + 일반 Pressable) 양쪽에서 동시에 인식돼, 체크/입력을
-          누르는데도 배경 탭으로 오인되어 목록이 접혀버리는 버그가 있었다(2026-09-21) —
-          블록들(blocksArea)은 이 GestureDetector "밖"으로 빼서 위에 별도 레이어로 얹고,
-          배경 감지는 그 밑에 깔린 축/빈 공간에만 걸리게 분리했다 */}
-      <GestureDetector gesture={collapseExpandedClustersTap}>
       <View style={{ width: '100%', height: '100%' }}>
       {(() => {
         let cursor = 0;
@@ -850,23 +949,12 @@ function TimelineView({
         });
       })()}
       </View>
-      </GestureDetector>
 
       {/* pointerEvents="box-none"이 없으면 이 View 자체가 (자식 블록이 없는 빈 구간까지 포함해서)
-          자기 영역 전체의 터치를 그냥 삼켜버려서, 그 아래 깔린 배경 탭 감지(collapseExpandedClustersTap)
-          레이어까지 터치가 전달이 안 됐다 — "+N 더보기로 펼친 뒤 빈 곳을 탭해도 안 접힌다"는
-          버그의 원인이었다(2026-09-27). box-none으로 자기 자신은 투명하게 두고 자식(블록)만
-          터치를 받게 한다 */}
+          자기 영역 전체의 터치를 그냥 삼켜버려서, 그 아래 깔린 축/빈 공간까지 터치가 전달이
+          안 됐다(2026-09-27). box-none으로 자기 자신은 투명하게 두고 자식(블록)만 터치를 받게 한다 */}
       <View style={timelineStyles.blocksArea} pointerEvents="box-none">
-        {/* expandedClusters는 Set이라 원소 순서가 "+N"을 누른 순서(삽입 순서) 그대로 보존된다 —
-            여러 클러스터를 동시에 펼쳤을 때 전부 같은 zIndex(10)를 썼더니, 시간상 더 이른(=배열
-            앞쪽) 클러스터가 항상 나중에 그려져 위에 얹히면서 방금 막 펼친 클러스터를 가려버리는
-            버그가 있었다(2026-09-28) — 가장 최근에 펼친 것일수록 순서상 뒤에 있으니, 그 인덱스만큼
-            zIndex를 더해서 나중에 편 것이 항상 위에 보이게 한다 */}
-        {(() => {
-          const expandedOrder = Array.from(expandedClusters);
-          return Array.from(clusterBlocks.entries()).map(([clusterId, clusterItems]) => {
-          const expandedZIndex = 10 + Math.max(0, expandedOrder.indexOf(clusterId));
+        {Array.from(clusterBlocks.entries()).map(([clusterId, clusterItems]) => {
           const totalCols = columns.get(clusterItems[0].key)?.totalCols ?? 1;
           const sortedItems = [...clusterItems].sort(
             (a, b) => (columns.get(a.key)?.col ?? 0) - (columns.get(b.key)?.col ?? 0)
@@ -879,37 +967,21 @@ function TimelineView({
           }
 
           const clusterTop = Math.min(...clusterItems.map((b) => b.top));
-          const isExpanded = expandedClusters.has(clusterId);
-          if (isExpanded) {
-            // ⚠️ 임시 진단 로그(2026-09-28) — 원인 확인되면 지울 것
-            console.log(
-              '[timeline-click] 펼친 클러스터',
-              clusterId,
-              'zIndex=',
-              expandedZIndex,
-              '항목=',
-              sortedItems.map((b) => b.items[0].routine.title)
-            );
-          }
+          const isExpanded = expandedClusterId === clusterId;
+          // 이 화면의 다른 상호작용 요소는 전부 GestureTapView(react-native-gesture-handler
+          // 기반)인데, 이 "+N" 버튼만 원래 일반 RN Pressable 기반이라 눌러도 반응이 없는 버그가
+          // 있었다(2026-09-28) — 같은 제스처 체계(Gesture.Tap())로 통일해서 해결한다
+          const expandTap = Gesture.Tap().onEnd((_e, success) => {
+            if (success) runOnJS(toggleCluster)(clusterId);
+          });
 
-          // 겹치면 기본은 1개 + "더보기" 버튼만 보여주고, 누르면 위아래로 1개씩 전부 펼쳐서 보여준다
-          // 이때도 각 블록의 실제 소요 시간(block.height)을 유지 — 강제로 작은 고정 높이로 뭉개지 않는다
           if (!isExpanded) {
             const first = sortedItems[0];
             const hiddenCount = sortedItems.length - 1;
-            // 이 화면의 다른 상호작용 요소는 전부 Swipeable(react-native-gesture-handler) 안에
-            // 있는데, 이 "+N" 버튼만 유일하게 일반 RN Pressable(AnimatedPressable) 기반이라
-            // 눌러도 반응이 없는 버그가 있었다(2026-09-28) — 위 collapseExpandedClustersTap과
-            // 같은 이유로, 여기도 같은 제스처 체계(Gesture.Tap())로 통일해서 해결한다
-            const expandTap = Gesture.Tap().onEnd((_e, success) => {
-              if (success) runOnJS(expandCluster)(clusterId);
-            });
             return (
               <Fragment key={clusterId}>
-                {/* 접힌 상태에서 보이는 블록은 하나뿐이라 시간 표시가 중복되지 않는다 — 펼쳤을
-                    때(같은 슬롯 시각이 여러 번 반복되는 목록)만 showTime을 꺼서 중복을 없앤다.
-                    이걸 여기서도 꺼두면 "아침/점심/저녁"처럼 슬롯에 루틴이 여럿 몰린 경우
-                    시작 시각 자체가 아예 안 보이는 버그가 있었음 */}
+                {/* 겹치면 기본은 1개 + "더보기" 버튼만 보여주고, 누르면 그 자리 바로 아래로
+                    나머지를 펼쳐서 보여준다(2026-09-29, 인라인 확장) */}
                 {renderBlock(first, { top: clusterTop, height: first.height, left: '0%', width: '80%', showTime: true })}
                 <GestureDetector gesture={expandTap}>
                   <View
@@ -925,43 +997,28 @@ function TimelineView({
             );
           }
 
-          // 펼친 목록은 각자 실제 소요시간(예: 2시간짜리 슬롯이면 112px)만큼 칸을 그대로 쓰면
-          // 글자 한 줄 아래로 빈 공간이 크게 남아서 3개만 펼쳐도 화면이 길게 늘어나 보임 —
-          // 어차피 펼친 상태에선 "목록"으로 보여주는 거지 실제 길이를 나타낼 필요가 없으니,
-          // 전부 같은 작은 높이로 보여준다. 다 같은 슬롯 시작 시각이라 시간 표시는 중복이니
-          // 아예 안 보여주고, 칸 사이에 일정한 여백을 둔다.
-          // 이 목록은 실제 시간 위치와 무관한 자리라, 밑에 원래 그 시각에 있던 다른 블록이
-          // 깔려있을 수 있음 — 칸 사이 여백 틈으로 그 블록의 테두리 색이 살짝 비쳐 보이던
-          // 버그가 있었음(2026-09-17). 목록 전체 범위를 불투명한 배경판 하나로 먼저 깔아서
-          // 그 뒤에 뭐가 있든 절대 안 비치게 막는다
-          const expandedTotalHeight =
-            sortedItems.length * ROW_HEIGHT + (sortedItems.length - 1) * EXPANDED_ROW_GAP;
+          // 펼친 상태 — 전부 같은 작은 높이(ROW_HEIGHT)로 세로로 나열한다. 이 자리엔 원래
+          // 그 시각에 있던 다른 블록이 깔려있을 수 있지만(clusterTop 위치 자체는 안 바뀜),
+          // renderBlock이 만드는 View는 배경이 불투명(rgb, alpha 없음)이라 밑에 뭐가 있든
+          // 안 비치고, zIndex로 항상 위에 그려지면서 GestureTapView 기반이라 터치도 정상적으로
+          // 그 블록이 받는다(2026-09-29 — Swipeable을 쓰던 예전 버전은 이 자리에서 터치가
+          // 엉뚱한 블록으로 새는 문제가 있었지만, 지금은 그 원인이 제거됨)
           return (
             <Fragment key={clusterId}>
-              <View
-                pointerEvents="none"
-                style={[
-                  timelineStyles.block,
-                  timelineStyles.blockExpanded,
-                  { top: clusterTop, height: expandedTotalHeight, left: '0%', width: '100%', zIndex: expandedZIndex },
-                ]}
-              />
-              {sortedItems.map((block, index) => {
-                const offsetTop = clusterTop + index * (ROW_HEIGHT + EXPANDED_ROW_GAP);
-                return renderBlock(block, {
-                  top: offsetTop,
+              {sortedItems.map((block, index) =>
+                renderBlock(block, {
+                  top: clusterTop + index * (ROW_HEIGHT + EXPANDED_ROW_GAP),
                   height: ROW_HEIGHT,
                   left: '0%',
                   width: '100%',
                   showTime: false,
-                  expanded: true,
-                  zIndex: expandedZIndex,
-                });
-              })}
+                  zIndex: 20,
+                  isOverlayRow: true,
+                })
+              )}
             </Fragment>
           );
-          });
-        })()}
+        })}
       </View>
 
       {/* 예전엔 이 선을 축(시간 눈금) 레이어 안에서 그렸는데, blocksArea(루틴 블록들)가 그
@@ -971,6 +1028,16 @@ function TimelineView({
           루틴이 있든 없든 항상 위에 보이게 한다 */}
       {showNowLine && <View style={[timelineStyles.nowLine, { top: nowTop - 1 }]} pointerEvents="none" />}
       </View>
+      {/* 트래킹 입력창이 화면 아래쪽 근처에 있으면 키보드가 뜨는 순간 스크롤할 여백 자체가
+          부족해서 위로 못 당겨오는 경우가 있었다 — 리스트뷰와 동일하게 키보드 높이만큼 맨
+          아래에 빈 공간을 깔아서 항상 그만큼은 스크롤할 수 있게 한다(2026-09-30).
+          ⚠️ 이것도 Themed View라 배경색을 안 주면 흰 배경이 깔려서, 스크롤해서 이 여백이
+          보이면 화면 아래쪽에 큰 흰 덩어리가 보이는 문제가 있었다 — 투명으로 고정했다. 여백
+          크기도 scrollTrackingInputAboveKeyboard와 같은(더 작은) 여유값으로 맞춰서 다 스크롤한
+          뒤 남는 빈 공간 자체를 줄였다(2026-09-30 피드백) */}
+      {keyboardHeight > 0 && (
+        <View style={{ height: keyboardHeight + TIMELINE_KEYBOARD_SAFETY_MARGIN, backgroundColor: 'transparent' }} />
+      )}
       </ScrollView>
 
       <Modal visible={!!infoRoutine} transparent animationType="fade" onRequestClose={() => setInfoRoutine(null)}>
@@ -1021,12 +1088,18 @@ function TimelineView({
                 </View>
               )}
               <View style={timelineStyles.infoButtonRow}>
-                <AnimatedPressable style={timelineStyles.infoCloseButton} onPress={() => setInfoRoutine(null)}>
+                <AnimatedPressable
+                  style={timelineStyles.infoCloseButton}
+                  onPress={() => {
+                    if (Date.now() - infoOpenedAtRef.current < 250) return;
+                    setInfoRoutine(null);
+                  }}>
                   <Text style={timelineStyles.infoCloseText}>{t('today.close')}</Text>
                 </AnimatedPressable>
                 <AnimatedPressable
                   style={timelineStyles.infoEditButton}
                   onPress={() => {
+                    if (Date.now() - infoOpenedAtRef.current < 250) return;
                     const routine = infoRoutine;
                     setInfoRoutine(null);
                     onEdit(routine);
@@ -1158,14 +1231,6 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     borderRadius: cardRadius,
     overflow: 'hidden',
   },
-  // Swipeable로 감싼 블록 전용 — 바깥 Swipeable의 containerStyle이 이미 절대 위치/크기를
-  // 잡아주므로, 안쪽 View는 position:'absolute'를 relative로 되돌리고 부모(Swipeable이 감싼
-  // 영역)를 꽉 채우기만 하면 된다
-  blockFill: {
-    position: 'relative',
-    width: '100%',
-    height: '100%',
-  },
   moreBlock: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1190,21 +1255,15 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     backgroundColor: 'rgb(255, 236, 209)',
     borderLeftColor: '#FF9800',
   },
-  // "더보기"로 펼쳤을 때만 적용 — 실제 시간 위치와 무관하게 겹쳐 그려지는 자리라, 밑에 깔린
-  // 다른 글자가 비쳐 보이지 않도록 불투명하게 가려주고 다른 블록들보다 위에 그려지게 한다
-  blockExpanded: {
-    backgroundColor: '#EAF1F9',
-    zIndex: 10,
-    elevation: 4,
-  },
-  blockTextExpanded: {
-    color: '#1A1A1A',
-  },
   // 커스텀 폰트("동글 폰트")는 굵은 글씨 파일이 없어서 fontWeight를 주면 RN이 시스템 폰트로
   // 대체해버림(=사용자가 고른 폰트가 안 먹히는 원인) — 대신 색으로만 강조해서 폰트를 유지한다
   blockTitleNow: {
     color: '#E65100',
   },
+  // ⚠️ 2026-09-30 — components/Themed.tsx의 View는 style에 backgroundColor가 없으면 테마 기본
+  // 배경색(라이트 모드에선 흰색)을 자동으로 깔아버린다 — 이 줄은 평소엔 블록 배경(연한 회색조)과
+  // 비슷해서 안 보였는데, "지금" 시간대라 블록이 주황색(blockNow)으로 바뀌면 그 위에 흰 줄이
+  // 얹혀서 튀어 보였다. 배경을 투명으로 고정해서 블록 자신의 배경이 항상 그대로 비치게 한다
   blockRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1212,6 +1271,7 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     paddingHorizontal: 8,
     paddingVertical: 6,
     paddingRight: 4,
+    backgroundColor: 'transparent',
   },
   blockRowDone: {
     opacity: 0.5,
@@ -1245,44 +1305,6 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockPlayButtonText: {
     fontSize: 11,
     color: accent,
-  },
-  // 리스트뷰의 스와이프(수정/기록삭제/오늘삭제)와 같은 구성 — 타임라인에서도 왼쪽으로
-  // 스와이프하면 동일하게 나옴(기록삭제는 트래킹형이면서 완료된 경우에만 표시)
-  blockSwipeActionsRow: {
-    flexDirection: 'row',
-    gap: 4,
-    height: '100%',
-  },
-  blockEditAction: {
-    backgroundColor: withAlpha(accent, 0.15),
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: 56,
-    borderRadius: cardRadius,
-  },
-  blockEditActionText: {
-    color: accent,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  blockCancelTrackingAction: {
-    backgroundColor: withAlpha(accent, 0.3),
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: 56,
-    borderRadius: cardRadius,
-  },
-  blockDeleteAction: {
-    backgroundColor: accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: 56,
-    borderRadius: cardRadius,
-  },
-  blockDeleteActionText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '600',
   },
   blockCheckbox: {
     width: 22,
@@ -1432,6 +1454,14 @@ type ListRowProps = {
   trackingInputRefsRef: MutableRefObject<Record<string, TextInput | null>>;
   selectMode: boolean;
   isSelected: boolean;
+  // 오늘 탭이 리스트/타임라인을 항상 둘 다 마운트해두고 안 보이는 쪽만 투명+pointerEvents:'none'
+  // 으로 숨기는 방식이라(성능을 위해, 2026-09-27) — 숨겨진 리스트의 Swipeable(react-native-
+  // gesture-handler)이 pointerEvents='none'을 무시하고 계속 터치를 받아서, 타임라인 화면의
+  // 특정 자리를 눌렀는데 그 밑에 숨어있던 완전히 다른 루틴의 행이 반응해(제목 탭은 곧장
+  // onEdit로 연결됨) "간단안내 + 엉뚱한 다른 루틴 수정화면"이 동시에 뜨는 버그가 있었다
+  // (2026-09-30 확인) — pointerEvents에 기대지 말고 리스트가 안 보이는 동안은 이 값으로
+  // 명시적으로 모든 동작을 막는다
+  interactionsDisabled: boolean;
   onToggleSelect: (routine: Routine) => void;
   onEdit: (routine: Routine) => void;
   onToggleCheck: (routine: Routine) => void;
@@ -1465,6 +1495,7 @@ const ListRow = memo(function ListRow({
   trackingInputRefsRef,
   selectMode,
   isSelected,
+  interactionsDisabled,
   onToggleSelect,
   onEdit,
   onToggleCheck,
@@ -1486,7 +1517,7 @@ const ListRow = memo(function ListRow({
       ref={(instance) => {
         swipeRefsRef.current[item.id] = instance;
       }}
-      enabled={!selectMode}
+      enabled={!selectMode && !interactionsDisabled}
       // onSwipeableOpen은 다 열리는 애니메이션(settle)이 끝난 뒤에야 불려서 진동이 한 박자
       // 늦게 느껴졌다(2026-09-27) — 스와이프가 열림 기준선을 넘는 순간 바로 불리는
       // onSwipeableWillOpen으로 옮겨서 스와이프 동작과 거의 동시에 느껴지게 한다
@@ -1506,15 +1537,30 @@ const ListRow = memo(function ListRow({
       overshootRight={false}
       renderRightActions={() => (
         <View style={styles.swipeActionsRow}>
-          <AnimatedPressable style={styles.editAction} onPress={() => onEdit(item)}>
+          <AnimatedPressable
+            style={styles.editAction}
+            onPress={() => {
+              if (interactionsDisabled) return;
+              onEdit(item);
+            }}>
             <Text style={styles.editActionText}>{t('today.edit')}</Text>
           </AnimatedPressable>
           {item.block_type === 'tracking' && isDone && !isEditingTracking && (
-            <AnimatedPressable style={styles.cancelTrackingAction} onPress={() => onCancelTracking(item)}>
+            <AnimatedPressable
+              style={styles.cancelTrackingAction}
+              onPress={() => {
+                if (interactionsDisabled) return;
+                onCancelTracking(item);
+              }}>
               <Text style={styles.editActionText}>{t('today.cancelRecord')}</Text>
             </AnimatedPressable>
           )}
-          <AnimatedPressable style={styles.deleteAction} onPress={() => onSkipToday(item)}>
+          <AnimatedPressable
+            style={styles.deleteAction}
+            onPress={() => {
+              if (interactionsDisabled) return;
+              onSkipToday(item);
+            }}>
             <Text style={styles.deleteActionText}>{t('today.skipToday')}</Text>
           </AnimatedPressable>
         </View>
@@ -1536,7 +1582,12 @@ const ListRow = memo(function ListRow({
           )}
         </View>
         <View style={styles.rowMain}>
-          <AnimatedPressable style={styles.titleLine} onPress={() => onEdit(item)}>
+          <AnimatedPressable
+            style={styles.titleLine}
+            onPress={() => {
+              if (interactionsDisabled) return;
+              onEdit(item);
+            }}>
             <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
               {item.title}
             </Text>
@@ -1545,7 +1596,12 @@ const ListRow = memo(function ListRow({
         </View>
 
         {item.video_id && (
-          <AnimatedPressable style={styles.playButton} onPress={() => onPlayVideo(item.video_id!)}>
+          <AnimatedPressable
+            style={styles.playButton}
+            onPress={() => {
+              if (interactionsDisabled) return;
+              onPlayVideo(item.video_id!);
+            }}>
             <Text style={styles.playButtonText}>▶</Text>
           </AnimatedPressable>
         )}
@@ -1554,7 +1610,10 @@ const ListRow = memo(function ListRow({
           <View style={styles.actionSlot}>
             <AnimatedPressable
               style={[styles.checkbox, isDone && styles.checkboxDone]}
-              onPress={() => onToggleCheck(item)}>
+              onPress={() => {
+                if (interactionsDisabled) return;
+                onToggleCheck(item);
+              }}>
               {isDone && <Text style={styles.checkmark}>✓</Text>}
             </AnimatedPressable>
           </View>
@@ -1563,7 +1622,11 @@ const ListRow = memo(function ListRow({
         {item.block_type === 'tracking' ? (
           isDone && !isEditingTracking ? (
             <View style={styles.actionSlot}>
-              <AnimatedPressable onPress={() => onStartEditTracking(item)}>
+              <AnimatedPressable
+                onPress={() => {
+                  if (interactionsDisabled) return;
+                  onStartEditTracking(item);
+                }}>
                 <Text style={styles.trackingDoneBadge} numberOfLines={1}>
                   ✓ {completion?.tracking_value} {truncateTrackingUnit(item.tracking_unit)}
                 </Text>
@@ -1593,7 +1656,12 @@ const ListRow = memo(function ListRow({
                   {truncateTrackingUnit(item.tracking_unit)}
                 </Text>
                 {isDone && (
-                  <AnimatedPressable style={styles.cancelTrackingButton} onPress={() => onCloseEditTracking(item.id)}>
+                  <AnimatedPressable
+                    style={styles.cancelTrackingButton}
+                    onPress={() => {
+                      if (interactionsDisabled) return;
+                      onCloseEditTracking(item.id);
+                    }}>
                     <Text style={styles.cancelTrackingButtonText}>{t('today.close')}</Text>
                   </AnimatedPressable>
                 )}
@@ -1602,7 +1670,13 @@ const ListRow = memo(function ListRow({
           )
         ) : null}
         {selectMode && (
-          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => onToggleSelect(item)} />
+          <AnimatedPressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              if (interactionsDisabled) return;
+              onToggleSelect(item);
+            }}
+          />
         )}
       </View>
     </Swipeable>
@@ -2530,7 +2604,14 @@ export default function TodayScreen() {
       if (!raw || Number.isNaN(value)) {
         // 값이 있던 기록을 지우고 빈 채로 저장(엔터)하면, 그냥 무시하는 대신 "기록삭제"와
         // 똑같이 처리해서 기록이 없는 상태로 되돌아가게 한다(다시 체크/입력할 수 있도록)
-        if (completionsRef.current[routine.id]) handleCancelTracking(routine);
+        if (completionsRef.current[routine.id]) {
+          handleCancelTracking(routine);
+        } else {
+          // ⚠️ 진짜 버그(2026-09-30) — 기존 기록이 없는 상태(신규 입력)에서 빈 채로 제출하면
+          // 이 분기가 closeEditTracking을 한 번도 안 부르고 그냥 return해서, editingTrackingIds에
+          // 그 루틴이 계속 남아 입력창이 안 닫힌 채로 리스트/타임라인 양쪽에 그대로 남아있었다
+          closeEditTracking(routine.id);
+        }
         return;
       }
       const existing = completionsRef.current[routine.id] ?? null;
@@ -2763,6 +2844,7 @@ export default function TodayScreen() {
           onFocusTracking={handleFocusTracking}
           onBlurTracking={handleBlurTracking}
           repositionToken={repositionToken}
+          isActive={viewMode === 'timeline'}
         />
       </View>
       <ScrollView
@@ -2824,6 +2906,7 @@ export default function TodayScreen() {
                       trackingInputRefsRef={trackingInputRefsRef}
                       selectMode={selectMode}
                       isSelected={selectedIds.has(item.id)}
+                      interactionsDisabled={viewMode !== 'list'}
                       onToggleSelect={toggleRowSelected}
                       onEdit={handleEditRoutine}
                       onToggleCheck={handleToggleCheck}
@@ -3397,9 +3480,11 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     justifyContent: 'space-between',
     marginTop: 8,
   },
+  // "다시 안 보기" 글자 크기가 FAB 안내(fabHintCheckboxLabel)와 달랐다는 피드백(2026-09-30) —
+  // 12로 통일
   viewModeHintCheckboxLabel: {
     color: accent,
-    fontSize: 11,
+    fontSize: 12,
     opacity: 0.75,
   },
   // FAB 안내의 "닫기" 버튼(fabHintCloseButton/Text)과 크기가 서로 달랐다는 피드백(2026-09-22)
