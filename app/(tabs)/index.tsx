@@ -776,8 +776,6 @@ function TimelineView({
                 style={timelineStyles.blockContent}
                 onPress={() => {
                   if (!isActive) return;
-                  // ⚠️ 임시 진단 로그(2026-09-29) — 원인 확인되면 지울 것
-                  console.log('[tl-debug] 일반블록 제목 탭', routine.title, routine.id);
                   closeOverlayFirst();
                   showInfoRoutine(routine);
                 }}>
@@ -819,8 +817,6 @@ function TimelineView({
                   style={[timelineStyles.blockCheckbox, isDone && timelineStyles.blockCheckboxDone]}
                   onPress={() => {
                     if (!isActive) return;
-                    // ⚠️ 임시 진단 로그(2026-09-29) — 원인 확인되면 지울 것
-                    console.log('[tl-debug] 일반블록 체크박스 탭', routine.title, routine.id);
                     closeOverlayFirst();
                     onToggleCheck(routine);
                   }}>
