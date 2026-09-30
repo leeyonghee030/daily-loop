@@ -1,8 +1,8 @@
 import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Modal, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback } from 'react-native';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Animated, Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
@@ -42,14 +42,12 @@ import { fetchDiaryDatesInRange } from '@/lib/diary';
 import { fetchPhotoDiaryDatesInRange } from '@/lib/photo-diary';
 import { syncSlotAlarms } from '@/lib/notifications';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
-import { hapticSelection } from '@/lib/haptics';
 import {
   computeDayStatus,
   fetchStats,
   formatLocalDate,
   routinesForDate,
   fetchAllRoutinesForCalendar,
-  fetchHolidaysInRange,
   fetchMonthData,
   fetchWeekData,
   toggleCheckCompletion,
@@ -240,7 +238,10 @@ const DayCell = memo(function DayCell({
   onSelect,
 }: DayCellProps) {
   return (
-    <AnimatedPressable onPress={() => onSelect(dateStr)} style={[styles.dayCell, { minHeight: cellHeight }]}>
+    // 날짜 칸은 42개(월)/7개(주)가 한 화면에 동시에 존재하는 데다 매번 다시 그려질 일이 잦아서,
+    // 손맛용 눌림 애니메이션(AnimatedPressable)이 그만큼 자주 시작/정지되며 부담을 더했다 —
+    // 반응성이 우선이라 일반 Pressable로 바꿔 애니메이션 자체를 없앤다(2026-09-30)
+    <Pressable onPress={() => onSelect(dateStr)} style={[styles.dayCell, { minHeight: cellHeight }]}>
       <View style={styles.diaryIconSlot}>
         {hasPhotoDiary ? (
           <Ionicons name="camera-outline" size={10} color={textMuted} />
@@ -278,7 +279,7 @@ const DayCell = memo(function DayCell({
           ))}
         </View>
       )}
-    </AnimatedPressable>
+    </Pressable>
   );
 },
 dayCellPropsEqual);
@@ -393,7 +394,197 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
   );
 });
 
+type WeekCalendarSectionProps = {
+  weekDates: string[];
+  weekData: MonthData | undefined;
+  todayStr: string;
+  weekColumnTargetHeight: number;
+  weekPhotoDiaryDates: Set<string>;
+  weekDiaryDates: Set<string>;
+  weekMemosByDate: Record<string, DateMemo[]>;
+  bestStreakEver: number | null;
+  weekStartLabel: string;
+  weekEndLabel: string;
+  weekScrollRef: RefObject<ScrollView | null>;
+  weekScrollXAnim: Animated.Value;
+  weekViewportWidth: number;
+  weekContentWidth: number;
+  weekThumbWidth: number;
+  weekMaxScrollX: number;
+  weekThumbMaxTranslate: number;
+  styles: ReturnType<typeof createStyles>;
+  onShiftWeek: (days: number) => void;
+  onSelectDate: (date: string) => void;
+  onViewportLayout: (width: number) => void;
+  onContentSizeChange: () => void;
+};
+
+// MonthCalendarSection과 같은 이유로 분리한다(위 주석 참고) — 분리 전엔 월간뷰를 보는 동안
+// 체크/메모입력 등으로 CalendarScreen이 리렌더될 때마다, 안 보이는 주간뷰의 요일 7칸도 매번
+// 처음부터 다시 계산/렌더링되고 있었다(2026-09-30, "캘린더 체크가 느리다" 반복 신고의 원인 중
+// 하나). 이 컴포넌트에 필요한 값만 골라 넘기면, 주간뷰와 무관한 값만 바뀌었을 땐(예: 월간뷰를
+// 보는 중 체크) React.memo가 리렌더 자체를 건너뛴다
+const WeekCalendarSection = memo(function WeekCalendarSection({
+  weekDates,
+  weekData,
+  todayStr,
+  weekColumnTargetHeight,
+  weekPhotoDiaryDates,
+  weekDiaryDates,
+  weekMemosByDate,
+  bestStreakEver,
+  weekStartLabel,
+  weekEndLabel,
+  weekScrollRef,
+  weekScrollXAnim,
+  weekViewportWidth,
+  weekContentWidth,
+  weekThumbWidth,
+  weekMaxScrollX,
+  weekThumbMaxTranslate,
+  styles,
+  onShiftWeek,
+  onSelectDate,
+  onViewportLayout,
+  onContentSizeChange,
+}: WeekCalendarSectionProps) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
+          쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
+          캘린더가 차지할 세로 공간을 더 확보한다. 월간뷰는 이 카드를 다시 숨긴다(2026-09-21) */}
+      <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
+        {bestStreakEver !== null && bestStreakEver > 0 ? (
+          <View style={styles.streakHeroRow}>
+            <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
+            <View style={styles.streakHeroNumRow}>
+              <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
+              <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
+        )}
+      </ShadowCard>
+      <View style={styles.weekContainer}>
+        <View style={styles.weekHeader}>
+          <AnimatedPressable onPress={() => onShiftWeek(-7)} hitSlop={8}>
+            <Text style={styles.weekArrow}>‹</Text>
+          </AnimatedPressable>
+          <Text style={styles.weekRangeText}>
+            {weekStartLabel} - {weekEndLabel}
+          </Text>
+          <AnimatedPressable onPress={() => onShiftWeek(7)} hitSlop={8}>
+            <Text style={styles.weekArrow}>›</Text>
+          </AnimatedPressable>
+        </View>
+
+        <Animated.ScrollView
+          ref={weekScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          onLayout={(e) => onViewportLayout(e.nativeEvent.layout.width)}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: weekScrollXAnim } } }], {
+            useNativeDriver: true,
+          })}
+          scrollEventThrottle={16}
+          onContentSizeChange={onContentSizeChange}>
+          {weekDates.map((dateStr) => {
+            const isFuture = dateStr > todayStr;
+            // weekData가 아직 안 왔어도(막 로딩 중이어도) 칸 자체는 항상 바로 그려지게 하고,
+            // 완료 색상/일정만 데이터가 도착하는 대로 채워 넣는다(스피너로 화면을 막지 않기 위함)
+            const status = weekData && !isFuture ? computeDayStatus(dateStr, weekData) : null;
+            const dayNum = Number(dateStr.slice(8, 10));
+            const scheduled = weekData && !isFuture ? routinesForDate(dateStr, weekData) : [];
+            // 컬럼 위치(index)가 아니라 그 날짜의 실제 요일로 라벨을 정한다
+            const dow = new Date(`${dateStr}T00:00:00`).getDay();
+            return (
+              // 7칸이 항상 같이 떠 있고 자주 다시 그려지는 자리라 DayCell과 같은 이유로 일반
+              // Pressable로 바꿔 눌림 애니메이션을 뺀다(2026-09-30, 반응성 우선)
+              <Pressable
+                key={dateStr}
+                style={[
+                  styles.weekColumn,
+                  dateStr === todayStr && styles.weekColumnToday,
+                  // height로 고정해서 루틴 개수와 무관하게 항상 같은 높이가 되게 한다(넘치는
+                  // 목록은 내부 ScrollView가 알아서 스크롤 처리)
+                  { height: weekColumnTargetHeight },
+                ]}
+                onPress={() => onSelectDate(dateStr)}>
+                <View style={styles.weekColumnHeader}>
+                  <View style={styles.diaryIconSlot}>
+                    {weekPhotoDiaryDates.has(dateStr) ? (
+                      <Ionicons name="camera-outline" size={10} color={textMuted} />
+                    ) : (
+                      weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
+                    )}
+                  </View>
+                  <Text style={styles.weekRowWeekday}>{t(WEEKDAY_KEYS[dow])}</Text>
+                  <Text style={styles.weekRowDay}>{dayNum}</Text>
+                  {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
+                  {(weekMemosByDate[dateStr] ?? []).length > 0 && (
+                    <View style={styles.weekMemoRow}>
+                      {(weekMemosByDate[dateStr] ?? []).slice(0, 5).map((memo) => (
+                        <View
+                          key={memo.id}
+                          style={[styles.weekMemoDot, { backgroundColor: MEMO_COLORS[memo.color].border }]}
+                        />
+                      ))}
+                    </View>
+                  )}
+                </View>
+                <ScrollView
+                  style={[styles.weekColumnBody, { maxHeight: weekColumnTargetHeight - 44 }]}
+                  nestedScrollEnabled>
+                  {scheduled.length === 0 ? (
+                    <Text style={styles.weekColumnEmpty}>{isFuture ? '' : '-'}</Text>
+                  ) : (
+                    scheduled.map(({ routine, completion }) => (
+                      <Text
+                        key={routine.id}
+                        style={[styles.weekChip, completion && styles.weekChipDone]}
+                        numberOfLines={1}>
+                        {completion ? '✓ ' : ''}
+                        {routine.title}
+                      </Text>
+                    ))
+                  )}
+                </ScrollView>
+              </Pressable>
+            );
+          })}
+        </Animated.ScrollView>
+        {weekViewportWidth > 0 && weekContentWidth > weekViewportWidth && (
+          <View style={styles.weekScrollTrack} pointerEvents="none">
+            <Animated.View
+              style={[
+                styles.weekScrollThumb,
+                {
+                  width: weekThumbWidth,
+                  transform: [
+                    {
+                      translateX: weekScrollXAnim.interpolate({
+                        inputRange: [0, weekMaxScrollX],
+                        outputRange: [0, weekThumbMaxTranslate],
+                        extrapolate: 'clamp',
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+          </View>
+        )}
+      </View>
+    </>
+  );
+});
+
 export default function CalendarScreen() {
+  // ⚠️ 임시 진단 로그(2026-09-30) — 서울 리전인데도 2초 가까이 걸린다는 신고로, 화면이 마운트된
+  // 시점부터 실제로 데이터가 도착하는 시점까지 몇 ms인지 재본다. 원인 확인되면 지울 것
+  const __mountTimeRef = useRef(Date.now());
   const { session } = useAuth();
   const userId = session?.user.id;
   const theme = useColorScheme() ?? 'light';
@@ -425,18 +616,43 @@ export default function CalendarScreen() {
   // 바꾼다. key가 있으면 그 값으로 덮어쓰고, 서버 응답이 오거나 실패해서 진짜 값(캐시)으로
   // 되돌아갈 때 그 routineId 키를 지워서 다시 진짜 값을 따라가게 한다
   const [localOverride, setLocalOverride] = useState<Record<string, RoutineCompletion | null>>({});
-  // ⚠️ 임시 진단 로그(2026-09-28) — 실제로 리렌더/커밋이 언제 일어나는지 확인용. 원인 확인되면 지울 것
-  useEffect(() => {
-    console.log('[calendar-perf] localOverride 반영된 렌더 커밋', Date.now());
-  }, [localOverride]);
-  function clearLocalOverride(routineId: string) {
-    setLocalOverride((prev) => {
-      if (!(routineId in prev)) return prev;
-      const next = { ...prev };
-      delete next[routineId];
-      return next;
-    });
+  // 날짜상세 체크박스를 아주 빠르게 연속으로 누르면(예: 체크→해제), 방금 탭의 결과가 실제
+  // 리렌더로 반영되기 전에 다음 탭이 먼저 처리돼서 "지금 체크돼 있나?"를 판단하는 기준이
+  // 낡은 값을 보고 엉뚱한 동작(예: 해제하려 했는데 또 체크를 시도)을 하는 경합이 있었다
+  // (2026-09-30) — state와 별개로 이 ref를 여기서 동기적으로 같이 갱신해두면, 리렌더를
+  // 기다리지 않고 바로 다음 탭에서도 항상 최신 값을 읽을 수 있다
+  const localOverrideRef = useRef(localOverride);
+  function setLocalOverrideSync(routineId: string, value: RoutineCompletion | null) {
+    const next = { ...localOverrideRef.current, [routineId]: value };
+    localOverrideRef.current = next;
+    setLocalOverride(next);
   }
+  function clearLocalOverride(routineId: string) {
+    if (!(routineId in localOverrideRef.current)) return;
+    const next = { ...localOverrideRef.current };
+    delete next[routineId];
+    localOverrideRef.current = next;
+    setLocalOverride(next);
+  }
+  // 체크박스 탭 시 "지금 체크돼 있나"를 판정하는 기준값 — react-query 캐시(queryClient)는
+  // getQueryData로 직접 읽으면 리렌더를 기다릴 필요 없이 항상 그 순간의 최신 값이라, 위
+  // localOverrideRef와 함께 쓰면 완전히 리렌더 타이밍과 무관하게 판정할 수 있다
+  function resolveCompletionId(routineId: string, date: string): string | null {
+    if (routineId in localOverrideRef.current) return localOverrideRef.current[routineId]?.id ?? null;
+    const activeKey = viewMode === 'month' ? (['month-data', userId, year, month] as const) : (['week-data', userId, weekStart] as const);
+    const cached = queryClient.getQueryData<MonthData>(activeKey);
+    return cached?.completionsByRoutine[routineId]?.[date]?.id ?? null;
+  }
+  // ⚠️ 구조 전면 개편(2026-09-30) — 체크할 때마다 매번 그리드 캐시까지 실시간으로 맞추려고
+  // (다음 프레임 코얼레싱, 그 날짜만 즉시 재계산, 요청 세대 가드, 서버 동기화 디바운스 등)
+  // 여러 겹의 장치를 쌓았는데도 "빠르게 여러 번 체크하면 몇 초씩 느리다"가 계속 반복됐다.
+  // 사용자 제안대로 훨씬 단순한 구조로 바꾼다 — 날짜상세 모달을 보는 동안은 로컬 상태만
+  // 즉시 바꾸고 서버/그리드는 전혀 건드리지 않다가, 모달을 나갈 때(닫기/바깥탭/뒤로가기/다른
+  // 화면 이동) 그동안 쌓인 변경사항만 모아서 한 번에 서버에 반영하고, 그 뒤 month/week 데이터를
+  // 새로 받아와 그리드에 반영한다. "지금 보고 있는 모달"과 "그 뒤에 있는 그리드"가 같은 순간에
+  // 같이 맞아떨어져야 할 이유가 없다는 게 핵심 — 그리드는 모달을 닫고 나서야 보이니, 그때 가서
+  // 맞으면 충분하다. 이 방식이라 렌더 경합/응답 순서 문제 자체가 구조적으로 생기지 않는다.
+  const pendingCompletionChangesRef = useRef<Record<string, { date: string; baselineExistingId: string | null }>>({});
   const [memoText, setMemoText] = useState('');
   const [memoColor, setMemoColor] = useState<MemoColor>('yellow');
   // 날짜 상세 시트에서 트래킹형 루틴을 탭하면 숫자 입력창으로 바뀌는데, 그 입력창 상태
@@ -479,33 +695,39 @@ export default function CalendarScreen() {
     queryFn: () => fetchAllRoutinesForCalendar(userId!),
     enabled: !!userId,
   });
-  // ⚠️ enabled에 calendarRoutinesQuery.data 도착 여부를 안 걸었더니, 캘린더 탭에 처음 들어올 때
-  // calendarRoutinesQuery와 monthQuery가 거의 동시에 시작되면서 monthQuery의 queryFn이 아직
-  // undefined인 calendarRoutinesQuery.data를 받아 fetchMonthData 내부에서 루틴 목록을 "또"
-  // 통째로 다시 조회하고 있었다(fetchRangeData의 `routines ?? await fetchAllRoutinesForCalendar(...)`
-  // 폴백) — 안 그래도 calendarRoutinesQuery가 같은 걸 따로 받아오는 중이라 완전히 중복 요청이었고,
-  // 그 안에서마저 그 요청이 끝난 뒤에야 완료기록/공휴일 3개를 순차로 더 받아와서 첫 진입이 유독
-  // 느렸다(2026-09-27). calendarRoutinesQuery가 먼저 끝나야 시작하게 묶어서 중복 요청을 없앤다
+  // calendarRoutinesQuery가 끝나기를 기다렸다가(2026-09-27) monthQuery를 시작하면, 결국
+  // "루틴 목록 왕복" → "완료기록/건너뛴날짜/공휴일 왕복"이 순서대로 이어져 캘린더 첫 진입이
+  // 왕복 2번(약 2초) 걸렸다(2026-09-30) — fetchRangeData가 이제 이 네 가지를 전부 한 번에
+  // 병렬로 요청하도록 바뀌어서(lib/routines.ts 주석 참고), calendarRoutinesQuery를 기다릴 필요가
+  // 없어졌다. 처음 진입할 때만 monthQuery가 routines를 자체적으로 한 번 더(병렬로, 왕복 추가
+  // 없이) 받아오고, 그다음 달 이동부터는 이미 캐시된 calendarRoutinesQuery.data를 그대로 재사용
   const monthQuery = useQuery({
     queryKey: ['month-data', userId, year, month],
     queryFn: () => fetchMonthData(userId!, year, month, calendarRoutinesQuery.data),
-    enabled: !!userId && viewMode === 'month' && !!calendarRoutinesQuery.data,
+    enabled: !!userId && viewMode === 'month',
   });
   const weekQuery = useQuery({
     queryKey: ['week-data', userId, weekStart],
     queryFn: () => fetchWeekData(userId!, weekStart, calendarRoutinesQuery.data),
-    enabled: !!userId && viewMode === 'week' && !!calendarRoutinesQuery.data,
+    enabled: !!userId && viewMode === 'week',
   });
+  // ⚠️ 임시 진단 로그(2026-09-30) — 원인 확인되면 지울 것
+  useEffect(() => {
+    console.log('[cal-perf] userId ready at', Date.now() - __mountTimeRef.current, 'ms, userId=', !!userId);
+  }, [userId]);
+  useEffect(() => {
+    if (weekQuery.data) console.log('[cal-perf] weekQuery.data 도착', Date.now() - __mountTimeRef.current, 'ms (마운트 기준)');
+  }, [weekQuery.data]);
+  useEffect(() => {
+    if (monthQuery.data) console.log('[cal-perf] monthQuery.data 도착', Date.now() - __mountTimeRef.current, 'ms (마운트 기준)');
+  }, [monthQuery.data]);
   // 메모/일기 표시는 부가 정보 — 월/주 각각 자기 범위만큼만 따로 쿼리한다(예전엔 전역
   // Map/Set에 "새로 불러온 범위만 교체"하는 방식으로 손으로 병합했었는데, 이제 범위별로
   // 쿼리 키가 다르니 react-query가 알아서 캐시를 나눠서 관리해준다)
-  // 루틴 목록과 무관하게 독립적으로, 최대한 빨리 따로 조회한다(monthQuery는 calendarRoutinesQuery가
-  // 끝나야 시작하지만 공휴일은 그걸 기다릴 이유가 없음, 2026-09-27)
-  const monthHolidaysQuery = useQuery({
-    queryKey: ['holidays', monthStart, monthEnd],
-    queryFn: () => fetchHolidaysInRange(monthStart, monthEnd),
-    enabled: viewMode === 'month',
-  });
+  // ⚠️ 공휴일 전용 쿼리(monthHolidaysQuery)는 2026-09-30에 제거함 — monthQuery(fetchRangeData)가
+  // 이제 공휴일도 같은 Promise.all 안에서 병렬로 받아오는데(위 fetchRangeData 주석 참고), 이
+  // 쿼리는 그 값을 안 쓰고 똑같은 걸 또 따로 요청하고 있었다(중복). 캘린더 탭 진입 시 한 번에
+  // 나가는 요청 개수를 줄이려고 없애고, monthQuery.data.holidayDates를 그대로 쓴다
   const monthMemosQuery = useQuery({
     queryKey: ['memos', userId, monthStart, monthEnd],
     queryFn: () => fetchMemosInRange(userId!, monthStart, monthEnd),
@@ -560,9 +782,6 @@ export default function CalendarScreen() {
     holidayDates: {},
   });
   const monthAccum = useMemo(() => {
-    // ⚠️ 임시 진단 로그(2026-09-28) — 체크/트래킹 반응이 계속 느리다는 신고가 반복돼서, 추측 대신
-    // 실제 기기에서 이 계산이 몇 ms 걸리는지 직접 측정한다. 원인 확인되면 지울 것
-    const __t0 = Date.now();
     const data = monthQuery.data;
     if (data) {
       monthAccumRef.current = {
@@ -570,24 +789,11 @@ export default function CalendarScreen() {
         routines: data.routines,
         completionsByRoutine: mergeRangeNestedRecord(monthAccumRef.current.completionsByRoutine, data.completionsByRoutine, monthStart, monthEnd),
         skipDatesByRoutine: mergeRangeNestedRecord(monthAccumRef.current.skipDatesByRoutine, data.skipDatesByRoutine, monthStart, monthEnd),
-      };
-    }
-    console.log(
-      '[calendar-perf] monthAccum recompute',
-      Date.now() - __t0,
-      'ms, routineCount=',
-      Object.keys(monthAccumRef.current.completionsByRoutine).length
-    );
-    // 공휴일은 monthQuery(루틴 로딩을 기다려야 함)가 아니라 독립적인 monthHolidaysQuery에서
-    // 채운다 — 도착하는 즉시(루틴 로딩과 무관하게) 반영해서 공휴일 표시가 더 빨리 뜨게 한다
-    if (monthHolidaysQuery.data) {
-      monthAccumRef.current = {
-        ...monthAccumRef.current,
-        holidayDates: mergeRangeRecord(monthAccumRef.current.holidayDates, monthHolidaysQuery.data, monthStart, monthEnd),
+        holidayDates: mergeRangeRecord(monthAccumRef.current.holidayDates, data.holidayDates, monthStart, monthEnd),
       };
     }
     return monthAccumRef.current;
-  }, [monthQuery.data, monthHolidaysQuery.data, monthStart, monthEnd]);
+  }, [monthQuery.data, monthStart, monthEnd]);
 
   // 체크/트래킹을 누르면 모달의 체크표시는 monthAccum이 바뀌자마자 그 즉시(높은 우선순위로)
   // 반영돼야 답답하지 않은데, 월간뷰 그리드(MonthCalendarSection)는 3개월치를 다시 계산해야 해서
@@ -693,11 +899,15 @@ export default function CalendarScreen() {
     setMonth(date.month);
   }, []);
 
-  function shiftWeek(days: number) {
-    const d = new Date(`${weekStart}T00:00:00`);
-    d.setDate(d.getDate() + days);
-    setWeekStart(formatLocalDate(d));
-  }
+  // WeekCalendarSection(React.memo)에 넘기는 함수라 useCallback으로 고정한다 — 안 그러면
+  // 월간뷰만 보고 있을 때도 이 함수가 매번 새로 만들어져서 memo가 무력화된다(2026-09-30)
+  const shiftWeek = useCallback((days: number) => {
+    setWeekStart((prev) => {
+      const d = new Date(`${prev}T00:00:00`);
+      d.setDate(d.getDate() + days);
+      return formatLocalDate(d);
+    });
+  }, []);
 
   // 월간뷰 좌우 스와이프: PanResponder → react-native-gesture-handler로 두 번 시도했지만
   // 둘 다 안드로이드 제스처 내비게이션 영역과 부딪혀서 앱이 통째로 튕겨 나가는 문제가 있었음.
@@ -716,6 +926,8 @@ export default function CalendarScreen() {
   // 쪽에서 곧바로 막대 위치에 반영되게 하고, 리액트 리렌더 자체가 안 일어나게 한다
   const weekScrollXAnim = useRef(new Animated.Value(0)).current;
   const [weekViewportWidth, setWeekViewportWidth] = useState(0);
+  // WeekCalendarSection(React.memo)에 넘기는 함수라 useCallback으로 고정한다(shiftWeek와 같은 이유)
+  const handleWeekViewportLayout = useCallback((width: number) => setWeekViewportWidth(width), []);
   const weekContentWidth = WEEK_COLUMN_WIDTH * 7;
   // 월간뷰(CalendarList)가 실제로 차지하는 높이를 재서, 주간뷰 칸도 정확히 그 높이에
   // 맞춘다 — "화면 남는 공간을 다 채우기"(flex:1)로 했더니 월간뷰보다 훨씬 길게(범례가
@@ -815,111 +1027,106 @@ export default function CalendarScreen() {
   useEffect(() => {
     scrollWeekToTodayRef.current = scrollWeekToToday;
   });
+  // WeekCalendarSection(React.memo)에 onContentSizeChange로 넘기는 함수라 이 래퍼 자체는
+  // useCallback으로 고정하고, 실제 최신 로직은 항상 ref를 통해 호출한다
+  const handleWeekContentSizeChange = useCallback(() => scrollWeekToTodayRef.current(), []);
 
-  // 체크형 토글 — 오늘뿐 아니라 지난 날짜(깜빡하고 못 한 날)도 여기서 처리한다. 서버 응답을
-  // 기다리는 동안 화면이 그대로라 "누르면 렉 걸린 것처럼 잘 안 된다"는 느낌이 있었음(오늘
-  // 탭은 이미 낙관적 업데이트를 쓰고 있었는데 캘린더 쪽만 빠져있었다) — 결과를 기다리지 않고
-  // 먼저 화면부터 바꾼 뒤, 서버 응답이 오면 진짜 값으로 다시 맞추고, 실패하면 원래대로 되돌린다
-  async function handleToggleCompletionForDate(routineId: string, existingCompletionId: string | null, date: string) {
-    // ⚠️ 임시 진단 로그(2026-09-28) — 원인 확인되면 지울 것
-    const __tapStart = Date.now();
-    // 오늘 탭 체크박스와 달리 이 화면엔 진동이 아예 안 붙어있었다(2026-09-28 QA) — 같은 손맛을 위해 추가
-    hapticSelection();
-    const monthKey = ['month-data', userId, year, month] as const;
-    const weekKey = ['week-data', userId, weekStart] as const;
-    const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion | null) => {
-      if (!prev) return prev;
-      const routineMap = { ...(prev.completionsByRoutine[routineId] ?? {}) };
-      if (result) {
-        routineMap[result.completed_date] = result;
-      } else {
-        delete routineMap[date];
-      }
-      return {
-        ...prev,
-        completionsByRoutine: { ...prev.completionsByRoutine, [routineId]: routineMap },
-      };
-    };
-
-    const prevMonth = queryClient.getQueryData<MonthData>(monthKey);
-    const prevWeek = queryClient.getQueryData<MonthData>(weekKey);
+  // 체크형 토글 — 오늘뿐 아니라 지난 날짜(깜빡하고 못 한 날)도 여기서 처리한다. 날짜상세
+  // 모달을 보는 동안은 로컬(localOverride)만 즉시 바꾸고 서버/그리드는 전혀 건드리지 않는다 —
+  // 실제 서버 반영은 모달을 나갈 때(closeDateDetail) 한 번에 처리한다(위 pendingCompletionChangesRef
+  // 선언부 주석 참고)
+  function handleToggleCompletionForDate(routineId: string, existingCompletionId: string | null, date: string) {
+    // 2026-09-28에 "손맛"을 위해 추가했던 진동을 2026-09-30에 다시 제거함 — 사용자가 체크
+    // 반응성이 계속 느리다고 느껴서 진동/애니메이션을 빼서라도 빠르게 해달라고 요청, 네이티브
+    // 브리지를 타는 호출을 하나라도 줄이는 쪽을 택함
     const optimisticResult: RoutineCompletion | null = existingCompletionId
       ? null
       : { id: `optimistic-${Date.now()}`, routine_id: routineId, completed_date: date, tracking_value: null };
-    // 지금 안 보고 있는 화면(월/주 중 하나)까지 매번 같이 갱신하면, 월간뷰는 몇 달치 데이터를
-    // 계속 누적해서 들고 있다가 매번 다시 병합하는 monthAccum 계산까지 딸려와서(위 monthAccum
-    // useMemo 참고) 지금 보이지도 않는 화면 때문에 탭 반응이 느려지는 느낌을 줬다(2026-09-28) —
-    // 지금 보이는 화면만 즉시(낙관적으로) 갱신하고, 안 보이는 쪽은 서버 응답이 돌아온 뒤
-    // 진짜 값으로 한 번만 맞춘다(그사이 그 화면으로 전환해도 어차피 그때 다시 조회된다)
-    const activeKey = viewMode === 'month' ? monthKey : weekKey;
-    queryClient.setQueryData(activeKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
-    // 위 캐시 갱신과 별개로, 날짜상세 모달은 이 로컬 override부터 즉시 따라가게 한다
-    // (localOverride 선언부 주석 참고 — 캐시 경로의 반영 지연과 무관하게 항상 즉시 반영 보장)
-    setLocalOverride((prev) => ({ ...prev, [routineId]: optimisticResult }));
-    console.log('[calendar-perf] optimistic set 완료, tap부터', Date.now() - __tapStart, 'ms');
-
-    try {
-      const result = await toggleCheckCompletion(routineId, existingCompletionId, date);
-      console.log('[calendar-perf] 서버 응답 도착, tap부터', Date.now() - __tapStart, 'ms');
-      queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
-      queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
-      queryClient.invalidateQueries({ queryKey: ['stats', userId] });
-      clearLocalOverride(routineId);
-    } catch {
-      queryClient.setQueryData(monthKey, prevMonth);
-      queryClient.setQueryData(weekKey, prevWeek);
-      clearLocalOverride(routineId);
-      setErrorMessage(t('calendar.errorCheck'));
+    // 이 루틴을 모달에서 처음 건드리는 거라면, 그 시점에 서버가 알고 있던 상태를 기준선으로
+    // 기억해둔다 — 그 뒤로 몇 번을 더 누르든 이 기준선은 안 바뀐다(닫을 때 이 기준과 최종
+    // 상태만 비교해서 실제로 바뀐 것만 서버에 보낸다)
+    if (!(routineId in pendingCompletionChangesRef.current)) {
+      pendingCompletionChangesRef.current[routineId] = { date, baselineExistingId: existingCompletionId };
     }
+    setLocalOverrideSync(routineId, optimisticResult);
   }
 
   // 트래킹형 저장 — 값이 있으면 기록을 만들거나 갱신하고, 지우고 빈 채로 저장하면(오늘 탭과
-  // 동일한 정책) 기록삭제로 처리한다. 오늘뿐 아니라 지난 날짜도 여기서 같이 처리
-  async function handleSaveTrackingForDate(routineId: string, existingCompletionId: string | null, date: string) {
+  // 동일한 정책) 기록삭제로 처리한다. 체크형과 같은 이유로 서버 반영은 모달을 나갈 때로 미룬다
+  function handleSaveTrackingForDate(routineId: string, existingCompletionId: string | null, date: string) {
     const raw = trackingDraft;
     const value = Number(raw);
     setEditingTrackingRoutineId(null);
     if (!raw || Number.isNaN(value)) {
-      if (existingCompletionId) await handleToggleCompletionForDate(routineId, existingCompletionId, date);
+      if (existingCompletionId) handleToggleCompletionForDate(routineId, existingCompletionId, date);
       return;
     }
-    hapticSelection();
-    const monthKey = ['month-data', userId, year, month] as const;
-    const weekKey = ['week-data', userId, weekStart] as const;
-    const applyUpdate = (prev: MonthData | undefined, result: RoutineCompletion) => {
-      if (!prev) return prev;
-      const routineMap = { ...(prev.completionsByRoutine[routineId] ?? {}) };
-      routineMap[result.completed_date] = result;
-      return { ...prev, completionsByRoutine: { ...prev.completionsByRoutine, [routineId]: routineMap } };
-    };
-
-    // 여기도 체크형과 마찬가지로 서버 응답을 기다리는 동안 화면이 그대로라 느리게 느껴졌음 —
-    // 입력을 닫는 순간 바로 "저장된 값"으로 먼저 보여주고, 실패하면 원래대로 되돌린다
-    const prevMonth = queryClient.getQueryData<MonthData>(monthKey);
-    const prevWeek = queryClient.getQueryData<MonthData>(weekKey);
     const optimisticResult: RoutineCompletion = {
       id: existingCompletionId ?? `optimistic-${Date.now()}`,
       routine_id: routineId,
       completed_date: date,
       tracking_value: value,
     };
-    // 체크형과 같은 이유로(위 handleToggleCompletionForDate 주석 참고) 지금 보이는 화면만 즉시 갱신
-    const activeKey = viewMode === 'month' ? monthKey : weekKey;
-    queryClient.setQueryData(activeKey, (prev?: MonthData) => applyUpdate(prev, optimisticResult));
-    setLocalOverride((prev) => ({ ...prev, [routineId]: optimisticResult }));
-
-    try {
-      const result = await saveTrackingValue(routineId, existingCompletionId, value, date);
-      queryClient.setQueryData(monthKey, (prev?: MonthData) => applyUpdate(prev, result));
-      queryClient.setQueryData(weekKey, (prev?: MonthData) => applyUpdate(prev, result));
-      queryClient.invalidateQueries({ queryKey: ['stats', userId] });
-      clearLocalOverride(routineId);
-    } catch {
-      queryClient.setQueryData(monthKey, prevMonth);
-      queryClient.setQueryData(weekKey, prevWeek);
-      clearLocalOverride(routineId);
-      setErrorMessage(t('calendar.errorCheck'));
+    if (!(routineId in pendingCompletionChangesRef.current)) {
+      pendingCompletionChangesRef.current[routineId] = { date, baselineExistingId: existingCompletionId };
     }
+    setLocalOverrideSync(routineId, optimisticResult);
+  }
+
+  // 날짜상세 모달에서 쌓인 변경사항을 실제 서버에 반영한다 — 모달을 닫을 때(closeDateDetail)
+  // 한 번만 호출된다. 여러 루틴을 건드렸으면 전부 병렬로 보내고, 끝나면 month/week 데이터를
+  // 새로 받아와(invalidateQueries) 그리드가 실제 서버 상태로 맞춰지게 한다. 지금은 모달이 이미
+  // 닫혀서 사용자가 안 보고 있으니, 네트워크 왕복 시간이 그대로 걸려도(정상적인 지연) 화면
+  // 반응성과는 무관하다
+  async function flushPendingCompletionChanges() {
+    const pending = pendingCompletionChangesRef.current;
+    pendingCompletionChangesRef.current = {};
+    const routineIds = Object.keys(pending);
+    if (routineIds.length === 0) return;
+
+    let anyChanged = false;
+    await Promise.all(
+      routineIds.map(async (routineId) => {
+        const { date, baselineExistingId } = pending[routineId];
+        const hasOverride = routineId in localOverrideRef.current;
+        const finalOverride = hasOverride ? localOverrideRef.current[routineId] : undefined;
+        // 트래킹 값이 있으면(생성/수정) 값 자체가 바뀌었을 수 있어 존재 여부만으로는 순변화를
+        // 판단할 수 없으니 항상 반영한다 — 값이 우연히 같아도 그냥 덮어쓰는 것뿐이라 안전하다
+        const isTrackingSave = !!finalOverride && finalOverride.tracking_value != null;
+        const finalExistingId = hasOverride ? (finalOverride?.id ?? null) : baselineExistingId;
+        if (!isTrackingSave && !!finalExistingId === !!baselineExistingId) {
+          // 체크→해제→체크처럼 왕복해서 시작 전 상태로 돌아왔으면 서버에 보낼 게 없다
+          clearLocalOverride(routineId);
+          return;
+        }
+        anyChanged = true;
+        try {
+          if (isTrackingSave) {
+            await saveTrackingValue(routineId, baselineExistingId, finalOverride!.tracking_value!, date);
+          } else {
+            await toggleCheckCompletion(routineId, baselineExistingId, date);
+          }
+        } catch {
+          setErrorMessage(t('calendar.errorCheck'));
+        } finally {
+          clearLocalOverride(routineId);
+        }
+      })
+    );
+    if (anyChanged) {
+      const monthKey = ['month-data', userId, year, month] as const;
+      const weekKey = ['week-data', userId, weekStart] as const;
+      queryClient.invalidateQueries({ queryKey: monthKey });
+      queryClient.invalidateQueries({ queryKey: weekKey });
+      queryClient.invalidateQueries({ queryKey: ['stats', userId] });
+    }
+  }
+
+  // 날짜상세 모달을 닫는 모든 경로(바깥탭/닫기 버튼/기기 뒤로가기/일기 화면 이동)가 이 함수를
+  // 거치게 해서, "모달을 나갈 때 한 번에 반영"이 빠짐없이 실행되게 한다
+  function closeDateDetail() {
+    void flushPendingCompletionChanges();
+    setSelectedDate(null);
   }
 
   function startEditMemo(memo: DateMemo) {
@@ -989,15 +1196,18 @@ export default function CalendarScreen() {
     handleSaveTrackingForDate(editingTrackingRoutineId, entry?.completion?.id ?? null, selectedDate);
   }
 
-  const weekDates: string[] = [];
-  if (viewMode === 'week') {
+  // WeekCalendarSection(React.memo)에 넘기는 배열이라 useMemo로 고정한다 — 새 배열 리터럴을
+  // 매번 만들면 내용이 같아도 참조가 달라져서 월간뷰만 보고 있을 때도 memo가 무력화된다(2026-09-30)
+  const weekDates = useMemo(() => {
+    const dates: string[] = [];
     const start = new Date(`${weekStart}T00:00:00`);
     for (let i = 0; i < 7; i++) {
       const d = new Date(start);
       d.setDate(d.getDate() + i);
-      weekDates.push(formatLocalDate(d));
+      dates.push(formatLocalDate(d));
     }
-  }
+    return dates;
+  }, [weekStart]);
   const weekEndLabel = weekDates.length > 0 ? weekDates[6].slice(5).replace('-', '/') : '';
   const weekStartLabel = weekStart.slice(5).replace('-', '/');
 
@@ -1106,137 +1316,30 @@ export default function CalendarScreen() {
         <View
           style={[StyleSheet.absoluteFillObject, { opacity: viewMode === 'week' ? 1 : 0 }]}
           pointerEvents={viewMode === 'week' ? 'auto' : 'none'}>
-          {/* 폰이 작으면 주간 캘린더가 안 보일 정도로 이 카드가 커 보인다는 피드백 — 위아래로
-              쌓던(라벨 위, 숫자 아래) 레이아웃을 한 줄로 합치고 크기를 확 줄여서, 아래 실제
-              캘린더가 차지할 세로 공간을 더 확보한다.
-              월간뷰는 요청으로 이 카드를 다시 숨긴다(2026-09-21) — 예전엔 범례 위치를 주간뷰와
-              맞추려고 두 모드 모두 보여줬지만, 월간뷰 높이는 이제 MONTH_CALENDAR_HEIGHT 고정값
-              하나로만 관리되므로 이 카드가 없어도 월간뷰 자체 높이는 안 흔들린다 */}
-          <ShadowCard style={styles.streakHeroOuter} contentStyle={styles.streakHero}>
-            {bestStreakEver !== null && bestStreakEver > 0 ? (
-              <View style={styles.streakHeroRow}>
-                <Text style={styles.streakHeroLabel}>BEST STREAK</Text>
-                <View style={styles.streakHeroNumRow}>
-                  <Text style={styles.streakHeroNum}>{bestStreakEver}</Text>
-                  <Text style={styles.streakHeroUnit}>{t('calendar.streakUnit')}</Text>
-                </View>
-              </View>
-            ) : (
-              <Text style={styles.streakBadgeEmptyText}>{t('calendar.noStreakYet')}</Text>
-            )}
-          </ShadowCard>
-        <View style={styles.weekContainer}>
-          <View style={styles.weekHeader}>
-            <AnimatedPressable onPress={() => shiftWeek(-7)} hitSlop={8}>
-              <Text style={styles.weekArrow}>‹</Text>
-            </AnimatedPressable>
-            <Text style={styles.weekRangeText}>
-              {weekStartLabel} - {weekEndLabel}
-            </Text>
-            <AnimatedPressable onPress={() => shiftWeek(7)} hitSlop={8}>
-              <Text style={styles.weekArrow}>›</Text>
-            </AnimatedPressable>
-          </View>
-
-          <Animated.ScrollView
-            ref={weekScrollRef}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            onLayout={(e) => setWeekViewportWidth(e.nativeEvent.layout.width)}
-            onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: weekScrollXAnim } } }], {
-              useNativeDriver: true,
-            })}
-            scrollEventThrottle={16}
-            onContentSizeChange={scrollWeekToToday}>
-            {weekDates.map((dateStr) => {
-              const isFuture = dateStr > todayStr;
-              // weekData가 아직 안 왔어도(막 로딩 중이어도) 칸 자체는 항상 바로 그려지게 하고,
-              // 완료 색상/일정만 데이터가 도착하는 대로 채워 넣는다(스피너로 화면을 막지 않기 위함)
-              const weekData = weekQuery.data;
-              const status = weekData && !isFuture ? computeDayStatus(dateStr, weekData) : null;
-              const dayNum = Number(dateStr.slice(8, 10));
-              const scheduled = weekData && !isFuture ? routinesForDate(dateStr, weekData) : [];
-              // 컬럼 위치(index)가 아니라 그 날짜의 실제 요일로 라벨을 정한다(항상 일요일 시작이라
-              // 지금은 index와 같지만, 혼동 없게 날짜에서 직접 계산)
-              const dow = new Date(`${dateStr}T00:00:00`).getDay();
-                return (
-                  <AnimatedPressable
-                    key={dateStr}
-                    style={[
-                      styles.weekColumn,
-                      dateStr === todayStr && styles.weekColumnToday,
-                      // minHeight는 바닥값일 뿐이라 루틴이 많은 날은 칸이 그만큼 더 길어져서
-                      // 요일마다 칸 높이가 들쭉날쭉해지던 버그가 있었음 — height로 고정해서
-                      // 루틴 개수와 무관하게 항상 같은 높이가 되게 한다(넘치는 목록은 내부
-                      // ScrollView가 이미 알아서 스크롤 처리한다)
-                      { height: weekColumnTargetHeight },
-                    ]}
-                    onPress={() => setSelectedDate(dateStr)}>
-                    <View style={styles.weekColumnHeader}>
-                      <View style={styles.diaryIconSlot}>
-                        {weekPhotoDiaryDates.has(dateStr) ? (
-                          <Ionicons name="camera-outline" size={10} color={textMuted} />
-                        ) : (
-                          weekDiaryDates.has(dateStr) && <Ionicons name="book-outline" size={10} color={textMuted} />
-                        )}
-                      </View>
-                      <Text style={styles.weekRowWeekday}>{t(WEEKDAY_KEYS[dow])}</Text>
-                      <Text style={styles.weekRowDay}>{dayNum}</Text>
-                      {status && <View style={[styles.weekStatusDot, { backgroundColor: STATUS_COLORS[status] }]} />}
-                      {(weekMemosByDate[dateStr] ?? []).length > 0 && (
-                        <View style={styles.weekMemoRow}>
-                          {(weekMemosByDate[dateStr] ?? []).slice(0, 5).map((memo) => (
-                            <View
-                              key={memo.id}
-                              style={[styles.weekMemoDot, { backgroundColor: MEMO_COLORS[memo.color].border }]}
-                            />
-                          ))}
-                        </View>
-                      )}
-                    </View>
-                    <ScrollView
-                      style={[styles.weekColumnBody, { maxHeight: weekColumnTargetHeight - 44 }]}
-                      nestedScrollEnabled>
-                      {scheduled.length === 0 ? (
-                        <Text style={styles.weekColumnEmpty}>{isFuture ? '' : '-'}</Text>
-                      ) : (
-                        scheduled.map(({ routine, completion }) => (
-                          <Text
-                            key={routine.id}
-                            style={[styles.weekChip, completion && styles.weekChipDone]}
-                            numberOfLines={1}>
-                            {completion ? '✓ ' : ''}
-                            {routine.title}
-                          </Text>
-                        ))
-                      )}
-                    </ScrollView>
-                  </AnimatedPressable>
-                );
-              })}
-          </Animated.ScrollView>
-          {weekViewportWidth > 0 && weekContentWidth > weekViewportWidth && (
-            <View style={styles.weekScrollTrack} pointerEvents="none">
-              <Animated.View
-                style={[
-                  styles.weekScrollThumb,
-                  {
-                    width: weekThumbWidth,
-                    transform: [
-                      {
-                        translateX: weekScrollXAnim.interpolate({
-                          inputRange: [0, weekMaxScrollX],
-                          outputRange: [0, weekThumbMaxTranslate],
-                          extrapolate: 'clamp',
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
-            </View>
-          )}
-        </View>
+          <WeekCalendarSection
+            weekDates={weekDates}
+            weekData={weekQuery.data}
+            todayStr={todayStr}
+            weekColumnTargetHeight={weekColumnTargetHeight}
+            weekPhotoDiaryDates={weekPhotoDiaryDates}
+            weekDiaryDates={weekDiaryDates}
+            weekMemosByDate={weekMemosByDate}
+            bestStreakEver={bestStreakEver}
+            weekStartLabel={weekStartLabel}
+            weekEndLabel={weekEndLabel}
+            weekScrollRef={weekScrollRef}
+            weekScrollXAnim={weekScrollXAnim}
+            weekViewportWidth={weekViewportWidth}
+            weekContentWidth={weekContentWidth}
+            weekThumbWidth={weekThumbWidth}
+            weekMaxScrollX={weekMaxScrollX}
+            weekThumbMaxTranslate={weekThumbMaxTranslate}
+            styles={styles}
+            onShiftWeek={shiftWeek}
+            onSelectDate={setSelectedDate}
+            onViewportLayout={handleWeekViewportLayout}
+            onContentSizeChange={handleWeekContentSizeChange}
+          />
         </View>
       </View>
 
@@ -1267,11 +1370,11 @@ export default function CalendarScreen() {
         visible={selectedDate !== null}
         animationType="slide"
         transparent
-        onRequestClose={() => setSelectedDate(null)}>
+        onRequestClose={closeDateDetail}>
         <View style={styles.modalContainer}>
           <AnimatedPressable
             style={[StyleSheet.absoluteFill, styles.modalBackdrop]}
-            onPress={() => setSelectedDate(null)}
+            onPress={closeDateDetail}
           />
           {/* 트래킹 입력 중 바깥(리스트 빈 공간·헤더 등)을 탭하면 입력을 마무리하고 키보드를
               내린다 — 실제 버튼/행은 더 안쪽에 있는 자기 자신의 Pressable이 터치를 먼저
@@ -1288,7 +1391,7 @@ export default function CalendarScreen() {
                 style={styles.diaryButton}
                 onPress={() => {
                   const date = selectedDate;
-                  setSelectedDate(null);
+                  closeDateDetail();
                   if (date) router.push({ pathname: '/diary-form', params: { date } });
                 }}>
                 <Ionicons name="book-outline" size={13} color={accent} />
@@ -1434,25 +1537,31 @@ export default function CalendarScreen() {
 
                   if (isCheckToggleable) {
                     return (
-                      <AnimatedPressable
+                      // 체크 반응성이 최우선이라 눌림 애니메이션 없는 일반 Pressable로 바꿨다(2026-09-30)
+                      <Pressable
                         key={routine.id}
-                        onPress={() =>
-                          selectedDate && handleToggleCompletionForDate(routine.id, completion?.id ?? null, selectedDate)
-                        }>
+                        onPress={() => {
+                          // completion(위 detail.map 구조분해)은 렌더 시점 값이라, 아주 빠르게
+                          // 연속으로 누르면 방금 탭이 아직 리렌더로 반영되기 전이라 낡은 값일 수
+                          // 있다(2026-09-30) — 리렌더 타이밍과 무관하게 항상 최신인
+                          // resolveCompletionId로 그 자리에서 다시 판정한다
+                          if (!selectedDate) return;
+                          handleToggleCompletionForDate(routine.id, resolveCompletionId(routine.id, selectedDate), selectedDate);
+                        }}>
                         {row}
-                      </AnimatedPressable>
+                      </Pressable>
                     );
                   }
                   if (isTrackingEditable) {
                     return (
-                      <AnimatedPressable
+                      <Pressable
                         key={routine.id}
                         onPress={() => {
                           setEditingTrackingRoutineId(routine.id);
                           setTrackingDraft(completion?.tracking_value != null ? String(completion.tracking_value) : '');
                         }}>
                         {row}
-                      </AnimatedPressable>
+                      </Pressable>
                     );
                   }
                   return <View key={routine.id}>{row}</View>;
@@ -1463,7 +1572,7 @@ export default function CalendarScreen() {
                 보이던 문제가 있었다(2026-09-21) — 입력 중엔 아예 숨기고, 목록 스크롤/바깥
                 탭으로 입력이 끝나면(commitOrCancelTrackingEdit) 다시 나타난다 */}
             {!editingTrackingRoutineId && (
-              <AnimatedPressable style={styles.closeButton} onPress={() => setSelectedDate(null)}>
+              <AnimatedPressable style={styles.closeButton} onPress={closeDateDetail}>
                 <Text style={styles.closeButtonText}>{t('today.close')}</Text>
               </AnimatedPressable>
             )}

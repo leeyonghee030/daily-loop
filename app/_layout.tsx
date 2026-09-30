@@ -23,6 +23,9 @@ import { LanguageProvider, useTranslation } from '@/lib/language';
 import { KoreanFontProvider, useKoreanFont } from '@/lib/korean-font';
 import { OnboardingProvider, useOnboarding } from '@/lib/onboarding';
 import { persistOptions, queryClient } from '@/lib/query-client';
+import { initSentry, Sentry } from '@/lib/sentry';
+
+initSentry();
 
 // react-navigation의 기본 테마는 헤더바/탭바 배경을 자체 회색으로 칠해서, 우리 Colors.ts
 // 배경색을 바꿔도 그 부분만 예전 색 그대로 남아있었다 — 우리 배경색으로 맞춰서 통일한다.
@@ -47,7 +50,7 @@ export const unstable_settings = {
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
-export default function RootLayout() {
+function RootLayout() {
   const [loaded, error] = useFonts({
     ...FontAwesome.font,
     Quicksand_600SemiBold,
@@ -186,3 +189,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 });
+
+// Sentry.wrap으로 감싸야 New Architecture(Fabric)에서도 네이티브 크래시까지 제대로 잡힌다
+export default Sentry.wrap(RootLayout);

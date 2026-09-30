@@ -374,25 +374,7 @@ function GestureTapView({
   );
 }
 
-// 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
-function TimelineView({
-  routines,
-  completions,
-  onToggleCheck,
-  onEdit,
-  onPlayVideo,
-  onSkipToday,
-  onCancelTracking,
-  editingTrackingIds,
-  trackingInputs,
-  onStartEditTracking,
-  onChangeTrackingInput,
-  onSaveTracking,
-  onFocusTracking,
-  onBlurTracking,
-  repositionToken,
-  isActive,
-}: {
+type TimelineViewProps = {
   routines: Routine[];
   completions: Record<string, RoutineCompletion>;
   onToggleCheck: (routine: Routine) => void;
@@ -415,7 +397,39 @@ function TimelineView({
   // 동안 타임라인이 안 보이게 숨어서도 반응하는 것(예: 간단안내 팝업이 엉뚱하게 뜸)을 막기 위해
   // 이 값으로 직접 막는다
   isActive: boolean;
-}) {
+};
+
+// ⚠️ 성능 핵심(2026-09-30) — 이 화면이 안 보이는 동안(isActive=false)은 완전히 그대로 얼어있게
+// 둔다. TimelineView는 매 렌더마다 블록 위치/겹침(assignColumns)을 전부 다시 계산하는 무거운
+// 컴포넌트인데, 예전엔 memo 없이 매번 새로 그려졌음(오늘 탭 체크가 127~158ms씩 걸리던 원인 —
+// 리스트만 보고 있어도 숨겨진 타임라인이 체크할 때마다 같이 통째로 재계산되고 있었다). 두 화면이
+// 항상 같이 마운트돼 있는 구조(위 absoluteFillObject 주석 참고)라 완전히 렌더를 건너뛸 수 있는데,
+// isActive가 false→false로 유지되는 동안은 다른 props가 바뀌어도 무시하고 이전 화면 그대로 둔다
+// (어차피 안 보임) — isActive가 true로 바뀌는 순간(탭 전환)에만 그때의 최신 props로 다시 그린다
+function timelineViewPropsAreEqual(prev: TimelineViewProps, next: TimelineViewProps): boolean {
+  if (!prev.isActive && !next.isActive) return true;
+  return (Object.keys(next) as (keyof TimelineViewProps)[]).every((key) => Object.is(prev[key], next[key]));
+}
+
+// 타임라인 뷰: 시간축에 루틴을 세로로 배치해서 하루 일정을 한눈에 보여줌
+const TimelineView = memo(function TimelineView({
+  routines,
+  completions,
+  onToggleCheck,
+  onEdit,
+  onPlayVideo,
+  onSkipToday,
+  onCancelTracking,
+  editingTrackingIds,
+  trackingInputs,
+  onStartEditTracking,
+  onChangeTrackingInput,
+  onSaveTracking,
+  onFocusTracking,
+  onBlurTracking,
+  repositionToken,
+  isActive,
+}: TimelineViewProps) {
   const [showSlotHint, setShowSlotHint] = useState(false);
   const [dontShowSlotHintAgain, setDontShowSlotHintAgain] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -1109,7 +1123,7 @@ function TimelineView({
       </Modal>
     </View>
   );
-}
+}, timelineViewPropsAreEqual);
 
 function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   return StyleSheet.create({
@@ -1945,13 +1959,23 @@ export default function TodayScreen() {
   // 반복됐다(2026-09-28, 특히 연속으로 여러 개 체크할 때) — 그 경로와 무관하게 항상 즉시
   // 반영을 보장하는 순수 로컬 state(캘린더 화면의 localOverride와 동일한 패턴)
   const [checkOverride, setCheckOverride] = useState<Record<string, RoutineCompletion | null>>({});
+  // 체크박스를 아주 빠르게 연속으로 누르면(예: 체크→해제→체크), setCheckOverride가 리렌더로
+  // 실제 반영되기 전에 다음 탭이 먼저 처리돼서 completionsRef/checkOverride 판정이 한 박자
+  // 낡은 값을 보고 "씹히는"(눌러도 반응이 없어 보이는) 경합이 있었다(2026-09-30) — state와
+  // 별개로 이 ref를 여기서 동기적으로 같이 갱신해두면, 리렌더를 기다리지 않고 바로 다음 탭에서도
+  // (같은 JS 틱 안에서든 그 이후든) 항상 최신 값을 읽을 수 있다
+  const checkOverrideRef = useRef(checkOverride);
+  function setCheckOverrideSync(routineId: string, value: RoutineCompletion | null) {
+    const next = { ...checkOverrideRef.current, [routineId]: value };
+    checkOverrideRef.current = next;
+    setCheckOverride(next);
+  }
   function clearCheckOverride(routineId: string) {
-    setCheckOverride((prev) => {
-      if (!(routineId in prev)) return prev;
-      const next = { ...prev };
-      delete next[routineId];
-      return next;
-    });
+    if (!(routineId in checkOverrideRef.current)) return;
+    const next = { ...checkOverrideRef.current };
+    delete next[routineId];
+    checkOverrideRef.current = next;
+    setCheckOverride(next);
   }
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   // 이미 오늘 기록이 있는 트래킹 루틴은 기본으로 "기록됨" 표시만 보여주고, 이 Set에 들어있는
@@ -2137,12 +2161,6 @@ export default function TodayScreen() {
   const routines = useMemo(() => todayQuery.data?.routines ?? [], [todayQuery.data]);
   const holiday = todayQuery.data?.holiday ?? null;
 
-  // ⚠️ 임시 진단 로그(2026-09-28) — 캘린더(1~8ms)보다 훨씬 느린 130ms대 커밋 지연이 리스트
-  // 크기와 상관있는지 확인하는 용도. 원인 확인되면 지울 것
-  useEffect(() => {
-    console.log('[today-perf] checkOverride 반영된 렌더 커밋', Date.now(), 'routines.length=', routines.length);
-  }, [checkOverride, routines.length]);
-
   const completions = useMemo(() => {
     const map: Record<string, RoutineCompletion> = {};
     for (const c of todayQuery.data?.completions ?? []) map[c.routine_id] = c;
@@ -2307,8 +2325,9 @@ export default function TodayScreen() {
             completed_date: todayDateStr,
             tracking_value: null,
           };
-      // checkOverride 선언부 주석 참고 — 캐시 경로와 무관하게 항상 즉시 반영을 보장
-      setCheckOverride((prev) => ({ ...prev, [routineId]: optimistic }));
+      // checkOverride 선언부 주석 참고 — 캐시 경로와 무관하게 항상 즉시 반영을 보장하고,
+      // 빠른 연속 탭 경합도 막기 위해 ref까지 동기적으로 같이 갱신하는 setCheckOverrideSync를 쓴다
+      setCheckOverrideSync(routineId, optimistic);
       queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
         if (!old) return old;
         if (existingId) {
@@ -2530,14 +2549,17 @@ export default function TodayScreen() {
   // 안전해서, 이 함수에서는 그 대기 가드를 없애고 탭할 때마다 즉시 반영한다
   // 진동 없이 체크만 토글 — 일괄 체크(아래 handleBulkCheck)에서 재사용한다
   const toggleCheckMutate = useCallback((routine: Routine) => {
-    const existing = completionsRef.current[routine.id] ?? null;
+    // completionsRef는 리렌더가 실제로 커밋된 뒤에야 갱신되는데, 아주 빠르게 연속으로 탭하면
+    // 그 리렌더가 아직 안 끝난 상태에서 다음 탭이 처리돼 completionsRef가 방금 탭의 결과를
+    // 아직 못 보고 있는 경합이 있었다(2026-09-30) — checkOverrideRef는 setCheckOverrideSync가
+    // 리렌더를 기다리지 않고 그 자리에서 바로 갱신해두므로, 이 값이 있으면 그걸 우선한다
+    const existing = routine.id in checkOverrideRef.current
+      ? checkOverrideRef.current[routine.id]
+      : completionsRef.current[routine.id] ?? null;
     toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null });
   }, []);
 
   const handleToggleCheck = useCallback((routine: Routine) => {
-    // ⚠️ 임시 진단 로그(2026-09-28) — 빠르게 연속 체크할 때 탭이 씹히는지, 처리는 되는데 화면
-    // 반영만 늦는지 구분하기 위한 용도. 원인 확인되면 지울 것
-    console.log('[today-perf] tap', routine.title, Date.now());
     hapticSelection();
     toggleCheckMutate(routine);
   }, [toggleCheckMutate]);
@@ -2622,6 +2644,18 @@ export default function TodayScreen() {
     (routine: Routine) => {
       swipeRefsRef.current[routine.id]?.close();
       pendingFocusRoutineIdRef.current = routine.id;
+      router.push({ pathname: '/routine-form', params: { id: routine.id } });
+    },
+    [router]
+  );
+
+  // 타임라인 전용 — handleEditRoutine과 달리 리스트뷰 스크롤 복귀용 pendingFocusRoutineIdRef는
+  // 건드리지 않는다(그 값은 viewMode==='list'일 때만 소비되는데, 타임라인을 보는 동안 설정해두면
+  // 나중에 리스트뷰로 전환할 때 엉뚱하게 그 루틴 위치로 스크롤돼버린다). TimelineView가
+  // React.memo로 감싸여 있어(성능 핵심, 위 timelineViewPropsAreEqual 참고) onEdit도 항상 같은
+  // 참조를 유지해야 하므로 useCallback으로 고정한다
+  const handleEditRoutineFromTimeline = useCallback(
+    (routine: Routine) => {
       router.push({ pathname: '/routine-form', params: { id: routine.id } });
     },
     [router]
@@ -2828,7 +2862,7 @@ export default function TodayScreen() {
           routines={routines}
           completions={completions}
           onToggleCheck={handleToggleCheck}
-          onEdit={(routine) => router.push({ pathname: '/routine-form', params: { id: routine.id } })}
+          onEdit={handleEditRoutineFromTimeline}
           onPlayVideo={handlePlayVideo}
           onSkipToday={handleSkipToday}
           onCancelTracking={handleCancelTracking}

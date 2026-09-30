@@ -108,6 +108,26 @@ function localDateOf(isoTimestamp: string): string {
   return formatLocalDate(new Date(isoTimestamp));
 }
 
+// matchesToday()는 캘린더 월간뷰(달 하나에 최대 ~42일 × 표시 중인 달들)나 통계 화면(루틴당
+// 전체 기간의 모든 날짜)처럼 "루틴 여러 개 × 날짜 여러 개"를 겹겹이 순회하는 곳에서 호출되는데,
+// 그때마다 매번 같은 루틴의 created_at/deleted_at을 새로 Date로 파싱하고 있었다 — 이 값은 그
+// 루틴이 안 바뀌는 한 날짜와 무관하게 항상 같은 결과라 순전히 낭비되는 반복 계산이었다.
+// 캘린더에서 체크 한 번 할 때마다 이 파싱이 수천 번씩 다시 일어나 애니메이션/진동/체크 반영까지
+// 같이 느려 보이던 원인이었다(2026-09-30) — 루틴 객체별로 한 번만 계산해서 재사용한다
+const createdAtDateCache = new WeakMap<Routine, string>();
+const deletedAtDateCache = new WeakMap<Routine, string>();
+
+function cachedLocalDateOf(routine: Routine, field: 'created_at' | 'deleted_at'): string | null {
+  const cache = field === 'created_at' ? createdAtDateCache : deletedAtDateCache;
+  const cached = cache.get(routine);
+  if (cached !== undefined) return cached;
+  const raw = routine[field];
+  if (!raw) return null;
+  const result = localDateOf(raw);
+  cache.set(routine, result);
+  return result;
+}
+
 function matchesToday(
   routine: Routine,
   todayDate: string,
@@ -118,10 +138,12 @@ function matchesToday(
   if (routine.skip_holidays && isHoliday) return false;
   // 이 루틴이 생기기 전 날짜는 예정될 수 없다 — 안 그러면 오늘 막 만든 루틴이 생성일보다
   // 훨씬 전(심하면 몇 달~몇 년 전) 과거 날짜에도 전부 예정됐던 것처럼 계산됨
-  if (todayDate < localDateOf(routine.created_at)) return false;
+  const createdDate = cachedLocalDateOf(routine, 'created_at');
+  if (createdDate !== null && todayDate < createdDate) return false;
   // 삭제된 루틴은 삭제된 날짜부터(그날 포함) 예정에서 빠진다 — 삭제 전 과거 날짜의 캘린더/통계
   // 기록은 그대로 유지되어야 하므로, 삭제됐다고 전체 기간에서 통째로 빠지면 안 됨
-  if (routine.deleted_at && todayDate >= localDateOf(routine.deleted_at)) return false;
+  const deletedDate = routine.deleted_at ? cachedLocalDateOf(routine, 'deleted_at') : null;
+  if (deletedDate !== null && todayDate >= deletedDate) return false;
 
   switch (routine.repeat_type) {
     case 'daily':
@@ -195,29 +217,23 @@ export async function fetchTodayRoutines(userId: string): Promise<{
   const todayDate = formatLocalDate(today);
   const todayDow = today.getDay();
 
-  const [{ data: routines, error: routinesError }, holiday] = await Promise.all([
+  // ⚠️ 예전엔 루틴 목록을 먼저 받아 그 id로 건너뛴날짜/완료기록을 .in(routine_id, ids)로
+  // 필터링했는데(왕복 2번, 오늘 탭 첫 로딩에 그대로 영향), 그 필터는 RLS 정책(그 루틴이 내
+  // 것인지 exists 서브쿼리로 확인)이 이미 걸러주고 있어서 불필요했다(2026-09-30, 캘린더
+  // fetchRangeData/fetchStats와 같은 문제 — lib/routines.ts 상단 fetchRangeData 주석 참고).
+  // 네 가지 전부 한 Promise.all로 병렬 요청한다
+  const [
+    { data: routines, error: routinesError },
+    holiday,
+    { data: skipRows, error: skipError },
+    { data: completionRows, error: completionsError },
+  ] = await Promise.all([
     supabase.from('routines').select('*, slots(*)').eq('user_id', userId).is('deleted_at', null),
     fetchTodayHoliday(),
+    supabase.from('routine_skip_dates').select('routine_id').eq('skip_date', todayDate),
+    supabase.from('routine_completions').select('*').eq('completed_date', todayDate),
   ]);
-
   if (routinesError) throw routinesError;
-
-  const allIds = (routines ?? []).map((r) => r.id);
-
-  // 건너뛴 날짜와 완료기록 둘 다 "전체 루틴 id" 기준으로만 필요해서(오늘 예정 여부 필터링 전),
-  // 서로 의존관계가 없어 병렬로 같이 요청한다 — 예전엔 건너뛴 날짜부터 받아서 오늘 예정 목록을
-  // 추린 뒤에야 완료기록을 요청해서 왕복이 하나 더 걸렸음(첫 로딩 체감 속도에 영향)
-  const [{ data: skipRows, error: skipError }, { data: completionRows, error: completionsError }] =
-    allIds.length > 0
-      ? await Promise.all([
-          supabase
-            .from('routine_skip_dates')
-            .select('routine_id')
-            .eq('skip_date', todayDate)
-            .in('routine_id', allIds),
-          supabase.from('routine_completions').select('*').in('routine_id', allIds).eq('completed_date', todayDate),
-        ])
-      : [{ data: [], error: null }, { data: [], error: null }];
   if (skipError) throw skipError;
   if (completionsError) throw completionsError;
   const skippedIds = new Set((skipRows ?? []).map((row) => row.routine_id));
@@ -243,20 +259,19 @@ export async function fetchRoutinesForDate(
 ): Promise<{ routines: Routine[]; completions: RoutineCompletion[] }> {
   const dow = new Date(`${dateStr}T00:00:00`).getDay();
 
-  const [{ data: routines, error: routinesError }, { data: holidayRow }] = await Promise.all([
+  // fetchTodayRoutines와 같은 이유로 병렬화 — 위 주석 참고
+  const [
+    { data: routines, error: routinesError },
+    { data: holidayRow },
+    { data: skipRows, error: skipError },
+    { data: completionRows, error: completionsError },
+  ] = await Promise.all([
     supabase.from('routines').select('*, slots(*)').eq('user_id', userId).is('deleted_at', null),
     supabase.from('holidays').select('date').eq('date', dateStr).maybeSingle(),
+    supabase.from('routine_skip_dates').select('routine_id').eq('skip_date', dateStr),
+    supabase.from('routine_completions').select('*').eq('completed_date', dateStr),
   ]);
   if (routinesError) throw routinesError;
-
-  const allIds = (routines ?? []).map((r) => r.id);
-  const [{ data: skipRows, error: skipError }, { data: completionRows, error: completionsError }] =
-    allIds.length > 0
-      ? await Promise.all([
-          supabase.from('routine_skip_dates').select('routine_id').eq('skip_date', dateStr).in('routine_id', allIds),
-          supabase.from('routine_completions').select('*').in('routine_id', allIds).eq('completed_date', dateStr),
-        ])
-      : [{ data: [], error: null }, { data: [], error: null }];
   if (skipError) throw skipError;
   if (completionsError) throw completionsError;
   const skippedIds = new Set((skipRows ?? []).map((row) => row.routine_id));
@@ -671,44 +686,54 @@ export async function fetchAllRoutinesForCalendar(userId: string): Promise<Routi
   return (data ?? []) as Routine[];
 }
 
-// 공휴일은 유저/루틴과 전혀 무관한 독립적인 데이터인데, fetchRangeData 안에 같이 묶여있으면
-// "루틴 목록을 먼저 다 받아와야만" 그 뒤에야 공휴일도 조회되는 구조라, 월 캘린더 첫 진입 시
-// 공휴일 표시가 루틴 로딩 속도에 발목 잡혀 늦게 떴다(2026-09-27) — calendar.tsx에서 이 함수를
-// 따로, 더 일찍 독립적으로 호출해서 공휴일만 먼저 빠르게 보이게 한다
-export async function fetchHolidaysInRange(rangeStart: string, rangeEnd: string): Promise<Record<string, true>> {
-  const { data, error } = await supabase.from('holidays').select('date').gte('date', rangeStart).lte('date', rangeEnd);
-  if (error) throw error;
-  const holidayDates: Record<string, true> = {};
-  for (const row of data ?? []) holidayDates[row.date] = true;
-  return holidayDates;
-}
-
 // routines를 안 넘기면(예: notifications.ts처럼 세션 캐시가 없는 1회성 호출) 직접 받아온다 —
-// calendar.tsx는 매번 fetchAllRoutinesForCalendar로 캐시된 목록을 넘겨서 이 fetch를 건너뛴다
+// calendar.tsx는 매번 fetchAllRoutinesForCalendar로 캐시된 목록을 넘겨서 이 fetch를 건너뛴다.
+// ⚠️ 완료기록/건너뛴 날짜 조회는 원래 routine id 목록(ids)으로 .in() 필터를 걸었는데, 사실 이
+// 필터가 없어도 RLS 정책(그 루틴이 내 것인지 exists 서브쿼리로 확인)이 이미 내 것만 돌려주므로
+// 불필요한 조건이었다 — 그런데도 이 ids를 만들려고 "루틴 목록이 다 올 때까지" 기다린 뒤에야
+// 완료기록/건너뛴 날짜/공휴일을 순차로 받아오고 있어서, 캘린더 첫 진입이 왕복 2번(약 2초)
+// 걸렸다(2026-09-30). ids 필터를 없애고 네 가지(루틴/완료기록/건너뛴 날짜/공휴일)를 전부 한
+// Promise.all로 동시에 요청하도록 바꿔서 왕복 1번 수준으로 단축한다
 async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string, routines?: Routine[]): Promise<MonthData> {
-  const resolvedRoutines = routines ?? (await fetchAllRoutinesForCalendar(userId));
-
-  const ids = resolvedRoutines.map((r) => r.id);
-  const [{ data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
+  // ⚠️ 임시 진단 로그(2026-09-30) — 서울 리전인데도 계속 2초 가까이 걸린다는 신고로, 추측 대신
+  // 실제로 이 4개 요청 각각이 몇 ms 걸리는지 재본다. 원인 확인되면 지울 것
+  const __t0 = Date.now();
+  const __tag = (label: string) => `[cal-perf] ${label} ${Date.now() - __t0}ms (${rangeStart}~${rangeEnd})`;
+  const [resolvedRoutines, { data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
     await Promise.all([
-      ids.length > 0
-        ? supabase
-            .from('routine_completions')
-            .select('*')
-            .in('routine_id', ids)
-            .gte('completed_date', rangeStart)
-            .lte('completed_date', rangeEnd)
-        : Promise.resolve({ data: [], error: null }),
-      ids.length > 0
-        ? supabase
-            .from('routine_skip_dates')
-            .select('routine_id, skip_date')
-            .in('routine_id', ids)
-            .gte('skip_date', rangeStart)
-            .lte('skip_date', rangeEnd)
-        : Promise.resolve({ data: [], error: null }),
-      supabase.from('holidays').select('date').gte('date', rangeStart).lte('date', rangeEnd),
+      (routines ? Promise.resolve(routines) : fetchAllRoutinesForCalendar(userId)).then((r) => {
+        console.log(__tag('routines'));
+        return r;
+      }),
+      supabase
+        .from('routine_completions')
+        .select('*')
+        .gte('completed_date', rangeStart)
+        .lte('completed_date', rangeEnd)
+        .then((r) => {
+          console.log(__tag('completions'));
+          return r;
+        }),
+      supabase
+        .from('routine_skip_dates')
+        .select('routine_id, skip_date')
+        .gte('skip_date', rangeStart)
+        .lte('skip_date', rangeEnd)
+        .then((r) => {
+          console.log(__tag('skips'));
+          return r;
+        }),
+      supabase
+        .from('holidays')
+        .select('date')
+        .gte('date', rangeStart)
+        .lte('date', rangeEnd)
+        .then((r) => {
+          console.log(__tag('holidays'));
+          return r;
+        }),
     ]);
+  console.log(__tag('ALL DONE'));
   if (completionsError) throw completionsError;
   if (skipError) throw skipError;
   if (holidayError) throw holidayError;
@@ -741,17 +766,52 @@ export async function fetchWeekData(userId: string, weekStartStr: string, routin
   return fetchRangeData(userId, weekStartStr, formatLocalDate(end), routines);
 }
 
-export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {
+// 캘린더 월간뷰는 체크 한 번에 날짜 ~126개(현재±1개월)치를 이 함수로 다시 계산하는데, 그중
+// "이 날짜에 어떤 루틴이 예정돼 있나"(필터+정렬)는 완료기록(체크)과는 완전히 무관한 계산이다 —
+// 체크를 해도 그 루틴이 그 날짜에 예정돼 있다는 사실 자체는 안 바뀌니까. 그런데도 체크할 때마다
+// 매번 다시 필터링+정렬하고 있었다(2026-09-30) — monthAccum은 체크 시 completionsByRoutine만
+// 새 참조로 바뀌고 routines/skipDatesByRoutine/holidayDates는 그대로 같은 참조를 유지하므로,
+// 이 세 값이 안 바뀐 동안은 날짜별 "예정된 루틴 목록"을 캐시해서 재사용하고, 완료기록만 그 위에
+// 매번 새로 얹는다(완료기록 조회는 단순 객체 조회라 원래도 저렴함)
+let scheduleCache: {
+  routines: Routine[];
+  skipDatesByRoutine: MonthData['skipDatesByRoutine'];
+  holidayDates: MonthData['holidayDates'];
+  byDate: Map<string, Routine[]>;
+} | null = null;
+
+function scheduledRoutinesForDate(dateStr: string, month: MonthData): Routine[] {
+  if (
+    !scheduleCache ||
+    scheduleCache.routines !== month.routines ||
+    scheduleCache.skipDatesByRoutine !== month.skipDatesByRoutine ||
+    scheduleCache.holidayDates !== month.holidayDates
+  ) {
+    scheduleCache = {
+      routines: month.routines,
+      skipDatesByRoutine: month.skipDatesByRoutine,
+      holidayDates: month.holidayDates,
+      byDate: new Map(),
+    };
+  }
+  const cached = scheduleCache.byDate.get(dateStr);
+  if (cached) return cached;
+
   const d = new Date(`${dateStr}T00:00:00`);
   const dow = d.getDay();
   const isHoliday = !!month.holidayDates[dateStr];
-
-  return sortRoutines(
+  const scheduled = sortRoutines(
     month.routines.filter((r) => {
       if (month.skipDatesByRoutine[r.id]?.[dateStr]) return false;
       return matchesToday(r, dateStr, dow, isHoliday);
     })
-  ).map((routine) => ({
+  );
+  scheduleCache.byDate.set(dateStr, scheduled);
+  return scheduled;
+}
+
+export function routinesForDate(dateStr: string, month: MonthData): DayRoutine[] {
+  return scheduledRoutinesForDate(dateStr, month).map((routine) => ({
     routine,
     completion: month.completionsByRoutine[routine.id]?.[dateStr] ?? null,
   }));
@@ -859,37 +919,34 @@ function computeLifetimeStats(
   return { bestStreak: best, scheduledCount, completedCount };
 }
 
+// ⚠️ fetchRangeData와 같은 이유(2026-09-30, lib/routines.ts 상단 fetchRangeData 주석 참고)로
+// 여기도 "루틴 목록부터 다 받고 나서 그 id로 완료기록/건너뛴날짜를 필터링" 순서였는데, 그
+// .in(routine_id, ids) 필터는 RLS가 이미 알아서 걸러줘서 불필요했다 — 통계 탭/스트릭 배지가
+// 캘린더와 동시에 로딩될 때 이 순차 대기가 전체 체감 로딩을 같이 늘리고 있었다. 네 가지를
+// 전부 한 Promise.all로 병렬 요청하도록 바꾼다
 export async function fetchStats(userId: string): Promise<StatsSummary> {
   const todayDate = formatLocalDate(new Date());
 
   // 삭제된 루틴도 같이 가져온다 — 삭제 전 과거 날짜의 수행률/스트릭은 여전히 유효한 기록이므로.
   // matchesToday()가 deleted_at을 보고 날짜별로 알아서 걸러준다
-  const { data: routines, error: routinesError } = await supabase
-    .from('routines')
-    .select('*, slots(*)')
-    .eq('user_id', userId);
-  if (routinesError) throw routinesError;
-
-  const all = (routines ?? []) as Routine[];
-  const active = all.filter((r) => r.deleted_at === null);
-  const ids = all.map((r) => r.id);
-
   const [
+    { data: routines, error: routinesError },
     { data: completionRows, error: completionsError },
     { data: skipRows, error: skipError },
     { data: holidayRows, error: holidayError },
   ] = await Promise.all([
-    ids.length > 0
-      ? supabase.from('routine_completions').select('routine_id, completed_date').in('routine_id', ids)
-      : Promise.resolve({ data: [], error: null }),
-    ids.length > 0
-      ? supabase.from('routine_skip_dates').select('routine_id, skip_date').in('routine_id', ids)
-      : Promise.resolve({ data: [], error: null }),
+    supabase.from('routines').select('*, slots(*)').eq('user_id', userId),
+    supabase.from('routine_completions').select('routine_id, completed_date'),
+    supabase.from('routine_skip_dates').select('routine_id, skip_date'),
     supabase.from('holidays').select('date'),
   ]);
+  if (routinesError) throw routinesError;
   if (completionsError) throw completionsError;
   if (skipError) throw skipError;
   if (holidayError) throw holidayError;
+
+  const all = (routines ?? []) as Routine[];
+  const active = all.filter((r) => r.deleted_at === null);
 
   const completedByRoutine = new Map<string, Set<string>>();
   for (const row of completionRows ?? []) {
