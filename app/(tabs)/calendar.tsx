@@ -288,6 +288,7 @@ type MonthCalendarSectionProps = {
   height: number;
   screenWidth: number;
   calendarCursor: string;
+  calendarListRef: RefObject<{ scrollToMonth: (date: string) => void } | null>;
   calendarTheme: object;
   onMonthChange: (date: DateData) => void;
   monthAccum: MonthData;
@@ -317,6 +318,7 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
   height,
   screenWidth,
   calendarCursor,
+  calendarListRef,
   calendarTheme,
   onMonthChange,
   monthAccum,
@@ -378,6 +380,7 @@ const MonthCalendarSection = memo(function MonthCalendarSection({
     // 붙어 보인다는 요청으로 살짝 내린 값(2026-09-21)
     <View style={{ height, marginTop: 10 }}>
       <CalendarList
+        ref={calendarListRef}
         horizontal
         pagingEnabled
         // 기본값(과거/미래 각 50개월, 총 101개월치)이 커스텀 dayComponent까지 겹쳐서 최초
@@ -917,6 +920,9 @@ export default function CalendarScreen() {
 
   // 주간뷰 좌우 스와이프도 같은 이유로 원복 — 화살표(‹ ›) 버튼으로만 주 이동
   const weekScrollRef = useRef<ScrollView>(null);
+  // 월간뷰 CalendarList 자체의 ref — "월" 탭을 눌렀을 때 오늘 달로 되돌리는 용도(아래
+  // goToMonthView 참고)
+  const monthListRef = useRef<{ scrollToMonth: (date: string) => void }>(null);
 
   // 주간뷰 가로 스크롤 커스텀 막대 — 기본 ScrollView 스크롤바는 색을 못 바꿔서(iOS는 흑/백만,
   // 안드로이드는 아예 불가) 직접 그린다. 칸 7개 폭은 고정값이라 콘텐츠 전체 폭은 계산으로
@@ -1229,10 +1235,16 @@ export default function CalendarScreen() {
     const now = new Date();
     const y = now.getFullYear();
     const m = now.getMonth() + 1;
+    const cursor = `${y}-${String(m).padStart(2, '0')}-01`;
     setYear(y);
     setMonth(m);
-    setCalendarCursor(`${y}-${String(m).padStart(2, '0')}-01`);
+    setCalendarCursor(cursor);
     setViewMode('month');
+    // calendarCursor 값이 이전과 같으면(같은 달 안에서 또 눌렀을 때) setState가 리렌더를 안
+    // 일으켜서 CalendarList의 current prop 변경 감지가 안 터져 스크롤이 전혀 안 움직이는
+    // 문제가 있었다(2026-10-01 QA) — 주간뷰(scrollWeekToTodayRef)처럼 ref로 직접 스크롤을
+    // 명령해서 값이 같아도 매번 눌릴 때마다 오늘 달로 돌아가게 한다
+    monthListRef.current?.scrollToMonth(cursor);
   }
   // "주" 탭도 "월" 탭과 같은 원칙 — 예전에 보던 주가 아니라 항상 이번 주부터 보여준다(2026-09-27,
   // "오늘로 이동" 버튼 대신 주/월 탭 자체가 각각 이번 주/이번 달로 리셋되길 원하는 요청으로 변경).
@@ -1298,6 +1310,7 @@ export default function CalendarScreen() {
             height={MONTH_GRID_HEIGHT}
             screenWidth={screenWidth}
             calendarCursor={calendarCursor}
+            calendarListRef={monthListRef}
             calendarTheme={calendarTheme}
             onMonthChange={handleMonthChange}
             monthAccum={deferredMonthAccum}

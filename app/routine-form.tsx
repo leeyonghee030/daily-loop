@@ -546,8 +546,15 @@ export default function RoutineFormScreen() {
       const cameFromLlm = prefilled.current && !isEditing;
       if (cameFromLlm) clearPersistedLlmText();
       savedRef.current = true;
-      // 말로 루틴 추가 경로로 왔을 땐 저장 후 그 입력 화면(/llm-input)이 아니라 오늘 탭으로 바로 나간다
-      const exit = () => (cameFromLlm ? router.dismissTo('/(tabs)') : router.back());
+      // 말로 루틴 추가 경로로 왔을 땐 저장 후 그 입력 화면(/llm-input)이 아니라 오늘 탭으로 바로 나간다.
+      // 복제(duplicateFrom)는 원본 루틴 수정화면 위에 새로 쌓인 화면이라, router.back()만 하면
+      // 그 원본 수정화면으로 돌아가버린다(2026-10-01 QA) — 원본 수정화면까지 같이 건너뛰어서
+      // 그 전에 있던 화면(오늘 탭/내 루틴 등 사용자가 실제로 있던 곳)으로 바로 나가게 한다
+      const exit = () => {
+        if (cameFromLlm) router.dismissTo('/(tabs)');
+        else if (isDuplicating) router.dismiss(2);
+        else router.back();
+      };
       if (photoUploadFailed) {
         Alert.alert(t('routineForm.photoUploadFailedTitle'), t('routineForm.photoUploadFailedDesc'), [
           { text: t('common.confirm'), onPress: exit },

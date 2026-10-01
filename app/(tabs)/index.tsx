@@ -1620,6 +1620,7 @@ const ListRow = memo(function ListRow({
           <View style={styles.actionSlot}>
             <AnimatedPressable
               style={[styles.checkbox, isDone && styles.checkboxDone]}
+              hitSlop={14}
               onPress={() => {
                 if (interactionsDisabled) return;
                 onToggleCheck(item);
