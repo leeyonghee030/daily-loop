@@ -61,3 +61,109 @@ export function withAlpha(hex: string, alpha: number): string {
   const b = parseInt(clean.substring(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
+
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.substring(0, 2), 16) / 255;
+  const g = parseInt(clean.substring(2, 4), 16) / 255;
+  const b = parseInt(clean.substring(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  let h = 0;
+  let s = 0;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s, l };
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function relativeLuminance(hex: string): number {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.substring(0, 2), 16) / 255;
+  const g = parseInt(clean.substring(2, 4), 16) / 255;
+  const b = parseInt(clean.substring(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// 타임라인 "지금" 강조처럼, 사용자가 고른 테마색과 같은 색감은 유지한 채 눈에 띄게 진하고
+// 채도 높은 버전이 필요할 때 쓴다 — 예전엔 이 자리에 테마색과 무관한 고정 주황을 써서,
+// 어떤 테마색을 고르든 "지금" 표시만 따로 튀어 보인다는 피드백이 있었다(2026-10-02).
+// 색상(hue)은 그대로 두고 채도/명도만 끌어올려서 "같은 색의 더 쨍한 버전"으로 보이게 한다.
+// 0.62/0.48 → 0.5/0.56 → 0.42/0.64 → 0.36/0.7로 계속 완화함(노랑/로즈/세이지 전부 "아직
+// 진하다"는 재확인이 반복돼서 — 그래도 "차이는 있을 정도로"는 유지).
+// 무채색(검정 테마 등, 채도가 거의 0)은 HSL 변환에서 색상각(h)이 의미 없이 0(=빨강)으로 나와서
+// 검정 테마를 고르면 "지금" 강조가 빨간색으로 보이는 버그가 있었음 — 색 자체는 안 입히고
+// 명도만 더 짙은 회색으로 눌러서 해결했는데, 처음엔 min(l, lightTarget)으로 해서 원래
+// 명도가 이미 lightTarget보다 낮은 검정 테마(#4A4A4A)는 그대로 통과돼 "지금"과 "평소"가
+// 똑같아 보이는(=강조 자체가 안 보이는) 버그가 또 있었음 — 원래 명도보다 항상 고정폭만큼
+// 더 어둡게 눌러서 구별되게 고쳤고, 그 폭도 "검정은 연한 색도 더 연하게" 요청으로 0.15→0.1→0.06→0.04로 계속 완화.
+// 색 있는 테마 중 핑크(로즈)만 다른 색보다 유독 진하게 느껴진다는 재확인(2026-10-02)이 있었음 —
+// HSL의 명도(L)는 사람이 느끼는 실제 밝기와 정확히 비례하지 않아서, 빨강/분홍처럼 초록 성분이
+// 적은 색상은 노랑/초록 계열과 같은 L이어도 실제로는 더 어둡게 보인다(sRGB 상대 휘도 공식 참고).
+// 매번 색상(hue)마다 보정값을 따로 손으로 맞추는 대신, 실제 휘도를 재서 목표치보다 낮으면
+// 명도를 조금씩 더 올려 어떤 색상이든 비슷한 정도로 은은하게 보이도록 자동 보정한다.
+// 그래도 핑크가 더 연하고 은은해야 한다는 재확인으로 목표 휘도를 0.62→0.68→0.74로,
+// 채도 기준도 0.36→0.3으로 한 번 더 낮춤. 초록(세이지)도 연하게 해달라는 요청이 반복돼서
+// 기본 명도(lightTarget)를 0.7→0.76→0.82로 계속 올림(루프로 저휘도 색만 더 올리던 것과
+// 별개로, 모든 색의 "출발 명도" 자체를 더 밝게)
+export function intensify(hex: string, satTarget = 0.3, lightTarget = 0.82): string {
+  const { h, s, l } = hexToHsl(hex);
+  if (s < 0.05) return hslToHex(0, 0, Math.max(0, l - 0.04));
+  let result = hslToHex(h, Math.max(s, satTarget), lightTarget);
+  const targetLuminance = 0.74;
+  let extraLight = 0;
+  while (relativeLuminance(result) < targetLuminance && lightTarget + extraLight < 0.9) {
+    extraLight += 0.03;
+    result = hslToHex(h, Math.max(s, satTarget), lightTarget + extraLight);
+  }
+  return result;
+}
+
+// 반투명(rgba) 배경을 쓰면 스와이프 닫힘 애니메이션 중 그 뒤로 슬라이드되어 빠져나가는
+// 버튼 색이 비쳐 보이는 문제가 있어서(2026-09-21), "흰 배경 위에 그 반투명색을 얹었을 때와
+// 눈으로 똑같이 보이는" 불투명(opaque) 색을 직접 계산해 대신 쓸 때 쓰는 헬퍼. 예전엔 이 계산을
+// 고정 테마색(#A9C4E0) 기준으로 손으로 미리 구해서 하드코딩해둬서, 사용자가 다른 테마색을
+// 고르면 이 자리만 색이 안 바뀌는 버그가 있었다(2026-10-02) — 어떤 accent를 넣어도 그때그때
+// 계산되도록 함수로 뺐다
+export function blendOverWhite(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  const blend = (channel: number) => Math.round(255 * (1 - alpha) + channel * alpha);
+  const r = blend(parseInt(clean.substring(0, 2), 16));
+  const g = blend(parseInt(clean.substring(2, 4), 16));
+  const b = blend(parseInt(clean.substring(4, 6), 16));
+  const toHex = (v: number) => v.toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// blendOverWhite와 같은 alpha를 줘도, 무채색(검정 테마 등)은 RGB 값 자체가 파스텔 테마색들보다
+// 훨씬 흰색에서 멀어서(예: #4A4A4A는 R=74인데 파스텔들은 보통 200대) 훨씬 더 진하게 비친다 —
+// 검정 테마의 타임라인 평소 블록 배경이 다른 테마보다 유독 진하다는 피드백(2026-10-02)의 원인.
+// 무채색일 때만 alpha를 절반으로 줄여서 다른 테마와 비슷한 정도로 은은하게 맞춘다
+export function blendOverWhiteSubtle(hex: string, alpha: number): string {
+  const { s } = hexToHsl(hex);
+  return blendOverWhite(hex, s < 0.05 ? alpha * 0.5 : alpha);
+}

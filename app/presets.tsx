@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, View as RNView } from 'react-native';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
@@ -35,6 +35,7 @@ export default function PresetsScreen() {
   const presetsQueryKey = ['presets', userId] as const;
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RoutinePreset | null>(null);
   const { show: showToast, toastNode } = useToast();
 
   const presetsQuery = useQuery({
@@ -109,32 +110,22 @@ export default function PresetsScreen() {
     }
   }
 
+  // 네이티브 Alert → 다른 화면들(내 루틴/영상 카테고리/설정)과 같은 테마색 커스텀 모달로
+  // 통일(2026-10-02) — 아래 deleteTarget 모달 참고
   function handleDelete(preset: RoutinePreset) {
-    const message =
-      language === 'ko'
-        ? `"${preset.name}" 모음집과, 여기서 만들어진 루틴이 전부 삭제돼요. "내 루틴 → 루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
-        : `"${preset.name}" and all routines created from it will be deleted. You can restore them within 2 weeks from "Routines → Routine Recovery".`;
-    Alert.alert(
-      t('presets.deleteTitle'),
-      message,
-      [
-        { text: t('settings.cancel'), style: 'cancel' },
-        {
-          text: t('myRoutines.delete'),
-          style: 'destructive',
-          onPress: async () => {
-            setBusyId(preset.id);
-            try {
-              await deleteMutation.mutateAsync(preset);
-            } catch {
-              // onError에서 이미 토스트를 띄움
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ]
-    );
+    setDeleteTarget(preset);
+  }
+
+  async function performDelete(preset: RoutinePreset) {
+    setDeleteTarget(null);
+    setBusyId(preset.id);
+    try {
+      await deleteMutation.mutateAsync(preset);
+    } catch {
+      // onError에서 이미 토스트를 띄움
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function handleBulkPause(preset: RoutinePreset, paused: boolean) {
@@ -216,6 +207,30 @@ export default function PresetsScreen() {
           </ShadowCard>
         ))}
       </ScrollView>
+
+      <Modal visible={!!deleteTarget} transparent animationType="fade" onRequestClose={() => setDeleteTarget(null)}>
+        <RNView style={styles.confirmBackdrop}>
+          <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setDeleteTarget(null)} />
+          {deleteTarget && (
+            <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+              <Text style={styles.confirmTitle}>{t('presets.deleteTitle')}</Text>
+              <Text style={styles.confirmDesc}>
+                {language === 'ko'
+                  ? `"${deleteTarget.name}" 모음집과, 여기서 만들어진 루틴이 전부 삭제돼요. "내 루틴 → 루틴 복구"에서 2주 안에 되돌릴 수 있어요.`
+                  : `"${deleteTarget.name}" and all routines created from it will be deleted. You can restore them within 2 weeks from "Routines → Routine Recovery".`}
+              </Text>
+              <View style={styles.confirmButtonRow}>
+                <AnimatedPressable style={styles.confirmCancelButton} onPress={() => setDeleteTarget(null)}>
+                  <Text style={styles.confirmCancelText}>{t('settings.cancel')}</Text>
+                </AnimatedPressable>
+                <AnimatedPressable style={styles.confirmDeleteButton} onPress={() => performDelete(deleteTarget)}>
+                  <Text style={styles.confirmDeleteText}>{t('myRoutines.delete')}</Text>
+                </AnimatedPressable>
+              </View>
+            </ShadowCard>
+          )}
+        </RNView>
+      </Modal>
     </View>
   );
 }
@@ -334,6 +349,64 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   bulkButtonText: {
     fontSize: 12,
+  },
+  // 삭제 확인창 — 네이티브 Alert 대신 다른 화면들과 같은 테마색 커스텀 모달(2026-10-02)
+  confirmBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  confirmCardOuter: {
+    width: '100%',
+  },
+  confirmCard: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  confirmDesc: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  confirmButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  confirmCancelButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    borderWidth: 1,
+    borderColor: border,
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  confirmDeleteButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  confirmDeleteText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   });
 }

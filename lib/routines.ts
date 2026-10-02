@@ -695,45 +695,25 @@ export async function fetchAllRoutinesForCalendar(userId: string): Promise<Routi
 // 걸렸다(2026-09-30). ids 필터를 없애고 네 가지(루틴/완료기록/건너뛴 날짜/공휴일)를 전부 한
 // Promise.all로 동시에 요청하도록 바꿔서 왕복 1번 수준으로 단축한다
 async function fetchRangeData(userId: string, rangeStart: string, rangeEnd: string, routines?: Routine[]): Promise<MonthData> {
-  // ⚠️ 임시 진단 로그(2026-09-30) — 서울 리전인데도 계속 2초 가까이 걸린다는 신고로, 추측 대신
-  // 실제로 이 4개 요청 각각이 몇 ms 걸리는지 재본다. 원인 확인되면 지울 것
-  const __t0 = Date.now();
-  const __tag = (label: string) => `[cal-perf] ${label} ${Date.now() - __t0}ms (${rangeStart}~${rangeEnd})`;
   const [resolvedRoutines, { data: completionRows, error: completionsError }, { data: skipRows, error: skipError }, { data: holidayRows, error: holidayError }] =
     await Promise.all([
-      (routines ? Promise.resolve(routines) : fetchAllRoutinesForCalendar(userId)).then((r) => {
-        console.log(__tag('routines'));
-        return r;
-      }),
+      routines ? Promise.resolve(routines) : fetchAllRoutinesForCalendar(userId),
       supabase
         .from('routine_completions')
         .select('*')
         .gte('completed_date', rangeStart)
-        .lte('completed_date', rangeEnd)
-        .then((r) => {
-          console.log(__tag('completions'));
-          return r;
-        }),
+        .lte('completed_date', rangeEnd),
       supabase
         .from('routine_skip_dates')
         .select('routine_id, skip_date')
         .gte('skip_date', rangeStart)
-        .lte('skip_date', rangeEnd)
-        .then((r) => {
-          console.log(__tag('skips'));
-          return r;
-        }),
+        .lte('skip_date', rangeEnd),
       supabase
         .from('holidays')
         .select('date')
         .gte('date', rangeStart)
-        .lte('date', rangeEnd)
-        .then((r) => {
-          console.log(__tag('holidays'));
-          return r;
-        }),
+        .lte('date', rangeEnd),
     ]);
-  console.log(__tag('ALL DONE'));
   if (completionsError) throw completionsError;
   if (skipError) throw skipError;
   if (holidayError) throw holidayError;

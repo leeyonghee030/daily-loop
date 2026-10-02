@@ -2,12 +2,13 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { ActivityIndicator, Modal, Platform, ScrollView, StyleSheet, Switch, TextInput, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
+import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { border, cardRadius } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
@@ -107,6 +108,8 @@ export default function PresetFormScreen() {
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 저장 완료 안내 — 네이티브 Alert 대신 다른 화면들과 같은 테마색 커스텀 모달로 통일(2026-10-02)
+  const [infoDialog, setInfoDialog] = useState<{ title: string; message: string } | null>(null);
 
   // 즐겨찾기/모음집 폼 등 여러 화면이 같은 쿼리 키를 쓰므로 서로 캐시를 공유한다
   const slotsQuery = useQuery({
@@ -380,7 +383,7 @@ export default function PresetFormScreen() {
           language === 'ko'
             ? `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
             : `${count} routine(s) were added to today's list. You can pause any you don't want from "Routines".`;
-        Alert.alert(t('presetForm.createdTitle'), message, [{ text: t('common.confirm'), onPress: () => router.back() }]);
+        setInfoDialog({ title: t('presetForm.createdTitle'), message });
       } else {
         const newItemInputs = items
           .map((item, index) => (item.isNew ? itemInputs[index] : null))
@@ -403,9 +406,7 @@ export default function PresetFormScreen() {
             language === 'ko'
               ? `루틴 ${parts.join(' · ')}개. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
               : `Routines ${parts.join(' · ')}. You can pause any you don't want from "Routines".`;
-          Alert.alert(t('presetForm.updatedTitle'), message, [
-            { text: t('common.confirm'), onPress: () => router.back() },
-          ]);
+          setInfoDialog({ title: t('presetForm.updatedTitle'), message });
         } else {
           router.back();
         }
@@ -438,6 +439,7 @@ export default function PresetFormScreen() {
   }
 
   return (
+    <>
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.label}>{t('presetForm.nameLabel')}</Text>
       <TextInput style={styles.input} value={name} onChangeText={setName} placeholder={t('presetForm.namePlaceholder')} />
@@ -687,6 +689,26 @@ export default function PresetFormScreen() {
         )}
       />
     </ScrollView>
+
+    <Modal visible={!!infoDialog} transparent animationType="fade" onRequestClose={() => {}}>
+      <RNView style={styles.confirmBackdrop}>
+        {infoDialog && (
+          <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>{infoDialog.title}</Text>
+            <Text style={styles.confirmDesc}>{infoDialog.message}</Text>
+            <AnimatedPressable
+              style={styles.confirmOkButton}
+              onPress={() => {
+                setInfoDialog(null);
+                router.back();
+              }}>
+              <Text style={styles.confirmOkText}>{t('common.confirm')}</Text>
+            </AnimatedPressable>
+          </ShadowCard>
+        )}
+      </RNView>
+    </Modal>
+    </>
   );
 }
 
@@ -883,6 +905,46 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   deleteButtonText: {
     color: '#FF6B6B',
+  },
+  // 저장 완료 안내 — 네이티브 Alert 대신 다른 화면들과 같은 테마색 커스텀 모달(2026-10-02)
+  confirmBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 32,
+  },
+  confirmCardOuter: {
+    width: '100%',
+  },
+  confirmCard: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  confirmDesc: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  confirmOkButton: {
+    width: '100%',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: cardRadius,
+    backgroundColor: accent,
+  },
+  confirmOkText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
   });
 }

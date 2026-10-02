@@ -48,29 +48,30 @@ function MockFrame({
 // 슬라이드1 — 체크형(체크박스)/트래킹형(숫자 입력)/시각체크(그 순간만) 차이를 오늘 탭 리스트
 // 행 3개로 보여준다
 function MockCheckTypes({ accent, styles }: { accent: string; styles: ReturnType<typeof createStyles> }) {
+  const { t } = useTranslation();
   return (
     <MockFrame styles={styles}>
       <View style={styles.mockRow}>
         <Text style={styles.mockTime}>07:00</Text>
         <Text style={styles.mockTitle} numberOfLines={1}>
-          물 마시기
+          {t('featureTour.mockDrinkWater')}
         </Text>
         <View style={styles.mockCheckbox} />
       </View>
       <View style={styles.mockRow}>
         <Text style={styles.mockTime}>07:30</Text>
         <Text style={styles.mockTitle} numberOfLines={1}>
-          팔굽혀펴기
+          {t('featureTour.mockPushups')}
         </Text>
         <View style={[styles.mockTrackingBox, { borderColor: accent }]}>
           <Text style={[styles.mockTrackingValue, { color: accent }]}>12</Text>
         </View>
-        <Text style={styles.mockUnit}>회</Text>
+        <Text style={styles.mockUnit}>{t('featureTour.mockPushupsUnit')}</Text>
       </View>
       <View style={styles.mockRow}>
         <Ionicons name="timer-outline" size={13} color={accent} style={styles.mockInstantIcon} />
         <Text style={styles.mockTitle} numberOfLines={1}>
-          기상
+          {t('featureTour.mockWakeUp')}
         </Text>
         <View style={[styles.mockCheckbox, styles.mockCheckboxDone, { backgroundColor: accent, borderColor: accent }]}>
           <Ionicons name="checkmark" size={11} color="#fff" />
@@ -83,6 +84,7 @@ function MockCheckTypes({ accent, styles }: { accent: string; styles: ReturnType
 // 슬라이드2 — 오른쪽 아래 + 버튼을 누르면 위성 3개(카테고리/말로 루틴 추가하기/루틴 추가)가
 // 펼쳐지는 실제 오늘 탭 구조를 그대로 축소해서 보여준다
 function MockFabMenu({ accent, styles }: { accent: string; styles: ReturnType<typeof createStyles> }) {
+  const { t } = useTranslation();
   return (
     <MockFrame styles={styles}>
       <View style={styles.mockFabArea}>
@@ -90,15 +92,15 @@ function MockFabMenu({ accent, styles }: { accent: string; styles: ReturnType<ty
             바로 위) — 목업도 똑같은 순서로 맞춘다(2026-09-27) */}
         <View style={[styles.mockSatellitePill, { borderColor: accent }]}>
           <Ionicons name="add-outline" size={11} color={accent} />
-          <Text style={[styles.mockSatelliteText, { color: accent }]}>루틴 추가</Text>
+          <Text style={[styles.mockSatelliteText, { color: accent }]}>{t('featureTour.mockAddRoutine')}</Text>
         </View>
         <View style={[styles.mockSatellitePill, { borderColor: accent }]}>
           <Ionicons name="mic-outline" size={11} color={accent} />
-          <Text style={[styles.mockSatelliteText, { color: accent }]}>말로 루틴 추가하기</Text>
+          <Text style={[styles.mockSatelliteText, { color: accent }]}>{t('today.llmBanner')}</Text>
         </View>
         <View style={[styles.mockSatellitePill, { borderColor: accent }]}>
           <Ionicons name="grid-outline" size={11} color={accent} />
-          <Text style={[styles.mockSatelliteText, { color: accent }]}>카테고리</Text>
+          <Text style={[styles.mockSatelliteText, { color: accent }]}>{t('today.category')}</Text>
         </View>
         <View style={[styles.mockFabCircle, { backgroundColor: accent }]}>
           <Ionicons name="add" size={20} color="#fff" />
@@ -110,11 +112,12 @@ function MockFabMenu({ accent, styles }: { accent: string; styles: ReturnType<ty
 
 // 슬라이드3 — 같은 하루 일정을 목록(체크박스 나열)과 타임라인(시간축+블록)으로 각각 보여준다
 function MockListVsTimeline({ accent, styles }: { accent: string; styles: ReturnType<typeof createStyles> }) {
+  const { t } = useTranslation();
   const halfWidth = (MOCK_WIDTH - 12) / 2;
   return (
     <View style={styles.mockSideBySide}>
       <MockFrame styles={styles} width={halfWidth}>
-        <Text style={styles.mockMiniLabel}>리스트</Text>
+        <Text style={styles.mockMiniLabel}>{t('today.list')}</Text>
         {[0, 1, 2].map((i) => (
           <View key={i} style={styles.mockThinRow}>
             <View style={[styles.mockThinDot, i === 1 && { backgroundColor: accent, borderColor: accent }]} />
@@ -123,7 +126,7 @@ function MockListVsTimeline({ accent, styles }: { accent: string; styles: Return
         ))}
       </MockFrame>
       <MockFrame styles={styles} width={halfWidth}>
-        <Text style={styles.mockMiniLabel}>타임라인</Text>
+        <Text style={styles.mockMiniLabel}>{t('today.timeline')}</Text>
         <View style={styles.mockTimelineAxis}>
           <View style={[styles.mockTimelineBlock, { top: 4, height: 14, backgroundColor: withAlpha(accent, 0.18) }]} />
           <View style={[styles.mockTimelineBlock, { top: 26, height: 22, backgroundColor: withAlpha(accent, 0.3) }]} />
@@ -137,12 +140,13 @@ function MockListVsTimeline({ accent, styles }: { accent: string; styles: Return
 
 // 슬라이드4 — 캘린더 월간 그리드(완료 상태 점)와 통계 막대그래프를 나란히 축소해서 보여준다
 function MockCalendarStats({ accent, styles }: { accent: string; styles: ReturnType<typeof createStyles> }) {
+  const { t } = useTranslation();
   const halfWidth = (MOCK_WIDTH - 12) / 2;
   const dotColors = [statusDone, statusDone, statusPartial, statusDone, statusMissed, statusDone, statusDone, statusPartial, statusDone];
   return (
     <View style={styles.mockSideBySide}>
       <MockFrame styles={styles} width={halfWidth}>
-        <Text style={styles.mockMiniLabel}>캘린더</Text>
+        <Text style={styles.mockMiniLabel}>{t('nav.tabCalendar')}</Text>
         <View style={styles.mockCalendarGrid}>
           {dotColors.map((color, i) => (
             <View key={i} style={[styles.mockCalendarDot, { backgroundColor: color }]} />
@@ -150,7 +154,7 @@ function MockCalendarStats({ accent, styles }: { accent: string; styles: ReturnT
         </View>
       </MockFrame>
       <MockFrame styles={styles} width={halfWidth}>
-        <Text style={styles.mockMiniLabel}>통계</Text>
+        <Text style={styles.mockMiniLabel}>{t('nav.tabStats')}</Text>
         <View style={styles.mockBarRow}>
           <View style={[styles.mockBar, { height: 18, backgroundColor: withAlpha(accent, 0.3) }]} />
           <View style={[styles.mockBar, { height: 34, backgroundColor: withAlpha(accent, 0.5) }]} />

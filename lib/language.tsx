@@ -146,6 +146,10 @@ const TRANSLATIONS = {
     'today.timeline': '타임라인',
     'today.viewModeHintText':
       '리스트 | 타임라인 버튼을 탭한 후 더블탭하면 기본 화면으로 저장돼요.\n기본 화면으로 저장된 버튼 위에 작은 점(•)이 나타나요.',
+    'today.slotOrderHint':
+      '같은 시간대에 루틴이 여러 개 있으면, 나열되는 순서는 "내 루틴" 탭에서 드래그로 바꿀 수 있어요.',
+    'today.fabHintLine1': '탭하면 루틴 추가·말로 루틴 추가하기·카테고리 메뉴가 펼쳐져요',
+    'today.fabHintLine2': '길게 눌러서 원하는 위치로 옮기고, 두 번 탭하면 원래 위치로 돌아와요',
     'today.llmBanner': '말로 루틴 추가하기',
     'today.empty': '오늘 할 루틴이 없어요',
     'today.edit': '수정',
@@ -473,6 +477,13 @@ const TRANSLATIONS = {
     'featureTour.slide3Body': '오늘 할 일을 목록 또는 시간대별 타임라인으로 볼 수 있어요. 원하는 쪽을 두 번 탭하면 기본 화면으로 저장돼요',
     'featureTour.slide4Title': '기록은 캘린더·통계에서',
     'featureTour.slide4Body': '지난 날짜 체크 현황은 캘린더에서, 스트릭과 수행률은 통계 탭에서 확인해보세요',
+    // 아래는 슬라이드 안 미니 목업(실제 화면이 아니라 설명용 가짜 화면)에 들어가는 예시
+    // 글자들 — 2026-10-02 QA에서 영어 모드에도 한글로 나온다는 제보로 번역 키 추가
+    'featureTour.mockDrinkWater': '물 마시기',
+    'featureTour.mockPushups': '팔굽혀펴기',
+    'featureTour.mockPushupsUnit': '회',
+    'featureTour.mockWakeUp': '기상',
+    'featureTour.mockAddRoutine': '루틴 추가',
     'nav.preset': '모음집',
     'nav.favorites': '즐겨찾기',
     'nav.videoPlayer': '영상 재생',
@@ -644,6 +655,10 @@ const TRANSLATIONS = {
     'today.timeline': 'Timeline',
     'today.viewModeHintText':
       'Tap List | Timeline, then double-tap to set it as your default.\nA small dot (•) appears on the button saved as default.',
+    'today.slotOrderHint':
+      'When multiple routines share the same time slot, you can reorder them by dragging in the "Routines" tab.',
+    'today.fabHintLine1': 'Tap to open Add routine, Describe it, and Categories',
+    'today.fabHintLine2': 'Hold to move it, double-tap to reset position',
     'today.llmBanner': 'Add a routine by describing it',
     'today.empty': 'You have no routines for today.',
     'today.edit': 'Edit',
@@ -973,6 +988,11 @@ const TRANSLATIONS = {
     'featureTour.slide3Body': 'See today as a simple list or a time-based timeline. Double-tap either one to make it your default view.',
     'featureTour.slide4Title': 'Track progress in Calendar & Stats',
     'featureTour.slide4Body': 'Check past days in the Calendar tab, and see streaks and completion rates in Stats.',
+    'featureTour.mockDrinkWater': 'Drink water',
+    'featureTour.mockPushups': 'Push-ups',
+    'featureTour.mockPushupsUnit': 'reps',
+    'featureTour.mockWakeUp': 'Wake up',
+    'featureTour.mockAddRoutine': 'Add routine',
     'nav.preset': 'Set',
     'nav.favorites': 'Favorites',
     'nav.videoPlayer': 'Play Video',

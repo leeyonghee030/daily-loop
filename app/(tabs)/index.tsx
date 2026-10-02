@@ -35,7 +35,7 @@ import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { useToast } from '@/components/Toast';
-import { border, cardRadius, dangerMuted, fontMono, withAlpha } from '@/constants/theme';
+import { blendOverWhiteSubtle, border, cardRadius, dangerMuted, fontMono, intensify, withAlpha } from '@/constants/theme';
 import { useAccentColor } from '@/lib/accent-color';
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
@@ -519,6 +519,12 @@ const TimelineView = memo(function TimelineView({
   function closeCluster() {
     setExpandedClusterId(null);
   }
+  // "+N 더보기"를 펼친 채로 리스트 탭으로 전환했다가 다시 타임라인으로 돌아오면, 펼친 상태가
+  // 그대로 남아있던 버그(2026-10-02) — isActive가 false로 바뀌는 순간(=이 화면을 떠나는 순간)
+  // 펼침 상태를 초기화해서, 다시 돌아왔을 때 항상 접힌 상태로 시작하게 한다
+  useEffect(() => {
+    if (!isActive) setExpandedClusterId(null);
+  }, [isActive]);
   // 안드로이드 뒤로가기 버튼으로도 닫히게 한다 — 펼쳐진 동안만 이벤트를 가로채 화면 이탈 대신 닫기만 한다
   useEffect(() => {
     if (expandedClusterId === null) return;
@@ -542,9 +548,14 @@ const TimelineView = memo(function TimelineView({
     setInfoRoutine(routine);
   }
   const accent = useAccentColor();
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const koreanFont = useKoreanFont();
   const timelineStyles = useMemo(() => createTimelineStyles(accent, koreanFont), [accent, koreanFont]);
+  // FAB 안내와 같은 이유(2026-09-22) — 아래 슬롯 순서 안내의 "다시 안 보기"/"오늘 이미 봤음"
+  // 상태를 계정별로 독립 기억하기 위해 필요(2026-10-02, 이 안내만 그 수정에서 빠져있었음 —
+  // 회원탈퇴 후 재가입해도 예전 계정에서 "다시 안 보기"를 눌렀으면 새 계정에서도 안 뜨는 버그)
+  const { session } = useAuth();
+  const userId = session?.user.id;
 
   const timed = routines
     .map((routine) => {
@@ -574,26 +585,27 @@ const TimelineView = memo(function TimelineView({
 
   // 같은 슬롯에 2개 이상 몰린 날에만, 하루 한 번(또는 "다시 안 보기" 선택 시 영구히) 순서 변경 안내를 띄운다
   useEffect(() => {
-    if (!hasSlotCollision) return;
+    if (!hasSlotCollision || !userId) return;
     let cancelled = false;
     (async () => {
-      const dismissed = await AsyncStorage.getItem(SLOT_HINT_DISMISSED_KEY);
+      const dismissed = await AsyncStorage.getItem(`${SLOT_HINT_DISMISSED_KEY}_${userId}`);
       if (cancelled || dismissed === 'true') return;
-      const lastShown = await AsyncStorage.getItem(SLOT_HINT_LAST_SHOWN_KEY);
+      const lastShown = await AsyncStorage.getItem(`${SLOT_HINT_LAST_SHOWN_KEY}_${userId}`);
       if (cancelled || lastShown === formatLocalDate(new Date())) return;
       setShowSlotHint(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [hasSlotCollision]);
+  }, [hasSlotCollision, userId]);
 
   async function closeSlotHint() {
     setShowSlotHint(false);
+    if (!userId) return;
     if (dontShowSlotHintAgain) {
-      await AsyncStorage.setItem(SLOT_HINT_DISMISSED_KEY, 'true');
+      await AsyncStorage.setItem(`${SLOT_HINT_DISMISSED_KEY}_${userId}`, 'true');
     } else {
-      await AsyncStorage.setItem(SLOT_HINT_LAST_SHOWN_KEY, formatLocalDate(new Date()));
+      await AsyncStorage.setItem(`${SLOT_HINT_LAST_SHOWN_KEY}_${userId}`, formatLocalDate(new Date()));
     }
   }
 
@@ -886,20 +898,14 @@ const TimelineView = memo(function TimelineView({
     <View style={timelineStyles.wrapper}>
       {showSlotHint && (
         <View style={timelineStyles.hintBanner}>
-          <Text style={timelineStyles.hintText}>
-            같은 시간대에 루틴이 여러 개 있으면, 나열되는 순서는 &quot;내 루틴&quot; 탭에서 드래그로 바꿀 수 있어요.
-          </Text>
+          <Text style={timelineStyles.hintText}>{t('today.slotOrderHint')}</Text>
           <View style={timelineStyles.hintFooter}>
-            <AnimatedPressable
-              style={timelineStyles.hintCheckboxRow}
-              onPress={() => setDontShowSlotHintAgain((v) => !v)}
-              hitSlop={6}>
-              <View style={[timelineStyles.hintCheckbox, dontShowSlotHintAgain && timelineStyles.hintCheckboxChecked]}>
-                {dontShowSlotHintAgain && <Text style={timelineStyles.hintCheckmark}>✓</Text>}
-              </View>
-              <Text style={timelineStyles.hintCheckboxLabel}>{t('today.dontShowAgain')}</Text>
+            <AnimatedPressable onPress={() => setDontShowSlotHintAgain((v) => !v)} hitSlop={8}>
+              <Text style={timelineStyles.hintCheckboxLabel}>
+                {dontShowSlotHintAgain ? '☑' : '☐'} {t('today.dontShowAgain')}
+              </Text>
             </AnimatedPressable>
-            <AnimatedPressable onPress={closeSlotHint} hitSlop={6}>
+            <AnimatedPressable style={timelineStyles.hintCloseButton} onPress={closeSlotHint} hitSlop={8}>
               <Text style={timelineStyles.hintCloseText}>{t('today.close')}</Text>
             </AnimatedPressable>
           </View>
@@ -917,6 +923,12 @@ const TimelineView = memo(function TimelineView({
         }}
         scrollEventThrottle={16}
         onScrollBeginDrag={() => {
+          if (expandedClusterId !== null) closeCluster();
+        }}
+        // 손가락을 떼고 "휙" 미는 플링 스크롤은 onScrollBeginDrag 없이 바로 모멘텀 스크롤로
+        // 시작되는 경우가 있어 그 경로에서는 안 닫히던 사례가 있었다(2026-10-02) — 이 이벤트도
+        // 같이 들어서 어느 방식으로 스크롤을 시작하든 펼친 목록이 닫히게 한다
+        onMomentumScrollBegin={() => {
           if (expandedClusterId !== null) closeCluster();
         }}>
       {/* 자식들이 전부 position:absolute라서 이 View에 실제 크기를 안 주면 0x0으로 잡혀
@@ -952,7 +964,9 @@ const TimelineView = memo(function TimelineView({
           return (
             <View key={seg.hour} style={[timelineStyles.gapBand, { top: segTop, height: seg.pixelHeight }]}>
               <Text style={timelineStyles.gapBandText}>
-                {String(seg.hour).padStart(2, '0')}~{String(seg.hour + seg.hourSpan).padStart(2, '0')}시
+                {language === 'ko'
+                  ? `${String(seg.hour).padStart(2, '0')}~${String(seg.hour + seg.hourSpan).padStart(2, '0')}시`
+                  : `${String(seg.hour).padStart(2, '0')}:00–${String(seg.hour + seg.hourSpan).padStart(2, '0')}:00`}
               </Text>
             </View>
           );
@@ -1067,12 +1081,12 @@ const TimelineView = memo(function TimelineView({
                 </View>
                 {infoRoutine.is_required && (
                   <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
-                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>*필수</Text>
+                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>*{t('common.required')}</Text>
                   </View>
                 )}
                 {infoRoutine.skip_holidays && (
                   <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
-                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>공휴일 제외</Text>
+                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>{t('presetForm.skipHolidays')}</Text>
                   </View>
                 )}
               </View>
@@ -1082,7 +1096,7 @@ const TimelineView = memo(function TimelineView({
                 if (!infoCompletion) return null;
                 return (
                   <Text style={timelineStyles.infoStatusDone}>
-                    ✓ 완료
+                    ✓ {t('common.done')}
                     {infoRoutine.block_type === 'tracking' &&
                       infoCompletion.tracking_value != null &&
                       ` · ${infoCompletion.tracking_value} ${truncateTrackingUnit(infoRoutine.tracking_unit)}`}
@@ -1126,6 +1140,9 @@ const TimelineView = memo(function TimelineView({
 }, timelineViewPropsAreEqual);
 
 function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
+  // "지금" 블록 강조색 — 예전엔 테마색과 무관한 고정 주황이라 어떤 테마색을 고르든 유독
+  // 튀어 보였다(2026-10-02) — 고른 테마색과 같은 색감에서 채도/명도만 올린 버전으로 교체
+  const nowAccent = intensify(accent);
   return StyleSheet.create({
   wrapper: {
     flex: 1,
@@ -1135,48 +1152,45 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
     marginBottom: 10,
     padding: 12,
     borderRadius: cardRadius,
-    backgroundColor: 'rgba(169, 196, 224, 0.1)',
+    // 다른 안내문들(viewModeHintWrap 등)과 같은 디자인(흰 배경+주색 테두리, 글자도 주색)으로
+    // 통일한다 — 예전엔 고정된 하늘색 반투명 배경(rgba(169,196,224,...))만 쓰고 글자는 주색이
+    // 아니었어서, 사용자가 테마색을 다른 색으로 바꾸면 안내문만 색이 안 맞아 보였음(2026-10-02)
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: accent,
     gap: 8,
   },
   hintText: {
+    color: accent,
     fontSize: 12,
     lineHeight: 17,
+    fontWeight: '600',
   },
   hintFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  hintCheckboxRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  hintCheckbox: {
-    width: 16,
-    height: 16,
-    borderRadius: cardRadius,
-    borderWidth: 1.5,
-    borderColor: accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  hintCheckboxChecked: {
-    backgroundColor: accent,
-  },
-  hintCheckmark: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
+  // 체크박스/닫기 버튼 모양이 리스트·타임라인 안내(viewModeHint)·FAB 안내(fabHint)와 서로
+  // 달랐다는 피드백(2026-10-02) — 셋 다 같은 패턴(☑/☐ 글자 체크박스 + 테두리 있는 알약형
+  // 닫기 버튼)으로 통일한다
   hintCheckboxLabel: {
-    fontSize: 11,
-    opacity: 0.6,
+    color: accent,
+    fontSize: 12,
+    opacity: 0.75,
+  },
+  hintCloseButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: accent,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
   },
   hintCloseText: {
     fontSize: 12,
     color: accent,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   container: {
     flex: 1,
@@ -1232,19 +1246,26 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   // 배경을 반투명(rgba)으로 쓰면 평소엔 은은한 색으로 잘 보이지만, 스와이프를 닫는 애니메이션
   // 동안엔 그 뒤에서 슬라이드되어 빠져나가는 "수정/삭제" 버튼 색이 이 반투명 배경 사이로
   // 비쳐 보이는 문제가 있었다(2026-09-21) — 흰 배경 위에 이 반투명색을 얹었을 때와 눈으로
-  // 똑같이 보이는 불투명(opaque) 색을 미리 계산해서 대신 쓴다(rgba(169,196,224,0.12) on white)
+  // 똑같이 보이는 불투명(opaque) 색을 계산해서 대신 쓴다. 예전엔 이 계산을 고정 하늘색
+  // 기준으로 미리 구해 하드코딩해둬서, 다른 테마색을 고르면 블록 배경이 거의 흰색으로만
+  // 보이고 하늘색 테마만 은은한 색이 비쳤다(2026-10-02) — `blendOverWhite`로 지금 고른
+  // accent 기준으로 매번 계산하도록 수정
   block: {
     position: 'absolute',
-    backgroundColor: 'rgb(245, 248, 251)',
+    // 초록(세이지) 테마가 유독 진하게 느껴진다는 재확인이 반복돼서 0.12→0.09→0.065로 계속 완화(2026-10-02)
+    backgroundColor: blendOverWhiteSubtle(accent, 0.065),
     borderLeftWidth: 3,
     borderLeftColor: accent,
     borderRadius: cardRadius,
     overflow: 'hidden',
   },
+  // 배경이 고정 하늘색(169,196,224)으로 하드코딩돼 있어서 다른 테마색을 고르면 "+N 더보기"
+  // 블록만 늘 파랗게 보였다(2026-10-02) — 지금 고른 accent로 계산하도록 수정. 이 블록은
+  // 스와이프 대상이 아니라서(block과 달리) 불투명 미리계산 없이 그냥 반투명으로 써도 된다
   moreBlock: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(169, 196, 224, 0.2)',
+    backgroundColor: withAlpha(accent, 0.2),
   },
   moreBlockText: {
     fontSize: 11,
@@ -1262,13 +1283,13 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   // block과 같은 이유로 불투명 색으로 미리 계산(rgba(255,152,0,0.18) on white)
   blockNow: {
-    backgroundColor: 'rgb(255, 236, 209)',
-    borderLeftColor: '#FF9800',
+    backgroundColor: withAlpha(nowAccent, 0.16),
+    borderLeftColor: nowAccent,
   },
   // 커스텀 폰트("동글 폰트")는 굵은 글씨 파일이 없어서 fontWeight를 주면 RN이 시스템 폰트로
   // 대체해버림(=사용자가 고른 폰트가 안 먹히는 원인) — 대신 색으로만 강조해서 폰트를 유지한다
   blockTitleNow: {
-    color: '#E65100',
+    color: nowAccent,
   },
   // ⚠️ 2026-09-30 — components/Themed.tsx의 View는 style에 backgroundColor가 없으면 테마 기본
   // 배경색(라이트 모드에선 흰색)을 자동으로 깔아버린다 — 이 줄은 평소엔 블록 배경(연한 회색조)과
@@ -1978,6 +1999,15 @@ export default function TodayScreen() {
     checkOverrideRef.current = next;
     setCheckOverride(next);
   }
+  // 같은 루틴을 빠르게 두 번 탭하면(체크→해제) 두 요청이 서버에 거의 동시에 나가는데,
+  // 응답은 보낸 순서와 다르게 도착할 수 있다 — 먼저 탭(체크)의 응답이 나중에 도착하면 그
+  // onSuccess가 "이미 해제됐어야 할" 캐시에 다시 완료기록을 밀어넣어서, 체크박스가 해제된 걸
+  // 눈으로 본 직후 잠깐 있다가 다시 체크 표시로 튀어 돌아오는 버그가 있었다(2026-10-02,
+  // hitSlop 수정으로 탭이 잘 먹히기 시작하면서 두 번 탭이 쉬워져 눈에 띄게 됨). 루틴마다
+  // "지금 보낸 요청이 몇 번째인지" 번호를 매겨두고, onSuccess/onError가 실행될 때 자기
+  // 번호가 그 루틴의 최신 번호와 다르면(=그 사이 더 최신 탭이 있었음) 캐시를 건드리지 않고
+  // 조용히 무시한다
+  const checkMutationTokenRef = useRef<Record<string, number>>({});
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   // 이미 오늘 기록이 있는 트래킹 루틴은 기본으로 "기록됨" 표시만 보여주고, 이 Set에 들어있는
   // 동안만 입력창을 다시 펼친다 — "수정"을 눌러야 입력창이 나타나고 "저장"하면 다시 접혀서
@@ -1994,6 +2024,18 @@ export default function TodayScreen() {
     setSelectMode((prev) => !prev);
     setSelectedIds(new Set());
   }
+
+  // 일괄체크 등으로 선택모드를 켜둔 채 캘린더/통계/카테고리 등 다른 탭·화면으로 갔다가
+  // 오늘 탭으로 돌아오면 선택모드가 그대로 켜져 있던 버그(2026-10-02) — 이 화면이 포커스를
+  // 잃는 시점(cleanup)에 선택모드를 꺼서, 다른 데 갔다 올 때마다 항상 꺼진 상태로 맞는다
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (selectMode) toggleSelectMode();
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectMode])
+  );
 
   // 다중 선택 중 안드로이드 뒤로가기를 누르면 오늘 탭이 이 앱의 루트 화면이라 그대로 앱이
   // 꺼져버렸다(2026-09-27) — 선택모드가 켜져 있을 때만 뒤로가기를 가로채 선택모드부터
@@ -2308,7 +2350,7 @@ export default function TodayScreen() {
   // 바꾸고(낙관적 업데이트), 실패하면 onError에서 원래 상태로 되돌린다. 성공하면 onSuccess가
   // 임시로 넣어둔 값을 서버가 준 진짜 값으로 다시 한번 맞춰준다
   const toggleCheckMutation = useMutation({
-    mutationFn: ({ routineId, existingId }: { routineId: string; existingId: string | null }) =>
+    mutationFn: ({ routineId, existingId }: { routineId: string; existingId: string | null; token: number }) =>
       toggleCheckCompletion(routineId, existingId),
     // ⚠️ 예전엔 여기서 cancelQueries를 await한 뒤에야 화면을 낙관적으로 갱신했는데, 그 사이
     // 시간만큼 체크 진동은 바로 울려도 체크 표시는 한 박자 늦게 나타나 "누르면 렉 걸린 듯 느리다"는
@@ -2338,7 +2380,11 @@ export default function TodayScreen() {
       });
       return { previous };
     },
-    onSuccess: (result, { routineId }) => {
+    onSuccess: (result, { routineId, token }) => {
+      // 그 사이 같은 루틴에 더 최신 탭이 있었으면(= 내 번호가 더 이상 최신이 아니면) 이 응답은
+      // 이미 낡은 것이니 캐시를 건드리지 않는다 — 안 그러면 늦게 도착한 이 응답이 최신 탭의
+      // 결과를 덮어써서 체크박스가 잠깐 있다가 저절로 반대로 튀어 보인다(위 checkMutationTokenRef 주석 참고)
+      if (checkMutationTokenRef.current[routineId] !== token) return;
       queryClient.setQueryData(todayQueryKey, (old?: TodayData) => {
         if (!old) return old;
         const nextCompletions = old.completions.filter((c) => c.routine_id !== routineId);
@@ -2348,7 +2394,8 @@ export default function TodayScreen() {
       clearCheckOverride(routineId);
       if (userId) syncReminderAlarm(userId).catch(() => {});
     },
-    onError: (_err, { routineId }, context) => {
+    onError: (_err, { routineId, token }, context) => {
+      if (checkMutationTokenRef.current[routineId] !== token) return;
       if (context?.previous) queryClient.setQueryData(todayQueryKey, context.previous);
       clearCheckOverride(routineId);
       // 되돌린 상태가 서버의 실제 최신 상태와 다를 수 있으니(예: 다른 기기에서도 체크한 경우),
@@ -2557,7 +2604,9 @@ export default function TodayScreen() {
     const existing = routine.id in checkOverrideRef.current
       ? checkOverrideRef.current[routine.id]
       : completionsRef.current[routine.id] ?? null;
-    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null });
+    const token = (checkMutationTokenRef.current[routine.id] ?? 0) + 1;
+    checkMutationTokenRef.current[routine.id] = token;
+    toggleCheckMutation.mutate({ routineId: routine.id, existingId: existing?.id ?? null, token });
   }, []);
 
   const handleToggleCheck = useCallback((routine: Routine) => {
@@ -2605,8 +2654,10 @@ export default function TodayScreen() {
       const existing = completionsRef.current[routine.id];
       if (!existing) return;
       pendingToggleIdsRef.current.add(routine.id);
+      const token = (checkMutationTokenRef.current[routine.id] ?? 0) + 1;
+      checkMutationTokenRef.current[routine.id] = token;
       toggleCheckMutation.mutate(
-        { routineId: routine.id, existingId: existing.id },
+        { routineId: routine.id, existingId: existing.id, token },
         { onSettled: () => pendingToggleIdsRef.current.delete(routine.id) }
       );
       closeEditTracking(routine.id);
@@ -2760,6 +2811,8 @@ export default function TodayScreen() {
                   </View>
                 ))}
             </View>
+            {/* FAB 안내(fabHintDivider)와 똑같은 구분선 — 이 안내문만 빠져있었음(2026-10-02) */}
+            <View style={styles.viewModeHintDivider} />
             <View style={styles.viewModeHintFooter}>
               <AnimatedPressable onPress={() => setDontShowViewModeHintAgain((v) => !v)} hitSlop={8}>
                 <Text style={styles.viewModeHintCheckboxLabel}>
@@ -2856,7 +2909,14 @@ export default function TodayScreen() {
       <View
         style={[
           StyleSheet.absoluteFillObject,
-          { opacity: viewMode === 'timeline' ? 1 : 0 },
+          // 리스트(ScrollView, 아래)는 JSX상 항상 나중에 그려지는 형제라 리스트가 숨겨져 있어도
+          // z순서상 타임라인보다 위에 있었다 — 그 안의 Swipeable(RNGH)은 enabled={false}로
+          // 꺼도 응답자 체인에서 완전히 빠지지 않고 터치를 계속 가로채는 걸로 이미 확인된
+          // 적이 있어서(2026-09-28), 리스트가 숨겨진 상태에서도 타임라인 상단(안내문 버튼 등)의
+          // 터치를 가로채 먹통처럼 보이는 버그가 있었다(2026-10-02). pointerEvents만으로는
+          // 못 막는 문제라 zIndex로 "지금 보이는 쪽"이 항상 위에 그려지도록(그래서 터치
+          // 판정도 먼저 받도록) 명시한다
+          { opacity: viewMode === 'timeline' ? 1 : 0, zIndex: viewMode === 'timeline' ? 1 : 0 },
         ]}
         pointerEvents={viewMode === 'timeline' ? 'auto' : 'none'}>
         <TimelineView
@@ -2880,8 +2940,18 @@ export default function TodayScreen() {
       </View>
       <ScrollView
         ref={listScrollRef}
-        style={[styles.list, StyleSheet.absoluteFillObject, { opacity: viewMode === 'timeline' ? 0 : 1 }]}
+        style={[
+          styles.list,
+          StyleSheet.absoluteFillObject,
+          { opacity: viewMode === 'timeline' ? 0 : 1, zIndex: viewMode === 'timeline' ? 0 : 1 },
+        ]}
         pointerEvents={viewMode === 'timeline' ? 'none' : 'auto'}
+        // 리스트가 숨겨져 있어도(opacity:0, pointerEvents:'none') 이 ScrollView가 타임라인보다
+        // 나중에 그려지는 형제(=위에 그려짐)라, 타임라인 쪽 상단에 뜨는 안내문(슬롯 순서 안내 등)의
+        // 버튼이 눌리지 않는 버그가 있었다(2026-10-02) — 이 프로젝트에서 반복 확인된 "RNGH/스크롤
+        // 제스처는 pointerEvents:'none'을 그대로 안 따른다"는 것과 같은 종류의 문제라,
+        // pointerEvents만 믿지 말고 scrollEnabled로도 명시적으로 터치 응답 자체를 꺼둔다
+        scrollEnabled={viewMode !== 'timeline'}
         contentContainerStyle={routines.length === 0 ? styles.emptyContainer : undefined}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
         keyboardShouldPersistTaps="handled"
@@ -2993,12 +3063,8 @@ export default function TodayScreen() {
                   View 하나에만 줘서(각 Text는 그 열의 폭을 그대로 물려받음) 너비 문제
                   없이 두 줄 사이에 살짝 여백만 추가했다 */}
               <View style={styles.fabHintTextColumn}>
-                <Text style={styles.fabHintText}>
-                  • 탭하면 루틴 추가·말로 루틴 추가하기·카테고리 메뉴가 펼쳐져요
-                </Text>
-                <Text style={[styles.fabHintText, styles.fabHintTextSpaced]}>
-                  • 길게 눌러서 원하는 위치로 옮기고, 두 번 탭하면 원래 위치로 돌아와요
-                </Text>
+                <Text style={styles.fabHintText}>• {t('today.fabHintLine1')}</Text>
+                <Text style={[styles.fabHintText, styles.fabHintTextSpaced]}>• {t('today.fabHintLine2')}</Text>
               </View>
             </View>
             <View style={styles.fabHintDivider} />
@@ -3366,10 +3432,12 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   fabHintTextColumn: {
     flexShrink: 1,
   },
+  // 리스트/타임라인 안내(viewModeHintLine)와 글자 크기가 서로 달랐다는 피드백(2026-10-02) —
+  // 두 안내가 같은 디자인 계열이니 글자 크기도 그 기준(12)으로 통일
   fabHintText: {
     color: accent,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 12,
+    lineHeight: 17,
     fontWeight: '600',
   },
   fabHintTextSpaced: {
@@ -3381,6 +3449,10 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     marginTop: 10,
     marginBottom: 8,
   },
+  // 리스트/타임라인 안내(viewModeHintFooter)와 같은 모양으로 통일(2026-10-02, "닫기" 버튼
+  // 위치가 서로 다르다는 피드백) — "다시 안 보기"는 왼쪽, "닫기"는 카드 오른쪽 끝. 영어 번역
+  // 문구를 짧게 줄여서(위 today.fabHintLine1/2) 카드가 비정상적으로 넓어지지 않게 했으므로
+  // space-between을 써도 그 사이가 과하게 벌어지지 않는다
   fabHintFooter: {
     backgroundColor: 'transparent',
     flexDirection: 'row',
@@ -3419,11 +3491,13 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     marginBottom: 12,
     gap: 8,
   },
+  // 아래 두 배경도 고정 하늘색으로 하드코딩돼 있어서 다른 테마색을 고르면 이 부분만 늘
+  // 파랗게 보였다(2026-10-02) — 지금 고른 accent로 계산
   viewModeTabs: {
     flex: 1,
     flexDirection: 'row',
     borderRadius: cardRadius,
-    backgroundColor: 'rgba(169, 196, 224, 0.08)',
+    backgroundColor: withAlpha(accent, 0.08),
     padding: 4,
     gap: 4,
   },
@@ -3433,7 +3507,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(169, 196, 224, 0.08)',
+    backgroundColor: withAlpha(accent, 0.08),
   },
   selectModeToggleActive: {
     backgroundColor: accent,
@@ -3504,12 +3578,19 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     lineHeight: 17,
     fontWeight: '600',
   },
+  // FAB 안내(fabHintDivider)와 같은 구분선(2026-10-02) — 간격은 이 선의 margin으로만
+  // 주고, 아래 footer의 marginTop은 없앤다(fabHint와 동일하게 이중으로 안 벌어지게)
+  viewModeHintDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: `${accent}33`,
+    marginTop: 10,
+    marginBottom: 8,
+  },
   viewModeHintFooter: {
     backgroundColor: 'transparent',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 8,
   },
   // "다시 안 보기" 글자 크기가 FAB 안내(fabHintCheckboxLabel)와 달랐다는 피드백(2026-09-30) —
   // 12로 통일
@@ -3625,7 +3706,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   nowGroupBox: {
     borderWidth: 1.5,
     borderColor: accent,
-    backgroundColor: 'rgba(169, 196, 224, 0.06)',
+    backgroundColor: withAlpha(accent, 0.06),
     borderRadius: cardRadius,
     overflow: 'hidden',
   },

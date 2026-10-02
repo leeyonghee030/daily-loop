@@ -2,7 +2,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View as RNView } from 'react-native';
+import { ActivityIndicator, Alert, BackHandler, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
@@ -108,6 +108,20 @@ export default function SettingsScreen() {
     useCallback(() => {
       return () => setShowBasicSettings(false);
     }, [])
+  );
+
+  // "기본 설정" 카드가 펼쳐진 상태에서 안드로이드 뒤로가기를 누르면 카드는 그대로 두고
+  // 화면 자체가 나가버리던 버그(2026-10-02) — 오늘 탭의 다중선택 모드와 같은 패턴으로,
+  // 펼쳐져 있을 때만 뒤로가기를 가로채 카드부터 접고, 그 다음 뒤로가기부터 원래 동작(화면 나가기)
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (!showBasicSettings) return false;
+        setShowBasicSettings(false);
+        return true;
+      });
+      return () => sub.remove();
+    }, [showBasicSettings])
   );
 
   const [showThemeDesc, setShowThemeDesc] = useState(false);

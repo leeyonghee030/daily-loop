@@ -510,7 +510,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
             {trashLoading ? (
               <ActivityIndicator style={styles.loading} />
             ) : (
-              <ScrollView>
+              <ScrollView contentContainerStyle={styles.trashModalScrollContent}>
                 <Text style={styles.modalDesc}>{t('categoryVideoGrid.trashModalDesc')}</Text>
                 {deletedCategories.length === 0 ? (
                   <Text style={styles.emptyText}>{t('categoryVideoGrid.emptyDeletedCategories')}</Text>
@@ -884,6 +884,12 @@ function createStyles(accent: string) {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
+  },
+  // 안드로이드 하단 내비게이션 바(뒤로가기/홈 등) 바로 위까지 내용이 닿아서, 맨 아래
+  // "기본 카테고리 생성" 버튼이 그 뒤에 가려져 눌리지 않는 문제가 있었다(2026-10-02) —
+  // 스크롤 영역 맨 아래에 여유 공간을 더 둬서 버튼이 항상 그 위로 올라오게 한다
+  trashModalScrollContent: {
+    paddingBottom: 28,
   },
   // 예전엔 하단에 테두리만 있는 "닫기" 버튼이 따로 있었는데, 그 스타일(modalCancelButton)이
   // 가로 짝(모달 저장 버튼)과 함께 쓰일 때만 정상 동작하는 flex:1을 갖고 있어서 여기서

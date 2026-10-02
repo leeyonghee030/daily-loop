@@ -585,9 +585,6 @@ const WeekCalendarSection = memo(function WeekCalendarSection({
 });
 
 export default function CalendarScreen() {
-  // ⚠️ 임시 진단 로그(2026-09-30) — 서울 리전인데도 2초 가까이 걸린다는 신고로, 화면이 마운트된
-  // 시점부터 실제로 데이터가 도착하는 시점까지 몇 ms인지 재본다. 원인 확인되면 지울 것
-  const __mountTimeRef = useRef(Date.now());
   const { session } = useAuth();
   const userId = session?.user.id;
   const theme = useColorScheme() ?? 'light';
@@ -599,6 +596,12 @@ export default function CalendarScreen() {
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
 
   const today = new Date();
+  // ⚠️ 2026-10-02에 주/월 전환을 180ms opacity 크로스페이드(Animated.timing)로 부드럽게
+  // 만들어봤다가, 주간뷰 안의 스트릭 카드(ShadowCard, 안드로이드 elevation 그림자)가 opacity
+  // 애니메이션 중간값(0~1 사이)을 지나는 동안 그림자만 있는 검정 박스로 잠깐 보이는 버그가
+  // 생겨서 되돌림 — 이 프로젝트에서 반복 확인된 안드로이드 제약("그림자 있는 레이어는 투명도
+  // 애니메이션 금지", UndoToast 2026-09-22 이어서 세션 참고)과 똑같은 원인. opacity는 다시
+  // 0 또는 1만 쓰는 즉시 전환으로 유지한다(중간값을 지나지 않으면 이 버그가 안 생김)
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -714,16 +717,6 @@ export default function CalendarScreen() {
     queryFn: () => fetchWeekData(userId!, weekStart, calendarRoutinesQuery.data),
     enabled: !!userId && viewMode === 'week',
   });
-  // ⚠️ 임시 진단 로그(2026-09-30) — 원인 확인되면 지울 것
-  useEffect(() => {
-    console.log('[cal-perf] userId ready at', Date.now() - __mountTimeRef.current, 'ms, userId=', !!userId);
-  }, [userId]);
-  useEffect(() => {
-    if (weekQuery.data) console.log('[cal-perf] weekQuery.data 도착', Date.now() - __mountTimeRef.current, 'ms (마운트 기준)');
-  }, [weekQuery.data]);
-  useEffect(() => {
-    if (monthQuery.data) console.log('[cal-perf] monthQuery.data 도착', Date.now() - __mountTimeRef.current, 'ms (마운트 기준)');
-  }, [monthQuery.data]);
   // 메모/일기 표시는 부가 정보 — 월/주 각각 자기 범위만큼만 따로 쿼리한다(예전엔 전역
   // Map/Set에 "새로 불러온 범위만 교체"하는 방식으로 손으로 병합했었는데, 이제 범위별로
   // 쿼리 키가 다르니 react-query가 알아서 캐시를 나눠서 관리해준다)
@@ -1236,15 +1229,21 @@ export default function CalendarScreen() {
     const y = now.getFullYear();
     const m = now.getMonth() + 1;
     const cursor = `${y}-${String(m).padStart(2, '0')}-01`;
+    // calendarCursor 값이 실제로 바뀌면 CalendarList가 current prop 변경을 감지해 내부
+    // effect에서 알아서 그 달로 스크롤해준다(라이브러리 기본 동작) — 그런데 우리가 매번 아래
+    // monthListRef.scrollToMonth도 같이 수동으로 호출하고 있어서, 멀리 떨어진 달에서
+    // "월" 탭으로 돌아올 때마다 똑같은 큰 스크롤 계산/명령이 두 번씩 겹쳐 실행되고 있었다 —
+    // 이게 "이번 달로 돌아갈 때만 유독 느리다"는 체감 지연의 원인 중 하나였다(2026-10-02).
+    // calendarCursor가 이전과 같을 때만(같은 달 안에서 또 눌렀을 때, 2026-10-01 QA에서 발견된
+    // "그 경우 effect가 안 터져서 스크롤이 전혀 안 움직이는" 버그) 수동 호출로 보완하고,
+    // 값이 실제로 바뀌는 보통의 경우(=멀리 떨어진 달에서 돌아오는 경우)는 라이브러리의 effect가
+    // 단 한 번만 스크롤하도록 둔다
+    const cursorUnchanged = cursor === calendarCursor;
     setYear(y);
     setMonth(m);
     setCalendarCursor(cursor);
     setViewMode('month');
-    // calendarCursor 값이 이전과 같으면(같은 달 안에서 또 눌렀을 때) setState가 리렌더를 안
-    // 일으켜서 CalendarList의 current prop 변경 감지가 안 터져 스크롤이 전혀 안 움직이는
-    // 문제가 있었다(2026-10-01 QA) — 주간뷰(scrollWeekToTodayRef)처럼 ref로 직접 스크롤을
-    // 명령해서 값이 같아도 매번 눌릴 때마다 오늘 달로 돌아가게 한다
-    monthListRef.current?.scrollToMonth(cursor);
+    if (cursorUnchanged) monthListRef.current?.scrollToMonth(cursor);
   }
   // "주" 탭도 "월" 탭과 같은 원칙 — 예전에 보던 주가 아니라 항상 이번 주부터 보여준다(2026-09-27,
   // "오늘로 이동" 버튼 대신 주/월 탭 자체가 각각 이번 주/이번 달로 리셋되길 원하는 요청으로 변경).
@@ -1252,7 +1251,13 @@ export default function CalendarScreen() {
   function goToWeekView() {
     setWeekStart(formatLocalDate(sundayOf(new Date())));
     setViewMode('week');
-    scrollWeekToTodayRef.current();
+    // setWeekStart는 비동기라 이 시점엔 아직 리렌더 전이고, scrollWeekToTodayRef.current는
+    // "직전 렌더의" weekStart를 기준으로 닫혀있는 예전 함수를 그대로 들고 있다(이 ref는 매
+    // 렌더 뒤 useEffect에서만 최신화됨) — 멀리 이동했던 주에서 "주" 탭으로 리셋할 때 이
+    // 예전 weekStart 기준으로 스크롤 계산을 해버려서 오늘 칸이 아닌 엉뚱한 위치로 스크롤되고
+    // 있었다(2026-10-02). 다음 프레임으로 미루면 그 사이 리렌더+effect가 끝나 최신
+    // weekStart 기준 함수로 교체된 뒤 호출된다
+    requestAnimationFrame(() => scrollWeekToTodayRef.current());
   }
   // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
   // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
@@ -1301,9 +1306,18 @@ export default function CalendarScreen() {
           때마다 이걸 통째로 다시 만드느라 눈에 띄게 버벅였다(2026-09-27, 오늘 탭 리스트/타임라인
           전환과 같은 원인). 오늘 탭과 같은 방식으로 고정 높이 하나(MONTH_GRID_HEIGHT — 두 모드가
           이미 같은 높이가 되도록 위에서 계산해둔 값) 안에 둘 다 절대위치로 늘 마운트해두고,
-          안 보이는 쪽만 투명(opacity:0)+터치 무시(pointerEvents:'none')로 숨긴다 */}
+          안 보이는 쪽만 투명(opacity:0)+터치 무시(pointerEvents:'none')로 숨긴다. opacity를
+          애니메이션으로 바꾸면 안 되는 이유는 위 viewMode 선언부 주석 참고(2026-10-02) */}
       <View style={{ height: MONTH_GRID_HEIGHT }}>
+        {/* 안드로이드는 opacity:0인 뷰는 화면에 안 그려지는 동안 실제 래스터(픽셀) 작업을
+            건너뛰는 최적화를 하는데, 그러다 opacity:1로 바뀌는 "바로 그 순간"에 날짜 칸
+            36개월치(약 1000개 이상)를 한 번에 그려야 해서 그게 "주→월 전환할 때만 느리다"는
+            체감 지연의 원인이었다(2026-10-02, 주간뷰는 칸이 7개뿐이라 이 비용이 거의 없어서
+            안 느렸던 것). renderToHardwareTextureAndroid로 이 서브트리를 미리 GPU 텍스처로
+            캐싱해두면, opacity를 바꾸는 건 그 텍스처의 투명도만 조절하는 저비용 작업이 되어
+            전환 순간 다시 그릴 필요가 없어진다 */}
         <View
+          renderToHardwareTextureAndroid
           style={[StyleSheet.absoluteFillObject, { opacity: viewMode === 'month' ? 1 : 0 }]}
           pointerEvents={viewMode === 'month' ? 'auto' : 'none'}>
           <MonthCalendarSection
