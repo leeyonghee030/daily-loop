@@ -2202,7 +2202,6 @@ export default function TodayScreen() {
   }, [errorMessage]);
 
   const routines = useMemo(() => todayQuery.data?.routines ?? [], [todayQuery.data]);
-  const holiday = todayQuery.data?.holiday ?? null;
 
   const completions = useMemo(() => {
     const map: Record<string, RoutineCompletion> = {};
@@ -2848,15 +2847,6 @@ export default function TodayScreen() {
           </View>
         </ShadowCard>
       </AnimatedPressable>
-
-      {holiday && (
-        <View style={styles.holidayBanner}>
-          <Ionicons name="flag-outline" size={14} color="#fff" />
-          <Text style={styles.holidayBannerText}>
-            {t('today.holidayPrefix')} {holiday.name}
-          </Text>
-        </View>
-      )}
 
       {errorMessage && (
         <View style={styles.errorBanner}>
@@ -3662,22 +3652,6 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     color: accent,
     fontWeight: '600',
     fontFamily: fontKorean.fontFamily,
-  },
-  holidayBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginHorizontal: 20,
-    marginBottom: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: cardRadius,
-    backgroundColor: '#FF6B6B',
-  },
-  holidayBannerText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
   },
   list: {
     flex: 1,
