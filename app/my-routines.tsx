@@ -5,8 +5,6 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, StyleSheet, View as RNView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
 import ReorderableList, {
   reorderItems,
   useReorderableDrag,
@@ -488,46 +486,10 @@ export default function MyRoutinesScreen() {
     });
   }
 
-  // 목록을 좌우로 스와이프하면 옆 필터로 이동한다(2026-09-21) — "반복주기" 탭이면 FILTERS
-  // 배열, "모음집" 탭이면 presets 배열 안에서 이동. ReorderableList의 길게 눌러 드래그(순서
-  // 변경)와 시간상 안 겹치도록(드래그는 누른 채 대기가 먼저 필요) 뚜렷하게 가로로만 움직였을
-  // 때만 인식하고, 세로로 먼저 움직이면 즉시 스크롤에 양보한다
-  function goToAdjacentFilter(direction: 1 | -1) {
-    if (groupMode === 'repeat') {
-      const index = FILTERS.findIndex((f) => f.value === filter);
-      const next = FILTERS[index + direction];
-      if (next) selectFilter(next.value);
-      return;
-    }
-    if (presetFilter === null) {
-      if (direction === 1 && presets.length > 0) setPresetFilter(presets[0].id);
-      return;
-    }
-    const index = presets.findIndex((p) => p.id === presetFilter);
-    const next = presets[index + direction];
-    if (next) setPresetFilter(next.id);
-  }
-  // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
-  // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
-  // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
-  function handleFilterSwipe(translationX: number) {
-    if (translationX < -40) goToAdjacentFilter(1);
-    else if (translationX > 40) goToAdjacentFilter(-1);
-  }
-  // 안내문 줄만으로는 스와이프할 자리가 너무 좁다는 피드백(2026-09-21) — 루틴 목록 위에서도
-  // 스와이프되게 이 제스처를 하나 더 만들어 목록에도 같이 건다(같은 제스처 인스턴스를
-  // 두 GestureDetector에 같이 물리면 충돌할 수 있어 각자 따로 만든다)
-  const filterSwipeGesture = Gesture.Pan()
-    .activeOffsetX([-20, 20])
-    .failOffsetY([-15, 15])
-    .onEnd((e) => {
-      runOnJS(handleFilterSwipe)(e.translationX);
-    });
-  // 목록 위 버전은 예전엔 목록 전체를 감싸서 드래그 제스처와 같은 영역을 두고 경쟁시켰다
-  // (hitSlop으로 범위를 나누거나 우선순위 관계로 승패를 정하는 방식 둘 다 안드로이드에서
-  // "되다가 갑자기 안 되는" 식으로 불안정했음, 2026-09-22) — 이제는 목록을 감싸지 않고,
-  // 각 행(RoutineRow)의 손잡이(≡)와 형제인 안쪽 그룹에만 이 제스처를 붙여서(onSwipe prop)
-  // 손잡이 쪽 터치와 애초에 겹치지 않게 만들었다
+  // ⚠️ 2026-09-21에 추가했던 필터 탭 좌우 스와이프 기능은, 길게 눌러 드래그하는 순서 재정렬
+  // 기능과 계속 충돌해서 버그가 반복됐다(둘 다 같은 목록 영역의 가로/세로 제스처를 다퉈야 함) —
+  // 드래그 정렬이 더 중요한 기능이라 판단해 스와이프 자체를 완전히 제거함(2026-10-06). 필터
+  // 전환은 탭 클릭으로만 가능
   // 안내문을 펼쳐둔 채로 화면 빈 곳을 누르면 접히게 한다 — 기존엔 스크롤하거나 화면을
   // 벗어나야만 접혔는데, 그 자리에서 바로 닫고 싶다는 피드백으로 추가(2026-09-22)
   const closeSubtitleIfOpen = () => {
@@ -674,17 +636,9 @@ export default function MyRoutinesScreen() {
 
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
-      {/* 좌우 스와이프를 루틴 목록 위에서도 되게 하려고 여러 방식(hitSlop으로 범위 나누기,
-          우선순위 관계, 손잡이만 구조적으로 분리하기 등)을 시도했는데(2026-09-22), 매번
-          드래그 정렬 아니면 스와이프 둘 중 하나가 불안정하게 깨졌다 — 이미 있던 드래그
-          정렬 기능이 더 중요하다고 판단해 목록 위 스와이프는 포기하고, 안내문 줄(목록과
-          안 겹치는 별도 영역)에서만 스와이프하도록 되돌렸다. 목록 자체는 아무 커스텀
-          제스처도 안 걸려 있어서 드래그는 이 세션 이전과 완전히 동일하게 동작한다 */}
-      <GestureDetector gesture={filterSwipeGesture}>
-        <View style={styles.filterSwipeStrip}>
-          {!selectMode && filtered.length > 1 && <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>}
-        </View>
-      </GestureDetector>
+      <View style={styles.dragHintStrip}>
+        {!selectMode && filtered.length > 1 && <Text style={styles.dragHint}>{t('myRoutines.dragHint')}</Text>}
+      </View>
 
       <View style={styles.swipeArea}>
         {isLoading ? (
@@ -939,7 +893,7 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   // 안내문이 없을 때도(선택모드거나 항목이 1개 이하) 스와이프할 자리가 사라지지 않도록
   // 최소 높이를 확보한다. 화면 양 끝과는 20px 띄워서(marginHorizontal) 시스템 제스처 영역과 안 겹치게 함
-  filterSwipeStrip: {
+  dragHintStrip: {
     minHeight: 22,
     justifyContent: 'center',
     marginHorizontal: 20,

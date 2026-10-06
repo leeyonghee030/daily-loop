@@ -339,6 +339,7 @@ export function parseRoutineInputEn(rawText: string): ParsedRoutineDraft {
     repeatDays,
     scheduledTime,
     slotType,
+    scheduledDate: null,
     isRequired,
     blockType,
     trackingUnit,

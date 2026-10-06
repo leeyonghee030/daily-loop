@@ -1,7 +1,10 @@
 import { supabase } from './supabase';
 import { parseRoutineInput, type ParsedRoutineDraft } from './parse-routine-input';
 import { parseRoutineInputEn } from './parse-routine-input-en';
+import { formatLocalDate } from './routines';
 import type { Language } from './language';
+
+const KOREAN_WEEKDAY = ['일', '월', '화', '수', '목', '금', '토'];
 
 // 파싱 결과가 어디서 나왔는지 (4-8 ② 배지용): 'regex'=규칙 기반 처리, 'llm'=AI 분석
 export type ParseSource = 'regex' | 'llm';
@@ -45,8 +48,15 @@ export async function fetchLlmQuota(): Promise<LlmQuota | null> {
 
 // LLM(Edge Function) 호출 → 초안 JSON을 ParsedRoutineDraft 형태로 정규화.
 async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; remaining: number }> {
+  // AI는 "오늘"이 언제인지 모르기 때문에, "사흘 뒤"/"다음주 금요일" 같은 상대 날짜를 계산하려면
+  // 기준이 되는 오늘 날짜를 직접 알려줘야 한다(2026-10-06). 서버(Edge Function)는 UTC라
+  // 한국 기준 "오늘"과 어긋날 수 있어서, 이미 로컬 기준으로 정확히 계산하는 클라이언트 쪽에서
+  // 구해 같이 보낸다
+  const today = new Date();
+  const todayDate = formatLocalDate(today);
+  const todayWeekday = KOREAN_WEEKDAY[today.getDay()];
   const { data, error } = await supabase.functions.invoke('parse-routine', {
-    body: { text },
+    body: { text, todayDate, todayWeekday },
   });
   if (error) {
     // "사용자 몰림"으로 뭉뚱그리기 전에 실제 원인을 알아야 해서(2026-09-27), Edge Function이
@@ -66,12 +76,22 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
   const d = data?.draft;
   if (!d) throw new Error('LLM 응답에 draft가 없습니다.');
 
-  const repeatType: ParsedRoutineDraft['repeatType'] = d.repeatType ?? 'once';
   const scheduledTime: string | null = d.scheduledTime ?? null;
   const VALID_SLOT_TYPES = ['morning', 'lunch', 'evening', 'before_sleep'];
   // scheduledTime이 있으면 정확한 시각/시각체크 모드로 들어가서 슬롯을 안 쓰니 항상 null로 둔다
   const slotType: ParsedRoutineDraft['slotType'] =
     !scheduledTime && VALID_SLOT_TYPES.includes(d.slotType) ? d.slotType : null;
+  // "YYYY-MM-DD" 형식인지, 그리고 오늘보다 이전 날짜로 잘못 계산되지 않았는지만 가볍게
+  // 확인한다(AI가 날짜 계산을 틀렸을 때 과거 날짜 루틴이 조용히 만들어지는 걸 막는 안전장치) —
+  // 형식이 안 맞거나 과거면 그냥 null로 버리고, 사용자가 폼에서 직접 날짜를 고르면 된다
+  const scheduledDateRaw = typeof d.scheduledDate === 'string' ? d.scheduledDate : null;
+  const scheduledDate =
+    scheduledDateRaw && /^\d{4}-\d{2}-\d{2}$/.test(scheduledDateRaw) && scheduledDateRaw >= todayDate
+      ? scheduledDateRaw
+      : null;
+  // 날짜가 구체적으로 있으면 "그날 1회성"이 확실하므로, AI가 repeatType을 다르게(예: daily) 잘못
+  // 채웠더라도 once로 강제한다
+  const repeatType: ParsedRoutineDraft['repeatType'] = scheduledDate ? 'once' : d.repeatType ?? 'once';
 
   const draft: ParsedRoutineDraft = {
     title: (d.title ?? text).toString().trim(),
@@ -79,6 +99,7 @@ async function parseWithLlm(text: string): Promise<{ draft: ParsedRoutineDraft; 
     repeatDays: repeatType === 'custom' ? (d.repeatDays ?? null) : null,
     scheduledTime,
     slotType,
+    scheduledDate,
     isRequired: !!d.isRequired,
     blockType: d.blockType === 'tracking' ? 'tracking' : 'check',
     trackingUnit: d.blockType === 'tracking' ? (d.trackingUnit ?? null) : null,

@@ -846,6 +846,13 @@ export type RoutineStats = {
   bestStreak: number;
   scheduledCount: number;
   completedCount: number;
+  // 전체기간 수행률과 별개로, "지금 보고 있는 기간(최근 7일/30일)만의" 수행률도 루틴 카드에
+  // 같이 보여달라는 요청(2026-10-06) — 상단 요약(weekly/monthly PeriodSummary)은 루틴 전체를
+  // 합산한 값이라 재사용할 수 없어서, 루틴별로 따로 계산해서 둔다
+  weeklyScheduled: number;
+  weeklyCompleted: number;
+  monthlyScheduled: number;
+  monthlyCompleted: number;
 };
 
 export type PeriodSummary = {
@@ -897,6 +904,31 @@ function computeLifetimeStats(
     cursor.setDate(cursor.getDate() + 1);
   }
   return { bestStreak: best, scheduledCount, completedCount };
+}
+
+// 아래 전체 요약(computePeriodSummary)과 같은 "최근 N일" 계산을 루틴 하나 기준으로만 따로 돌린다
+function computeRoutinePeriodStats(
+  routine: Routine,
+  todayDate: string,
+  days: number,
+  completedDates: Set<string>,
+  skipDates: Set<string>,
+  holidayDates: Set<string>
+): { scheduled: number; completed: number } {
+  let scheduled = 0;
+  let completed = 0;
+  for (let i = 0; i < days; i++) {
+    const cursor = new Date(`${todayDate}T00:00:00`);
+    cursor.setDate(cursor.getDate() - i);
+    const dateStr = formatLocalDate(cursor);
+    const dow = cursor.getDay();
+    const isHoliday = holidayDates.has(dateStr);
+    if (skipDates.has(dateStr)) continue;
+    if (!matchesToday(routine, dateStr, dow, isHoliday)) continue;
+    scheduled++;
+    if (completedDates.has(dateStr)) completed++;
+  }
+  return { scheduled, completed };
 }
 
 // ⚠️ fetchRangeData와 같은 이유(2026-09-30, lib/routines.ts 상단 fetchRangeData 주석 참고)로
@@ -953,7 +985,19 @@ export async function fetchStats(userId: string): Promise<StatsSummary> {
       holidayDates
     );
     const currentStreak = computeStreakForRoutine(routine, todayDate, completedDates, skipDates, holidayDates);
-    return { routine, currentStreak, bestStreak, scheduledCount, completedCount };
+    const weekly = computeRoutinePeriodStats(routine, todayDate, 7, completedDates, skipDates, holidayDates);
+    const monthly = computeRoutinePeriodStats(routine, todayDate, 30, completedDates, skipDates, holidayDates);
+    return {
+      routine,
+      currentStreak,
+      bestStreak,
+      scheduledCount,
+      completedCount,
+      weeklyScheduled: weekly.scheduled,
+      weeklyCompleted: weekly.completed,
+      monthlyScheduled: monthly.scheduled,
+      monthlyCompleted: monthly.completed,
+    };
   }
 
   // 루틴별 카드는 지금 살아있는 루틴만(삭제된 건 더 이상 손댈 수 없으니 카드로 안 보여줌).

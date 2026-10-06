@@ -2,10 +2,11 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { Animated, Dimensions, Modal, Pressable, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback } from 'react-native';
+import { Animated, Dimensions, Keyboard, Modal, Pressable, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback } from 'react-native';
 import { CalendarList, type DateData } from 'react-native-calendars';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
@@ -594,6 +595,10 @@ export default function CalendarScreen() {
   const koreanFont = useKoreanFont();
   const { t } = useTranslation();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  // 날짜상세 시트의 "닫기" 버튼이 안드로이드 하단 내비바에 가려 보이는 버그(2026-10-06) —
+  // app.json의 edgeToEdgeEnabled 때문에 기기마다 다른 내비바 높이를 직접 챙겨야 함(오늘 탭
+  // 카테고리 시트에서 겪은 것과 동일한 원인)
+  const insets = useSafeAreaInsets();
 
   const today = new Date();
   // ⚠️ 2026-10-02에 주/월 전환을 180ms opacity 크로스페이드(Animated.timing)로 부드럽게
@@ -665,6 +670,57 @@ export default function CalendarScreen() {
   const [editingTrackingRoutineId, setEditingTrackingRoutineId] = useState<string | null>(null);
   const [trackingDraft, setTrackingDraft] = useState('');
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
+
+  // 날짜상세 시트의 메모 입력창/트래킹 입력창이 키보드에 가려 글자가 안 보이던 버그(2026-10-06)
+  // — 루틴 폼(routine-form.tsx)의 scrollMemoAboveKeyboard와 동일한 방식: 포커스된 입력창의
+  // 실제 화면 위치를 재서, 키보드 위로 안 가려지면 그만큼 목록을 스크롤해 끌어올린다
+  const detailScrollRef = useRef<ScrollView>(null);
+  const detailScrollYRef = useRef(0);
+  const memoInputRef = useRef<TextInput>(null);
+  const trackingInputRef = useRef<TextInput>(null);
+  const focusedDetailInputRef = useRef<'memo' | 'tracking' | null>(null);
+  const [detailKeyboardHeight, setDetailKeyboardHeight] = useState(0);
+
+  function scrollDetailInputAboveKeyboard(
+    node: TextInput | null,
+    keyboardHeightNow: number,
+    attemptsLeft = 6
+  ): void {
+    if (!node) return;
+    node.measureInWindow((_x, y, _width, height) => {
+      if (y === 0 && height === 0) {
+        if (attemptsLeft > 0) {
+          setTimeout(() => scrollDetailInputAboveKeyboard(node, keyboardHeightNow, attemptsLeft - 1), 60);
+        }
+        return;
+      }
+      const screenHeight = Dimensions.get('window').height;
+      const visibleBottom = screenHeight - keyboardHeightNow - 24;
+      const overlap = y + height - visibleBottom;
+      if (overlap > 0) {
+        detailScrollRef.current?.scrollTo({ y: Math.max(0, detailScrollYRef.current + overlap), animated: true });
+      }
+    });
+  }
+
+  useEffect(() => {
+    const handleKeyboardHeight = (height: number) => {
+      setDetailKeyboardHeight(height);
+      const focused = focusedDetailInputRef.current;
+      if (focused === 'memo') scrollDetailInputAboveKeyboard(memoInputRef.current, height);
+      else if (focused === 'tracking') scrollDetailInputAboveKeyboard(trackingInputRef.current, height);
+    };
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => handleKeyboardHeight(e.endCoordinates?.height ?? 0));
+    const changeFrameSub = Keyboard.addListener('keyboardDidChangeFrame', (e) =>
+      handleKeyboardHeight(e.endCoordinates?.height ?? 0)
+    );
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setDetailKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      changeFrameSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
   const monthEnd = formatLocalDate(new Date(year, month, 0));
@@ -1411,7 +1467,7 @@ export default function CalendarScreen() {
               원복한다 — Pressable 쪽이 원인인지 100% 확정은 아니지만, 이 교체로 얻은 확실한
               이득이 없었던(느낌 개선 미확인) 상태라 안전하게 되돌린다 */}
           <TouchableWithoutFeedback onPress={commitOrCancelTrackingEdit}>
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: 20 + insets.bottom }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{selectedDate}</Text>
               <AnimatedPressable
@@ -1428,7 +1484,12 @@ export default function CalendarScreen() {
             {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
 
             <ScrollView
+              ref={detailScrollRef}
               style={styles.detailList}
+              onScroll={(e) => {
+                detailScrollYRef.current = e.nativeEvent.contentOffset.y;
+              }}
+              scrollEventThrottle={16}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
               onScrollBeginDrag={commitOrCancelTrackingEdit}>
@@ -1474,12 +1535,20 @@ export default function CalendarScreen() {
               </View>
               <View style={styles.memoAddRow}>
                 <TextInput
+                  ref={memoInputRef}
                   style={[styles.memoInput, { color: Colors[theme].text }]}
                   placeholder={t('calendar.memoPlaceholder')}
                   placeholderTextColor="#999"
                   value={memoText}
                   onChangeText={setMemoText}
                   onSubmitEditing={handleSubmitMemo}
+                  onFocus={() => {
+                    focusedDetailInputRef.current = 'memo';
+                    if (detailKeyboardHeight > 0) scrollDetailInputAboveKeyboard(memoInputRef.current, detailKeyboardHeight);
+                  }}
+                  onBlur={() => {
+                    if (focusedDetailInputRef.current === 'memo') focusedDetailInputRef.current = null;
+                  }}
                 />
                 <AnimatedPressable style={styles.memoAddButton} onPress={handleSubmitMemo}>
                   <Text style={styles.memoAddButtonText}>
@@ -1525,6 +1594,7 @@ export default function CalendarScreen() {
                       <View key={routine.id} style={styles.detailRow}>
                         {mainInfo}
                         <TextInput
+                          ref={trackingInputRef}
                           autoFocus
                           style={[styles.detailTrackingInput, { color: Colors[theme].text }]}
                           keyboardType="numeric"
@@ -1532,6 +1602,13 @@ export default function CalendarScreen() {
                           onChangeText={setTrackingDraft}
                           placeholder="0"
                           placeholderTextColor="#999"
+                          onFocus={() => {
+                            focusedDetailInputRef.current = 'tracking';
+                            scrollDetailInputAboveKeyboard(trackingInputRef.current, detailKeyboardHeight);
+                          }}
+                          onBlur={() => {
+                            if (focusedDetailInputRef.current === 'tracking') focusedDetailInputRef.current = null;
+                          }}
                           onSubmitEditing={() =>
                             handleSaveTrackingForDate(routine.id, completion?.id ?? null, selectedDate)
                           }
@@ -1594,6 +1671,9 @@ export default function CalendarScreen() {
                   return <View key={routine.id}>{row}</View>;
                 })
               )}
+              {/* 내용이 짧으면 스크롤할 여백 자체가 없어서 위 overlap 계산대로 끌어올릴 수 없었다
+                  — 키보드가 떠 있는 동안만 그만큼 빈 공간을 깔아 항상 스크롤 가능하게 한다 */}
+              {detailKeyboardHeight > 0 && <View style={{ height: detailKeyboardHeight + 40 }} />}
             </ScrollView>
             {/* 트래킹 입력 중엔 키보드가 뜨면서 이 버튼이 바로 그 위로 밀려 올라와 어색하게
                 보이던 문제가 있었다(2026-09-21) — 입력 중엔 아예 숨기고, 목록 스크롤/바깥

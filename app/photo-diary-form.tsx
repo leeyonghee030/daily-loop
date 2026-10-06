@@ -239,15 +239,17 @@ const PINCH_HIT_SLOP = 72;
 // 뒤덮어, 그 아래(또는 근처)에 있는 사진을 눌러도 메모 쪽이 항상 터치를 가로채 사진을
 // 선택/드래그할 수 없게 되는 문제가 있었다 — 탭 전용은 훨씬 좁은 여백만 쓴다
 const TAP_HIT_SLOP = 22;
-// 사진 블록의 최대 허용 범위(px) — 기존 균등 확대/축소 배율 범위를 그대로 픽셀로 환산
-const MAX_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MAX_BLOCK_SCALE);
-const MAX_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MAX_BLOCK_SCALE);
 // 사진은 텍스트/루틴 칩과 달리 화면 밖 삭제 배지를 쓰고(작아져도 못 누르는 문제가 없음)
 // 스티커처럼 아주 작게 쓰고 싶다는 요청이 있어서, 최소 배율은 공용 MIN_BLOCK_SCALE보다
 // 훨씬 낮게 따로 둔다(에러 없이 그려지는 선에서 최대한 낮춘 값)
 const MIN_PHOTO_SCALE = 0.15;
-const MIN_PHOTO_WIDTH = Math.round(PHOTO_BLOCK_WIDTH * MIN_PHOTO_SCALE);
-const MIN_PHOTO_HEIGHT = Math.round(PHOTO_BLOCK_HEIGHT * MIN_PHOTO_SCALE);
+// ⚠️ 2026-10-06 — 원래 이 최소/최대값을 4:3 기준 PHOTO_BLOCK_WIDTH/HEIGHT 하나로 고정해 모든
+// 사진에 그대로 썼는데, 펀칭기계로 만든 정사각형 등 다른 비율의 스티커는 가로/세로 중 비율상
+// 더 짧은 쪽이 먼저 한계에 걸려서 사진만큼 작게 줄지 않는 문제가 있었다 — "짧은 쪽 기준" 배율
+// 범위를 정해두고, 각 사진 자신의 실제 가로세로 비율에 맞춰 매번 다시 계산한다(아래
+// photoSizeLimits). 짧은 쪽 기준값은 기존 4:3 사진의 세로(PHOTO_BLOCK_HEIGHT)와 동일하게 둬서
+// 보통 사진(가로가 더 긴 4:3)은 이전과 똑같은 범위로 동작한다
+const PHOTO_SHORT_SIDE_BASE = Math.min(PHOTO_BLOCK_WIDTH, PHOTO_BLOCK_HEIGHT);
 // 모서리 크기조절 손잡이의 터치 아이콘 크기 — 손가락으로 정확히 맞추기 어렵다는 피드백으로
 // 26 → 32로 키우고, 아래 hitSlop으로 눈에 보이는 크기보다 더 넓게 인식되게 한다
 const RESIZE_HANDLE_SIZE = 32;
@@ -284,6 +286,26 @@ function photoBlockSize(block: Extract<CanvasBlock, { type: 'photo' }>): BlockSi
   if (block.width && block.height) return { width: block.width, height: block.height };
   const scale = block.scale ?? 1;
   return { width: PHOTO_BLOCK_WIDTH * scale, height: PHOTO_BLOCK_HEIGHT * scale };
+}
+
+// 핀치 최소/최대 범위를 이 사진(또는 펀칭 스티커) 자신의 지금 가로세로 비율에 맞춰 계산한다
+// — 비율은 균등 확대/축소로는 절대 안 바뀌므로(항상 가로/세로에 같은 배율을 곱함), 현재
+// width/height로 매번 다시 구해도 매 세션 기준이 작아지는 문제 없이 항상 같은 값이 나온다
+function photoSizeLimits(block: Extract<CanvasBlock, { type: 'photo' }>): { min: BlockSize; max: BlockSize } {
+  const current = photoBlockSize(block);
+  const aspect = current.width / current.height;
+  const minShort = PHOTO_SHORT_SIDE_BASE * MIN_PHOTO_SCALE;
+  const maxShort = PHOTO_SHORT_SIDE_BASE * MAX_BLOCK_SCALE;
+  if (aspect >= 1) {
+    return {
+      min: { width: minShort * aspect, height: minShort },
+      max: { width: maxShort * aspect, height: maxShort },
+    };
+  }
+  return {
+    min: { width: minShort, height: minShort / aspect },
+    max: { width: maxShort, height: maxShort / aspect },
+  };
 }
 
 // 사진 위치 조정 화면에서 프레임(픽셀)이 너무 작아지지 않게 하는 최소 크기
@@ -395,8 +417,20 @@ function DraggableBlock({
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
   const gestureScale = useSharedValue(1);
-  const baseScaleRef = useRef(scale);
-  baseScaleRef.current = scale;
+  // ⚠️ 2026-10-06 — 두 번째 핀치부터 늘려둔 크기가 아니라 "원래 크기"로 줄었다가 다시
+  // 커지는 버그가 있었다. 원인은 핀치의 기준값(baseScaleRef)이 JS 스레드의 일반 ref였던 것 —
+  // 워클릿(UI 스레드)이 이 ref를 읽을 때 리렌더로 값이 갱신되기 전의 낡은 값을 보는 경우가
+  // 있어서, 두 번째 제스처가 그 낡은(원래) 크기부터 다시 계산을 시작했다. ref 대신 UI
+  // 스레드에서 항상 최신으로 유지되는 shared value(liveScale)를 두고, 제스처가 끝나는 순간
+  // 그 자리에서(리렌더를 기다리지 않고) 바로 갱신해서 다음 제스처가 항상 최신 크기부터
+  // 이어지게 한다. 제스처 "시작" 시점의 기준값은 pinchStartScale에 한 번만 캡쳐해서 쓴다
+  // (e.scale은 그 제스처가 시작된 순간부터의 누적값이라, 프레임마다 다시 캡쳐하면 안 됨)
+  const liveScale = useSharedValue(scale);
+  const pinchStartScale = useSharedValue(scale);
+  useEffect(() => {
+    liveScale.value = scale;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scale]);
 
   const rotationLive = useSharedValue(rotation);
   const baseRotationRef = useRef(rotation);
@@ -408,6 +442,10 @@ function DraggableBlock({
 
   const boxW = useSharedValue(width ?? 0);
   const boxH = useSharedValue(height ?? 0);
+  // 사진(box 모드) 핀치의 제스처 시작 시점 기준값 — 위 liveScale/pinchStartScale과 같은 이유로
+  // boxW/boxH(둘 다 이미 shared value라 매 순간 최신임)에서 직접 캡쳐한다
+  const pinchStartW = useSharedValue(width ?? 0);
+  const pinchStartH = useSharedValue(height ?? 0);
   const baseWidthRef = useRef(width ?? 0);
   const baseHeightRef = useRef(height ?? 0);
   baseWidthRef.current = width ?? 0;
@@ -457,11 +495,11 @@ function DraggableBlock({
       translateY.value = e.translationY;
     })
     .onEnd((e) => {
-      // 이 순간 화면에 보이는 배율(baseScaleRef * gestureScale)을 같이 넘겨줘야, 경계
+      // 이 순간 화면에 보이는 배율(liveScale * gestureScale)을 같이 넘겨줘야, 경계
       // 계산(onMove)이 아직 리렌더 전이라 옛 값을 들고 있는 scale prop 대신 정확한 최신
       // 크기로 안전 위치를 계산한다(안 그러면 축소 직후 위치 보정이 엉뚱하게 튀는 버그가 재발함)
-      const liveScale = baseScaleRef.current * gestureScale.value;
-      runOnJS(onMove)(x + e.translationX, y + e.translationY, liveScale);
+      const currentVisibleScale = liveScale.value * gestureScale.value;
+      runOnJS(onMove)(x + e.translationX, y + e.translationY, currentVisibleScale);
       translateX.value = 0;
       translateY.value = 0;
     });
@@ -469,6 +507,16 @@ function DraggableBlock({
   const pinch = Gesture.Pinch()
     .enabled(pinchEnabled)
     .hitSlop(pinchEnabled ? pinchHitSlop : 0)
+    // 제스처가 "시작"되는 그 순간에만 기준값을 한 번 캡쳐한다(boxW/boxH/liveScale은 이미
+    // shared value라 항상 최신이므로, ref처럼 리렌더를 기다릴 필요가 없다)
+    .onStart(() => {
+      if (isBoxMode) {
+        pinchStartW.value = boxW.value;
+        pinchStartH.value = boxH.value;
+      } else {
+        pinchStartScale.value = liveScale.value;
+      }
+    })
     .onUpdate((e) => {
       if (isBoxMode) {
         // 가로/세로 각각의 최소·최대 픽셀에 독립적으로 맞춰 자르면(4:3 기준으로 정한 값이라),
@@ -477,29 +525,33 @@ function DraggableBlock({
         // 그 상태에서 다시 줄이면 이미 한쪽이 한계에 걸려 있어 원래 최소 크기까지 안 줄어드는
         //것처럼 보이는 버그가 있었다 — e.scale 자체를 "이 사진의 가로/세로 둘 다 범위 안에
         // 들어오는" 배율로 먼저 제한해서, 항상 가로세로 비율을 유지한 채로만 커지고 작아지게 한다
-        const minScale = Math.max(minW / baseWidthRef.current, minH / baseHeightRef.current);
-        const maxScale = Math.min(maxW / baseWidthRef.current, maxH / baseHeightRef.current);
+        const minScale = Math.max(minW / pinchStartW.value, minH / pinchStartH.value);
+        const maxScale = Math.min(maxW / pinchStartW.value, maxH / pinchStartH.value);
         const clampedScale = Math.min(maxScale, Math.max(minScale, e.scale));
-        boxW.value = baseWidthRef.current * clampedScale;
-        boxH.value = baseHeightRef.current * clampedScale;
+        boxW.value = pinchStartW.value * clampedScale;
+        boxH.value = pinchStartH.value * clampedScale;
         return;
       }
       // 손가락을 아주 작게 오므리면 배율이 최소치보다 한참 아래로 떨어졌다가 손을 떼는 순간
       // 최소치로 갑자기 튀어오르는(고무줄) 느낌이 있어서, 움직이는 동안에도 최종 배율과 같은
       // 범위로 미리 제한해 미리보기와 실제 결과가 항상 일치하게 한다
-      const proposedScale = baseScaleRef.current * e.scale;
+      const proposedScale = pinchStartScale.value * e.scale;
       const clampedScale = Math.min(scaleMax, Math.max(scaleMin, proposedScale));
-      gestureScale.value = clampedScale / baseScaleRef.current;
+      gestureScale.value = clampedScale / pinchStartScale.value;
     })
     .onEnd((e) => {
       if (isBoxMode) {
         if (onResize) runOnJS(onResize)(boxW.value, boxH.value);
         return;
       }
-      const proposedScale = baseScaleRef.current * e.scale;
+      const proposedScale = pinchStartScale.value * e.scale;
       const next = Math.min(scaleMax, Math.max(scaleMin, proposedScale));
-      if (onScale) runOnJS(onScale)(next);
+      // gestureScale을 1로 되돌리기 전에 liveScale부터 먼저 최신값으로 맞춰야(같은 워클릿,
+      // 같은 틱) "liveScale*gestureScale" 결과가 매끄럽게 이어진다 — 리렌더로 scale prop이
+      // 갱신되길 기다리면 그 사이 잠깐 원래 크기로 보이는 버그가 재발한다
+      liveScale.value = next;
       gestureScale.value = 1;
+      if (onScale) runOnJS(onScale)(next);
     });
 
   // 루틴/메모는 전용 손잡이 없이, 선택 후 두 손가락 확대/축소와 같이 손가락을 비틀면 그만큼
@@ -591,7 +643,7 @@ function DraggableBlock({
       : [
           { translateX: translateX.value },
           { translateY: translateY.value },
-          { scale: scale * gestureScale.value },
+          { scale: liveScale.value * gestureScale.value },
           { rotate: `${rotationLive.value}deg` },
         ],
   }));
@@ -1604,9 +1656,9 @@ export default function PhotoDiaryFormScreen() {
   // 원래 자리(사진/메모의 오른쪽 위 모서리)에 살짝 겹치게 두되, 그 모서리가 캔버스 아래로
   // 넘어가면 복잡하게 다시 계산하지 않고 지금 위치에서 30px만 위로 당겨온다. 오른쪽으로
   // 넘어가는 경우만 캔버스 안쪽으로 살짝 당겨서 완전히 안 보이는 것만 막는다
-  function cornerBadgePosition(x: number, y: number, w: number, badgeSize: number) {
-    let left = x + w - badgeSize * 0.6;
-    let top = y - badgeSize * 0.4;
+  function clampBadgeToCanvas(cornerX: number, cornerY: number, badgeSize: number) {
+    let left = cornerX - badgeSize * 0.6;
+    let top = cornerY - badgeSize * 0.4;
     if (top > canvasHeight - badgeSize) top -= 30;
     // 사진을 캔버스보다 크게 키우면 모서리 자체가 캔버스의 위/왼쪽 밖으로도 밀려날 수 있어서
     // (예전엔 오른쪽/아래로 넘어가는 경우만 보정했음), 어느 방향으로 넘어가든 배지가 항상
@@ -1616,12 +1668,40 @@ export default function PhotoDiaryFormScreen() {
     return { left, top };
   }
 
+  function cornerBadgePosition(x: number, y: number, w: number, badgeSize: number) {
+    return clampBadgeToCanvas(x + w, y, badgeSize);
+  }
+
+  // 회전된 사진/펀칭 스티커의 "지금 실제로 보이는" 오른쪽 위 모서리 좌표 — 회전은 블록
+  // 중심을 기준으로 돌아가므로, 중심에서 오른쪽 위 방향 벡터를 회전 각도만큼 돌려서 구한다.
+  // ⚠️ 2026-10-06 — 예전엔 회전을 전혀 반영하지 않아서, 사진을 돌리면 배지는 "돌리기 전"
+  // 모서리 자리에 그대로 멈춰있고 실제 모서리만 멀어져서 삭제 버튼이 사진과 따로 노는
+  // 것처럼 보였다
+  function rotatedCornerBadgePosition(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    rotationDeg: number,
+    badgeSize: number
+  ) {
+    if (!rotationDeg) return cornerBadgePosition(x, y, w, badgeSize);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const rad = (rotationDeg * Math.PI) / 180;
+    const dx = w / 2;
+    const dy = -h / 2;
+    const cornerX = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+    const cornerY = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
+    return clampBadgeToCanvas(cornerX, cornerY, badgeSize);
+  }
+
   // 배지는 평소엔 사진의 실제(지금) 오른쪽 위 모서리를 그대로 따라간다 — 고정 위치로 두면
   // 사진이 커졌을 때 실제 모서리와 배지 위치가 멀어져 어색하다는 피드백으로 되돌림. 사진이
   // 캔버스 밖으로 거의 나가려 할 때만 cornerBadgePosition의 보정으로 오른쪽 모서리 안쪽에 머문다
   function fitPhotoBadgePosition(block: Extract<CanvasBlock, { type: 'photo' }>) {
     const size = photoBlockSize(block);
-    return cornerBadgePosition(block.x, block.y, size.width, 24);
+    return rotatedCornerBadgePosition(block.x, block.y, size.width, size.height, block.rotation ?? 0, 24);
   }
 
   // 메모는 확대/회전(rotation)까지 가능해져서, 실제 확대된 크기를 기준으로 배지 위치를
@@ -1993,8 +2073,8 @@ export default function PhotoDiaryFormScreen() {
                                 sizeMode={block.type === 'photo' ? 'box' : 'transform'}
                                 width={block.type === 'photo' ? photoBlockSize(block).width : undefined}
                                 height={block.type === 'photo' ? photoBlockSize(block).height : undefined}
-                                minSize={block.type === 'photo' ? { width: MIN_PHOTO_WIDTH, height: MIN_PHOTO_HEIGHT } : undefined}
-                                maxSize={block.type === 'photo' ? { width: MAX_PHOTO_WIDTH, height: MAX_PHOTO_HEIGHT } : undefined}
+                                minSize={block.type === 'photo' ? photoSizeLimits(block).min : undefined}
+                                maxSize={block.type === 'photo' ? photoSizeLimits(block).max : undefined}
                                 rotation={block.rotation ?? 0}
                                 rotatable
                                 onRotate={(r) => updateBlockRotation(block.id, r)}

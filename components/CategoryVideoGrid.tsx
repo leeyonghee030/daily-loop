@@ -4,7 +4,9 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -12,6 +14,7 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedRef } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Sortable from 'react-native-sortables';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -60,6 +63,16 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   const accent = useAccentColor();
   const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
+  // 영상 추가/카테고리 추가 모달 - 저장/취소 버튼이 하단 내비바에 가려지는 문제(2026-10-06,
+  // edgeToEdgeEnabled 때문에 기기마다 다른 내비바 높이를 직접 챙겨야 함 — 오늘 탭 카테고리
+  // 시트에서 겪은 것과 동일 원인)
+  // ⚠️ 처음엔 이 여백을 키보드가 떠 있을 때만 0으로 줄였는데, KeyboardAvoidingView의 자체
+  // (애니메이션으로 서서히 바뀌는) 높이 변화와 이 여백의 (즉시 바뀌는) 변화가 서로 타이밍이
+  // 안 맞아서, 키보드를 닫는 순간 시트가 한 번 더 위로 움찔 튀어 보이는 새 버그가 생겼다
+  // (2026-10-06) — 두 애니메이션을 억지로 맞추는 대신, 아예 토글을 없애고 항상 같은(더 작은)
+  // 고정값만 쓰기로 단순화해서 키보드 열고 닫을 때 다른 움직임이 전혀 안 섞이게 한다
+  const insets = useSafeAreaInsets();
+  const modalSheetBottomPadding = 8 + insets.bottom;
   const categoriesQueryKey = ['video-categories', userId] as const;
   const gridScrollRef = useAnimatedRef<Animated.ScrollView>();
 
@@ -426,9 +439,12 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       </GestureDetector>
 
       <Modal visible={showAddModal} animationType="slide" transparent onRequestClose={() => setShowAddModal(false)}>
-        <RNView style={styles.modalBackdrop}>
+        {/* 저장/취소 버튼이 하단 내비바에 가려지고, 입력 중 키보드가 입력창을 가리던 문제(2026-10-06)
+            — KeyboardAvoidingView로 키보드가 뜨면 시트 전체를 밀어올리고, insets.bottom으로
+            시트 자체의 아래 여백도 기기에 맞게 챙긴다 */}
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowAddModal(false)} />
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: modalSheetBottomPadding }]}>
             <Text style={styles.modalTitle}>{t('categoryVideoGrid.addVideoModalTitle')}</Text>
             <Text style={styles.modalDesc}>{t('categoryVideoGrid.addVideoModalDesc')}</Text>
             <View style={styles.inputWrap}>
@@ -462,7 +478,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
               </AnimatedPressable>
             </View>
           </View>
-        </RNView>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -470,9 +486,9 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         animationType="slide"
         transparent
         onRequestClose={() => setShowCategoryModal(false)}>
-        <RNView style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryModal(false)} />
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: modalSheetBottomPadding }]}>
             <Text style={styles.modalTitle}>
               {categoryModalMode === 'create'
                 ? t('categoryVideoGrid.categoryModalTitleCreate')
@@ -494,7 +510,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
               </AnimatedPressable>
             </View>
           </View>
-        </RNView>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={showTrashModal} animationType="slide" transparent onRequestClose={() => setShowTrashModal(false)}>

@@ -180,6 +180,12 @@ export default function StatsScreen() {
 
   function renderRoutine({ item }: { item: RoutineStats }) {
     const rate = rateValue(item.completedCount, item.scheduledCount);
+    // 전체기간 수행률만 있으면 "지금 보고 있는 기간(주간/월별)"과 무관하게 항상 같은 숫자로
+    // 보여서 탭을 바꾼 의미가 없었다(2026-10-06) — 그 위에 지금 탭 기준(최근 7일/30일)만의
+    // 수행률을 추가로 보여준다
+    const periodScheduled = period === 'weekly' ? item.weeklyScheduled : item.monthlyScheduled;
+    const periodCompleted = period === 'weekly' ? item.weeklyCompleted : item.monthlyCompleted;
+    const periodRate = rateValue(periodCompleted, periodScheduled);
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}>
@@ -207,6 +213,18 @@ export default function StatsScreen() {
         </View>
 
         <View style={styles.rateRow}>
+          <Text style={styles.cardLabel}>
+            {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
+          </Text>
+          <Text style={styles.cardValue}>
+            {formatRate(periodCompleted, periodScheduled)} ({periodCompleted}/{periodScheduled})
+          </Text>
+        </View>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${periodRate * 100}%` }]} />
+        </View>
+
+        <View style={[styles.rateRow, styles.rateRowSpaced]}>
           <Text style={styles.cardLabel}>{t('stats.allTimeRate')}</Text>
           <Text style={styles.cardValue}>
             {formatRate(item.completedCount, item.scheduledCount)} ({item.completedCount}/{item.scheduledCount})
@@ -231,30 +249,12 @@ export default function StatsScreen() {
       ? summary.hiddenRoutines
       : summary.hiddenRoutines.filter((r) => routineMatchesDayCategory(r.routine, dayCategory));
 
-  // 위 요약 카드(링)를 좌우로 스와이프하면 주간/월별이 바뀌고, 아래 루틴 목록을 좌우로
-  // 스와이프하면 전체/평일/주말이 바뀐다(2026-09-21) — 두 토글을 서로 다른 영역에 나눠서
-  // 하나의 스와이프 동작이 두 가지 의미를 갖지 않게 했다. 목록 쪽은 세로 스크롤과 부딪히지
-  // 않도록 뚜렷하게 가로로만 움직였을 때만 인식한다(activeOffsetX/failOffsetY)
+  // 아래 루틴 목록을 좌우로 스와이프하면 전체/평일/주말이 바뀐다(2026-09-21) — 세로 스크롤과
+  // 부딪히지 않도록 뚜렷하게 가로로만 움직였을 때만 인식한다(activeOffsetX/failOffsetY)
   // FAB 드래그(오늘 탭의 fabPan)와 같은 방식으로 onEnd는 UI스레드 워클릿으로 두고 runOnJS로
   // JS 함수를 직접 호출한다 — 제스처 빌더의 .runOnJS(true) 방식은 이 프로젝트에서 실제로
   // 안 먹혔다(2026-09-21, 폰 실기에서 스와이프 자체가 인식 안 되는 문제로 확인됨)
-  const PERIODS: ('weekly' | 'monthly')[] = ['weekly', 'monthly'];
-  function handlePeriodSwipe(translationX: number) {
-    const index = PERIODS.indexOf(period);
-    if (translationX < -40) {
-      const next = PERIODS[index + 1];
-      if (next) setPeriod(next);
-    } else if (translationX > 40) {
-      const prev = PERIODS[index - 1];
-      if (prev) setPeriod(prev);
-    }
-  }
-  const periodSwipeGesture = Gesture.Pan()
-    .activeOffsetX([-20, 20])
-    .failOffsetY([-15, 15])
-    .onEnd((e) => {
-      runOnJS(handlePeriodSwipe)(e.translationX);
-    });
+  // ⚠️ 주간/월별 요약 카드 쪽 스와이프는 사용자 요청으로 제거함(2026-10-06) — 탭 클릭만 지원
   const DAY_CATEGORIES: ('all' | 'weekday' | 'weekend')[] = ['all', 'weekday', 'weekend'];
   function handleCategorySwipe(translationX: number) {
     const index = DAY_CATEGORIES.indexOf(dayCategory);
@@ -288,23 +288,21 @@ export default function StatsScreen() {
         </AnimatedPressable>
       </View>
 
-      <GestureDetector gesture={periodSwipeGesture}>
-        <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
-          <View style={styles.summaryTextCol}>
-            <Text style={styles.summaryLabel}>
-              {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
-            </Text>
-            <Text style={styles.summaryHeadline}>
-              {categorySummary.completed}/{categorySummary.scheduled} {t('stats.completedSuffix')}
-            </Text>
-          </View>
-          <CompletionRing
-            ratio={rateValue(categorySummary.completed, categorySummary.scheduled)}
-            accent={accent}
-            styles={styles}
-          />
-        </ShadowCard>
-      </GestureDetector>
+      <ShadowCard style={styles.summaryCardOuter} contentStyle={styles.summaryCard}>
+        <View style={styles.summaryTextCol}>
+          <Text style={styles.summaryLabel}>
+            {period === 'weekly' ? t('stats.last7DaysRate') : t('stats.last30DaysRate')}
+          </Text>
+          <Text style={styles.summaryHeadline}>
+            {categorySummary.completed}/{categorySummary.scheduled} {t('stats.completedSuffix')}
+          </Text>
+        </View>
+        <CompletionRing
+          ratio={rateValue(categorySummary.completed, categorySummary.scheduled)}
+          accent={accent}
+          styles={styles}
+        />
+      </ShadowCard>
 
       <View style={styles.categoryTabs}>
         <AnimatedPressable
@@ -565,6 +563,10 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 6,
+  },
+  // 기간별 수행률 바와 전체기간 수행률 바를 구분하기 위한 위쪽 여백(2026-10-06)
+  rateRowSpaced: {
+    marginTop: 14,
   },
   cardLabel: {
     fontSize: 13,

@@ -155,6 +155,7 @@ export default function RoutineFormScreen() {
     title?: string;
     repeatType?: string;
     repeatDays?: string;
+    scheduledDate?: string;
     scheduledTime?: string;
     slotType?: string;
     isRequired?: string;
@@ -365,7 +366,7 @@ export default function RoutineFormScreen() {
   // LLM 미리보기에서 넘어온 프리필 값을 폼에 한 번만 반영 (신규 추가일 때만)
   useEffect(() => {
     if (isEditing || prefilled.current) return;
-    if (!params.title && !params.repeatType && !params.scheduledTime) return;
+    if (!params.title && !params.repeatType && !params.scheduledTime && !params.slotType && !params.scheduledDate) return;
     prefilled.current = true;
 
     if (params.title) setTitle(params.title);
@@ -387,6 +388,21 @@ export default function RoutineFormScreen() {
         // 체크 타입은 지속 시간을 알 수 없으니 "그 순간에만 체크"하는 시각 체크 모드로 둔다
         setTimeMode('instant');
       }
+    } else if (params.slotType) {
+      // ⚠️ 2026-10-06 — "밤 될 때쯔음"처럼 숫자 없는 대략적 시간대만 있을 때는 scheduledTime이
+      // 비어서 위 분기를 안 타는데, 바로 아래 slotId를 고르는 effect는 있어도 timeMode 자체를
+      // "슬롯"으로 안 바꿔주고 있었다 — 그래서 신규 루틴 기본값(오늘 바뀐 "정확한 시각")이
+      // 그대로 남아, 지금 시각(심지어 자정 근처면 "24:00~01:00"처럼) 기준 기본값이 뜨는 버그가
+      // 있었음. slotType만 있을 땐 반드시 슬롯 모드로 전환해야 그 아래 effect가 고른 슬롯이
+      // 실제로 화면에 보인다
+      setTimeMode('slot');
+    }
+    if (params.scheduledDate) {
+      // "사흘 뒤"/"다음주 금요일"처럼 AI가 구체적 미래 날짜를 계산해 돌려준 경우(2026-10-06) —
+      // 날짜가 있는 1회성 루틴이므로 반복 설정은 무조건 "한 번만"으로 강제한다(서버 쪽
+      // lib/llm.ts에도 같은 안전장치가 있지만, 폼 쪽에서도 한 번 더 확실히 맞춰둔다)
+      setScheduledDate(new Date(`${params.scheduledDate}T00:00:00`));
+      setRepeatType('once');
     }
   }, [isEditing, params]);
 

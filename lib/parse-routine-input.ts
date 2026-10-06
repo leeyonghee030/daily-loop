@@ -8,6 +8,10 @@ export type ParsedRoutineDraft = {
   // 구체적 시각(숫자)은 없지만 "아침/점심/저녁/자기전" 같은 대략적 시간대 단어만 있을 때 채워짐.
   // scheduledTime이 있으면 항상 null(그땐 정확한 시각/시각체크 모드로 들어가서 슬롯을 안 씀)
   slotType: SlotType | null;
+  // "사흘 뒤", "다음주 금요일"처럼 1회성 루틴에 구체적 미래 날짜가 있을 때만 채워짐
+  // ("YYYY-MM-DD"). AI 경로에서만 채워지고(규칙 기반 파서는 항상 null), repeatType이 "once"일
+  // 때만 의미가 있다(2026-10-06)
+  scheduledDate: string | null;
   isRequired: boolean;
   blockType: BlockType;
   trackingUnit: string | null;
@@ -184,6 +188,8 @@ export function parseRoutineInput(text: string): ParsedRoutineDraft {
     repeatDays,
     scheduledTime,
     slotType,
+    // "사흘뒤" 같은 상대 날짜는 규칙 기반으로는 다루지 않는다(AI 경로에서만 지원, 2026-10-06)
+    scheduledDate: null,
     isRequired,
     blockType,
     trackingUnit,
