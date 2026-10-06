@@ -166,26 +166,41 @@ function presetItemsToRoutines(userId: string, presetId: string, preset: Routine
 // 이 모음집으로 이미 만들어진(삭제 안 된) 루틴이 있으면 새로 또 만들지 않고 일시정지만
 // 풀어서 재사용한다 — 안 그러면 "전체 비활성화" 후 "적용"을 다시 누를 때마다 예전 루틴은
 // 그대로 남아있는 채로 새 루틴이 또 생겨서 개수가 계속 불어나는 버그가 있었음(2개→4개).
+// ⚠️ 2026-10-06 — "하나라도 있으면 전체 다 됐다고 간주"하던 게 진짜 버그였다: 항목 중 하나를
+// "내 루틴"에서 개별 삭제한 뒤 다시 "적용"을 눌러도, 남은 루틴이 하나라도 있으면 그걸로 "이미
+// 적용됨"으로 오판하고 지워진 항목은 다시 안 만들어서 "전부 생성 안 됨" 버그로 보였음 — 항목
+// 하나하나를 실제 루틴과 내용(제목/시간 등)으로 매칭해서, 짝이 없는 항목만 새로 만든다
 export async function applyPreset(userId: string, presetId: string): Promise<number> {
-  const { data: existing, error: existingError } = await supabase
+  const { preset, items } = await fetchPresetWithItems(presetId);
+  if (items.length === 0) return 0;
+
+  const { data: existingRoutines, error: existingError } = await supabase
     .from('routines')
-    .select('id')
+    .select('id, title, block_type, scheduled_time_start, scheduled_time_end, is_instant, slot_id, is_required, tracking_unit')
     .eq('preset_id', presetId)
     .is('deleted_at', null);
   if (existingError) throw existingError;
 
-  if ((existing ?? []).length > 0) {
-    await pauseRoutinesByPreset(presetId, false);
-    return existing!.length;
+  const remaining = [...(existingRoutines ?? [])];
+  const missingItems: PresetItemInput[] = [];
+  for (const item of items) {
+    const signature = presetItemSignature(item);
+    const matchIndex = remaining.findIndex((routine) => presetItemSignature(routine) === signature);
+    if (matchIndex !== -1) remaining.splice(matchIndex, 1);
+    else missingItems.push(item);
   }
 
-  const { preset, items } = await fetchPresetWithItems(presetId);
-  if (items.length === 0) return 0;
+  if ((existingRoutines ?? []).length > 0) {
+    await pauseRoutinesByPreset(presetId, false);
+  }
 
-  const routines = presetItemsToRoutines(userId, presetId, preset, items);
-  const { error } = await supabase.from('routines').insert(routines);
-  if (error) throw error;
-  return routines.length;
+  if (missingItems.length > 0) {
+    const routines = presetItemsToRoutines(userId, presetId, preset, missingItems);
+    const { error } = await supabase.from('routines').insert(routines);
+    if (error) throw error;
+  }
+
+  return items.length;
 }
 
 function presetItemSignature(item: {

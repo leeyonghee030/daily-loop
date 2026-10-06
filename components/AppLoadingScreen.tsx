@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Animated, Easing, StyleSheet, View } from 'react-native';
+import * as Updates from 'expo-updates';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
@@ -82,8 +83,29 @@ function toHex({ r, g, b }: { r: number; g: number; b: number }): string {
 // 그라데이션 효과). 조각 수를 넉넉히 잡아서 이음새(각진 경계)가 안 보이게 한다
 const SEGMENT_COUNT = 200;
 
+// 로그인 토큰이 만료 시점 근처일 때 오프라인이면, Supabase 로그인 라이브러리 내부의
+// 자동 재시도(최대 30초, 때로는 그 이상)가 끝나기 전까지 이 화면이 계속 떠 있을 수
+// 있다(2026-10-06) — 라이브러리 내부 동작이라 완전히 없애긴 어려워서, 대신 일정 시간
+// 넘게 안 끝나면 "오프라인일 수 있다"는 안내와 다시 시도(앱 재시작) 버튼을 보여준다
+const OFFLINE_HINT_DELAY_MS = 6000;
+
 export function AppLoadingScreen() {
   const progress = useRef(new Animated.Value(0)).current;
+  const [showOfflineHint, setShowOfflineHint] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowOfflineHint(true), OFFLINE_HINT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  async function handleRetry() {
+    try {
+      if (__DEV__) return;
+      await Updates.reloadAsync();
+    } catch {
+      // 개발 모드거나 재시작이 실패해도 안내 자체는 계속 보여줄 수 있으니 조용히 무시
+    }
+  }
 
   useEffect(() => {
     // strokeDashoffset/색은 transform이 아니라 네이티브 드라이버 대상이 아니다.
@@ -179,6 +201,14 @@ export function AppLoadingScreen() {
           />
         ))}
       </Svg>
+      {showOfflineHint && (
+        <View style={styles.hintBox}>
+          <Text style={styles.hintText}>네트워크가 불안정할 수 있어요{'\n'}인터넷 연결을 확인해주세요</Text>
+          <Pressable style={styles.retryButton} onPress={handleRetry}>
+            <Text style={styles.retryText}>다시 시도</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -189,5 +219,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#ffffff',
+  },
+  hintBox: {
+    position: 'absolute',
+    bottom: '18%',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 32,
+  },
+  hintText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#8B94A0',
+    textAlign: 'center',
+  },
+  retryButton: {
+    borderWidth: 1,
+    borderColor: '#A9C4E0',
+    borderRadius: 100,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+  },
+  retryText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#5E85AC',
   },
 });

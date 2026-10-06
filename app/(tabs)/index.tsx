@@ -28,6 +28,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Gesture, GestureDetector, Swipeable } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -772,6 +773,11 @@ const TimelineView = memo(function TimelineView({
     const routine = block.items[0].routine;
     const isInstant = block.items[0].isInstant;
     const isNowBlock = isNowWithinRange(block.items[0].range, isInstant);
+    // 리스트뷰는 제목 밑줄로 "필수"를 표시하는데 타임라인은 아무 표시가 없어서(탭해야만
+    // 나오는 간단설명 팝업 안에만 있었음) 확인하려면 매번 눌러봐야 했다 — 블록 자체에 리스트의
+    // 밑줄과 같은 톤(연한 주색, 투명도 0.35)으로 테두리를 둘러서 보기만 해도 알 수 있게 한다.
+    // 완료된 건 리스트처럼 표시 안 함(사용자 요청, 2026-10-06)
+    const isRequiredHighlight = routine.is_required && !Boolean(completions[routine.id]);
     // 펼쳐진 목록 "안"의 줄이 아닌데 어떤 클러스터가 펼쳐져 있으면, 이 블록에 어떤 동작을
     // 하든(체크/제목탭/트래킹 등) 먼저 그 목록부터 접는다 — 명시적 "접기" 버튼 없이 "다른
     // 루틴을 누르면 닫힌다"를 만족시킨다(2026-09-29)
@@ -792,6 +798,7 @@ const TimelineView = memo(function TimelineView({
           },
           pos.zIndex !== undefined && { zIndex: pos.zIndex, elevation: pos.zIndex },
           isNowBlock && timelineStyles.blockNow,
+          isRequiredHighlight && timelineStyles.blockRequired,
         ]}>
         {block.items.map(({ routine }, index) => {
           const completion = completions[routine.id];
@@ -936,7 +943,22 @@ const TimelineView = memo(function TimelineView({
           minHeight+flex:1로 콘텐츠 영역(위 contentContainerStyle과 동일하게 늘어난 만큼)
           전체를 채워서 루틴 없는 흰 배경까지 전부 탭 가능하게 한다 */}
       <View style={{ width: '100%', minHeight: timelineScrollContentHeight, flex: 1 }}>
-      <View style={{ width: '100%', height: '100%' }}>
+      {/* "+N 더보기"를 펼친 뒤 스크롤로는 닫히는데 시간축/빈 시간대 등 블록이 아닌 자리를
+          탭하면 안 닫히던 버그(2026-10-06) — 펼쳐진 동안만 화면 전체 크기의 탭 감지 레이어를
+          맨 뒤(가장 먼저 그려짐)에 깔아둔다. 실제 루틴 블록들은 이 레이어보다 나중에 그려져
+          위에 얹히므로 블록 탭은 항상 블록이 먼저 받고, 블록이 없는 자리의 탭만 이 레이어로
+          전달돼 닫힌다(2026-09-29 제목/체크박스 탭에 쓴 것과 같은 GestureTapView 방식) */}
+      {expandedClusterId !== null && (
+        <GestureTapView
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          onPress={closeCluster}
+        />
+      )}
+      {/* 이 시간축 레이어가 명시적 터치 핸들러는 없어도, 자기 자신이 너비/높이 100%를 차지하는
+          일반 View라서 바로 밑(위 탭 감지 레이어)으로 터치가 확실히 전달되는지 애매했다
+          (2026-10-06, "빈공간 눌러도 안 닫힌다" 재확인) — pointerEvents="none"으로 이 레이어와
+          자식(눈금선/시각 라벨/압축 띠 텍스트) 전체를 터치 판정에서 완전히 제외해서 확실하게 한다 */}
+      <View style={{ width: '100%', height: '100%' }} pointerEvents="none">
       {(() => {
         let cursor = 0;
         return segments.map((seg) => {
@@ -1087,6 +1109,11 @@ const TimelineView = memo(function TimelineView({
                 {infoRoutine.skip_holidays && (
                   <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
                     <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>{t('presetForm.skipHolidays')}</Text>
+                  </View>
+                )}
+                {infoRoutine.photo_url && (
+                  <View style={[timelineStyles.infoBadge, timelineStyles.infoBadgeAccent]}>
+                    <Text style={[timelineStyles.infoBadgeText, timelineStyles.infoBadgeTextAccent]}>{t('routineForm.photoAttached')}</Text>
                   </View>
                 )}
               </View>
@@ -1285,6 +1312,12 @@ function createTimelineStyles(accent: string, fontKorean: KoreanFontValue) {
   blockNow: {
     backgroundColor: withAlpha(nowAccent, 0.16),
     borderLeftColor: nowAccent,
+  },
+  // 리스트뷰의 "필수" 밑줄(requiredBar, withAlpha(accent, 0.35))과 같은 톤으로 블록 전체를
+  // 둘러서, 타임라인에서도 탭해보지 않고 바로 알 수 있게 한다(사용자 요청, 2026-10-06)
+  blockRequired: {
+    borderWidth: 1.5,
+    borderColor: withAlpha(accent, 0.35),
   },
   // 커스텀 폰트("동글 폰트")는 굵은 글씨 파일이 없어서 fontWeight를 주면 RN이 시스템 폰트로
   // 대체해버림(=사용자가 고른 폰트가 안 먹히는 원인) — 대신 색으로만 강조해서 폰트를 유지한다
@@ -1725,6 +1758,11 @@ export default function TodayScreen() {
   const { t } = useTranslation();
   const { show: showToast, toastNode } = useToast();
   const styles = useMemo(() => createStyles(accent, koreanFont), [accent, koreanFont]);
+  // 카테고리 바텀시트가 안드로이드 하단 내비게이션 바에 가려 보인다는 재확인(2026-10-06) —
+  // app.json의 edgeToEdgeEnabled로 안드로이드가 내비바 영역까지 화면에 포함시켜 그리기 때문에,
+  // 고정된 px 여백 하나로는 기기마다 다른 내비바 높이를 다 감당할 수 없었다(실제로 부족했음).
+  // 기기가 알려주는 실제 하단 안전영역(insets.bottom)을 읽어서 그만큼 더 띄운다
+  const insets = useSafeAreaInsets();
 
   // "+ 루틴 추가" FAB를 길게 눌러서 원하는 자리로 옮길 수 있게 한다(2026-09-21) — 화면 크기에
   // 관계없이 항상 화면 밖으로는 못 나가게 clampFabTranslate로 가장자리에서 최소 8px은 남긴다.
@@ -1976,7 +2014,14 @@ export default function TodayScreen() {
     ],
   }));
 
+  // 체크/삭제/기록저장 같은 "행동" 실패와, 목록 자체를 못 불러온 "로딩" 실패를 하나의 상태로
+  // 같이 쓰면 서로의 배너를 지워버리는 경합이 있었다(2026-10-06, 오프라인에서 체크 시도 →
+  // 체크 실패 배너가 뜬 직후, onError의 invalidateQueries가 목록 재조회를 트리거하는데 그
+  // 재조회가 시작되는(isFetching:true) 순간 아래 로딩 effect가 방금 뜬 체크 실패 배너를
+  // 지워버리고, 그 재조회마저 실패하면 몇 초 뒤 "불러오지 못했습니다"로 뒤바뀌어 나타났음) —
+  // 두 상태를 분리하고 행동 실패를 더 우선해서 보여준다
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   // 체크 직후 화면 반영이 캐시 갱신 → 리렌더 경로를 거치면서 한 박자 늦게 보인다는 신고가
   // 반복됐다(2026-09-28, 특히 연속으로 여러 개 체크할 때) — 그 경로와 무관하게 항상 즉시
   // 반영을 보장하는 순수 로컬 state(캘린더 화면의 localOverride와 동일한 패턴)
@@ -2027,14 +2072,26 @@ export default function TodayScreen() {
 
   // 일괄체크 등으로 선택모드를 켜둔 채 캘린더/통계/카테고리 등 다른 탭·화면으로 갔다가
   // 오늘 탭으로 돌아오면 선택모드가 그대로 켜져 있던 버그(2026-10-02) — 이 화면이 포커스를
-  // 잃는 시점(cleanup)에 선택모드를 꺼서, 다른 데 갔다 올 때마다 항상 꺼진 상태로 맞는다
+  // 잃는 시점(cleanup)에 선택모드를 꺼서, 다른 데 갔다 올 때마다 항상 꺼진 상태로 맞는다.
+  // ⚠️ 2026-10-06 — 의존성 배열에 selectMode를 넣어뒀던 게 새 버그였다: useFocusEffect는
+  // (화면이 그대로 포커스된 상태에서도) 콜백의 참조가 바뀌면 "이전 콜백의 cleanup을 실행 →
+  // 새 콜백을 다시 실행"하는데, selectMode가 true→false로 바뀔 때마다 이 콜백도 새로
+  // 만들어지면서 "바로 직전"(아직 true였던 시점) 콜백의 cleanup이 그 자리에서 즉시 실행돼
+  // `if (selectMode)`가 그 시점에 캡쳐된 옛 값(true)으로 평가되어 toggleSelectMode()를 한 번
+  // 더 불러버렸다 — 일괄체크/X버튼/뒤로가기로 끄려는 순간마다 바로 다시 켜져서 "안 꺼지는"
+  // 것처럼 보였던 것. ref로 최신값만 읽어서 이 콜백 자체가 selectMode 변경에 따라 다시
+  // 만들어지지 않게(의존성 없음) 고쳤다 — 이제 진짜 화면을 벗어날 때만 cleanup이 실행된다
+  const selectModeRef = useRef(selectMode);
+  selectModeRef.current = selectMode;
   useFocusEffect(
     useCallback(() => {
       return () => {
-        if (selectMode) toggleSelectMode();
+        if (selectModeRef.current) {
+          setSelectMode(false);
+          setSelectedIds(new Set());
+        }
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectMode])
+    }, [])
   );
 
   // 다중 선택 중 안드로이드 뒤로가기를 누르면 오늘 탭이 이 앱의 루트 화면이라 그대로 앱이
@@ -2186,10 +2243,10 @@ export default function TodayScreen() {
   // true→false로 바뀌는 시점마다 무조건 다시 검사해서 이 문제가 없어진다
   useEffect(() => {
     if (todayQuery.isFetching) {
-      setErrorMessage(null);
+      setLoadErrorMessage(null);
     } else if (todayQuery.isError) {
       console.error('오늘 루틴 로딩 실패:', todayQuery.error);
-      setErrorMessage(t('today.errorLoad'));
+      setLoadErrorMessage(t('today.errorLoad'));
     }
   }, [todayQuery.isFetching, todayQuery.isError, todayQuery.error]);
 
@@ -2200,6 +2257,12 @@ export default function TodayScreen() {
     const timer = setTimeout(() => setErrorMessage(null), 2000);
     return () => clearTimeout(timer);
   }, [errorMessage]);
+
+  useEffect(() => {
+    if (!loadErrorMessage) return;
+    const timer = setTimeout(() => setLoadErrorMessage(null), 2000);
+    return () => clearTimeout(timer);
+  }, [loadErrorMessage]);
 
   const routines = useMemo(() => todayQuery.data?.routines ?? [], [todayQuery.data]);
 
@@ -2848,9 +2911,9 @@ export default function TodayScreen() {
         </ShadowCard>
       </AnimatedPressable>
 
-      {errorMessage && (
+      {(errorMessage || loadErrorMessage) && (
         <View style={styles.errorBanner}>
-          <Text style={styles.errorBannerText}>{errorMessage}</Text>
+          <Text style={styles.errorBannerText}>{errorMessage ?? loadErrorMessage}</Text>
         </View>
       )}
 
@@ -3153,7 +3216,7 @@ export default function TodayScreen() {
         onRequestClose={() => setShowCategoryMenu(false)}>
         <View style={styles.categoryMenuBackdropInner}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryMenu(false)} />
-          <View style={styles.categoryMenuSheet}>
+          <View style={[styles.categoryMenuSheet, { paddingBottom: 20 + insets.bottom }]}>
             <View style={styles.categoryMenuHeaderRow}>
               <Text style={styles.categoryMenuTitle}>{t('today.category')}</Text>
               <AnimatedPressable onPress={() => setShowCategoryMenu(false)} hitSlop={8}>
@@ -3334,7 +3397,8 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    paddingBottom: 32,
+    // 아래쪽 여백(paddingBottom)은 JSX에서 insets.bottom을 더해 동적으로 덮어씌운다 —
+    // 고정값만으로는 기기마다 다른 하단 내비바 높이를 못 감당했음(2026-10-06)
   },
   categoryMenuHeaderRow: {
     flexDirection: 'row',

@@ -154,9 +154,12 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     flexDirection: 'row',
     gap: 6,
   },
+  // 시트 맨 아래에 있어서 안드로이드 하단 내비게이션 바(뒤로가기 등)에 거의 붙어있었다 —
+  // 아래쪽 여백을 넉넉히 줘서 그 위로 올린다(2026-10-06, CategoryVideoGrid의 같은 문제와 동일 수정)
   manageButton: {
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingTop: 10,
+    paddingBottom: 28,
   },
   manageButtonText: {
     color: accent,

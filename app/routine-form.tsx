@@ -184,7 +184,9 @@ export default function RoutineFormScreen() {
   const [blockType, setBlockType] = useState<BlockType>('check');
   const [repeatType, setRepeatType] = useState<RepeatType>('daily');
   const [repeatDays, setRepeatDays] = useState<number[]>([]);
-  const [timeMode, setTimeMode] = useState<'exact' | 'slot' | 'instant'>('slot');
+  // 신규 루틴 기본값은 "정확한 시각"(사용자 요청, 2026-10-06) — 수정/즐겨찾기 불러오기/
+  // LLM 미리보기 등은 아래 각자의 useEffect에서 원래 값대로 덮어쓰므로 이 기본값과 무관하다
+  const [timeMode, setTimeMode] = useState<'exact' | 'slot' | 'instant'>('exact');
   // 신규 루틴 기본값은 지금 시각을 다음 정각으로 올린 값(+1시간)으로 시작 — 기존에 저장된
   // 루틴/즐겨찾기/LLM 미리보기 값이 있으면 아래 useEffect들이 이 기본값을 덮어씀
   const [startTime, setStartTime] = useState<Date>(() => roundUpToHour(new Date()));
@@ -220,6 +222,8 @@ export default function RoutineFormScreen() {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [newPhotoUri, setNewPhotoUri] = useState<string | null>(null);
   const [isPickingPhoto, setIsPickingPhoto] = useState(false);
+  // 첨부된 사진이 삭제만 가능하고 눌러서 크게 볼 방법이 없었다(사용자 요청, 2026-10-06)
+  const [showPhotoViewer, setShowPhotoViewer] = useState(false);
 
   // 메모 입력창이 폼 중간에 있어서 포커스하면 키보드에 가려지던 문제 — 오늘 탭 트래킹
   // 입력창과 같은 방식(measureInWindow로 실제 화면 위치를 재서 키보드가 가리는 만큼만
@@ -961,7 +965,9 @@ export default function RoutineFormScreen() {
       <Text style={styles.label}>{t('routineForm.photoLabel')}</Text>
       {newPhotoUri || photoUrl ? (
         <View style={styles.selectedVideoRow}>
-          <Image source={{ uri: newPhotoUri ?? photoUrl! }} style={styles.selectedPhotoThumb} />
+          <AnimatedPressable onPress={() => setShowPhotoViewer(true)}>
+            <Image source={{ uri: newPhotoUri ?? photoUrl! }} style={styles.selectedPhotoThumb} />
+          </AnimatedPressable>
           <Text style={styles.selectedVideoTitle}>{t('routineForm.photoAttached')}</Text>
           <AnimatedPressable onPress={removePhoto}>
             <Text style={styles.removeVideoText}>✕</Text>
@@ -1075,6 +1081,26 @@ export default function RoutineFormScreen() {
             </AnimatedPressable>
           </View>
         </ShadowCard>
+      </RNView>
+    </Modal>
+
+    <Modal
+      visible={showPhotoViewer}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShowPhotoViewer(false)}>
+      <RNView style={styles.photoViewerBackdrop}>
+        <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowPhotoViewer(false)} />
+        {(newPhotoUri || photoUrl) && (
+          <Image
+            source={{ uri: newPhotoUri ?? photoUrl! }}
+            style={styles.photoViewerImage}
+            resizeMode="contain"
+          />
+        )}
+        <AnimatedPressable style={styles.photoViewerClose} onPress={() => setShowPhotoViewer(false)}>
+          <Ionicons name="close" size={22} color="#fff" />
+        </AnimatedPressable>
       </RNView>
     </Modal>
     </>
@@ -1316,6 +1342,22 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
     height: 48,
     borderRadius: cardRadius,
     backgroundColor: border,
+  },
+  photoViewerBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.9)',
+  },
+  photoViewerImage: {
+    width: '100%',
+    height: '80%',
+  },
+  photoViewerClose: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    padding: 10,
   },
   confirmBackdrop: {
     flex: 1,

@@ -373,7 +373,8 @@ export default function PresetFormScreen() {
         itemInputs
       );
       // 새로 만든 모음집은 저장과 동시에 오늘 목록에도 바로 적용한다 —
-      // "만들었는데 내 루틴에 안 보인다"는 혼란을 줄이기 위함. 원치 않는 루틴은 "일시정지"로 끄면 됨.
+      // "만들었는데 내 루틴에 안 보인다"는 혼란을 줄이기 위함. 원치 않는 루틴은 "내 루틴"에서
+      // 삭제하면 됨("일시정지"는 모음집 전체 단위로만 가능해서 개별 항목 안내로는 부정확함, 2026-10-06 수정)
       // 기존 모음집 수정은 이미 적용된 항목은 건드리지 않되, 이번에 새로 추가한 항목만 골라서
       // 바로 적용한다 — 안 그러면 새 항목이 템플릿에만 남고 실제 루틴으로는 안 생겨서
       // "내 루틴"에서 안 보이거나(특히 이름이 같은 항목을 중복으로 추가한 경우) 헷갈렸음
@@ -381,8 +382,8 @@ export default function PresetFormScreen() {
         const count = await applyPreset(userId, presetId);
         const message =
           language === 'ko'
-            ? `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
-            : `${count} routine(s) were added to today's list. You can pause any you don't want from "Routines".`;
+            ? `루틴 ${count}개가 오늘 목록에 바로 추가됐어요. 원치 않는 항목은 "내 루틴"에서 삭제할 수 있어요.`
+            : `${count} routine(s) were added to today's list. You can delete any you don't want from "Routines".`;
         setInfoDialog({ title: t('presetForm.createdTitle'), message });
       } else {
         const newItemInputs = items
@@ -398,18 +399,19 @@ export default function PresetFormScreen() {
         const addedCount =
           newItemInputs.length > 0 ? await applyNewPresetItems(userId, presetId, newItemInputs) : 0;
         setRemovedOriginalItems([]);
-        if (addedCount > 0 || removedCount > 0) {
-          const parts: string[] = [];
-          if (addedCount > 0) parts.push(`${t('presetForm.addedSuffix')} ${addedCount}`);
-          if (removedCount > 0) parts.push(`${t('presetForm.removedSuffix')} ${removedCount}`);
-          const message =
-            language === 'ko'
-              ? `루틴 ${parts.join(' · ')}개. 원치 않는 항목은 "내 루틴"에서 일시정지할 수 있어요.`
-              : `Routines ${parts.join(' · ')}. You can pause any you don't want from "Routines".`;
-          setInfoDialog({ title: t('presetForm.updatedTitle'), message });
-        } else {
-          router.back();
-        }
+        // 항목을 추가/삭제하지 않고 이름이나 반복 규칙만 바꾼 수정은 안내 없이 바로 뒤로가서,
+        // "저장이 된 건지 안 된 건지" 확인할 방법이 없었다(2026-10-06) — 추가/삭제 유무와
+        // 무관하게 항상 완료 안내를 띄우도록 수정
+        const parts: string[] = [];
+        if (addedCount > 0) parts.push(`${t('presetForm.addedSuffix')} ${addedCount}`);
+        if (removedCount > 0) parts.push(`${t('presetForm.removedSuffix')} ${removedCount}`);
+        const message =
+          parts.length > 0
+            ? language === 'ko'
+              ? `루틴 ${parts.join(' · ')}개. 원치 않는 항목은 "내 루틴"에서 삭제할 수 있어요.`
+              : `Routines ${parts.join(' · ')}. You can delete any you don't want from "Routines".`
+            : t('presetForm.updatedMessage');
+        setInfoDialog({ title: t('presetForm.updatedTitle'), message });
       }
     } catch (err) {
       setErrorMessage(t('presetForm.errorSave'));

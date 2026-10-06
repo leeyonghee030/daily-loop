@@ -1,10 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { createContext, useContext, useMemo, type ReactNode } from 'react';
 
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 
 type OnboardingContextValue = {
-  // null = 아직 서버에서 안 읽음(app/_layout.tsx가 이 동안 라우팅 판단을 미룬다)
+  // null = 아직 한 번도 확인된 적 없음(서버 응답 대기 중, 또는 오프라인이라 캐시도 없음)
+  // — app/_layout.tsx가 이 동안 라우팅 판단을 미룬다
   seen: boolean | null;
   markSeen: () => Promise<void>;
 };
@@ -15,37 +17,38 @@ const OnboardingContext = createContext<OnboardingContextValue>({
 });
 
 // 계정(users.onboarding_completed)에 저장 — 기기/앱 재설치와 무관하게 같은 계정이면
-// 다시 로그인해도 온보딩을 또 보지 않는다
+// 다시 로그인해도 온보딩을 또 보지 않는다.
+// react-query로 조회해서 마지막으로 성공한 값을 오프라인 캐시(AsyncStorage)에 같이 보존한다 —
+// 예전엔 직접 supabase를 호출해서 네트워크가 끊기면 무조건 false(온보딩 안 함)로 떨어졌는데,
+// 그러면 로그인은 이미 돼 있는 기존 유저도 비행기모드에서 앱을 열면 신규가입처럼 온보딩
+// 화면(테마색/언어 고르기)으로 튕겨나가는 버그가 있었음(2026-10-06) — 이제 오프라인이면 마지막
+// 조회 성공 시점의 값을 그대로 쓴다(한 번도 성공한 적 없는 최초 설치+오프라인만 예외, 이 경우는
+// 어차피 로그인 자체도 네트워크가 필요해서 발생하지 않음)
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const userId = session?.user.id;
-  const [seen, setSeen] = useState<boolean | null>(null);
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    if (!userId) {
-      setSeen(null);
-      return;
-    }
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('onboarding_completed')
-          .eq('id', userId)
-          .maybeSingle();
-        if (error) console.error('온보딩 상태 조회 실패:', error);
-        setSeen(data?.onboarding_completed ?? false);
-      } catch (error) {
-        console.error('온보딩 상태 조회 실패:', error);
-        setSeen(false);
-      }
-    })();
-  }, [userId]);
+  const query = useQuery({
+    queryKey: ['onboarding-completed', userId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('onboarding_completed')
+        .eq('id', userId)
+        .maybeSingle();
+      if (error) throw error;
+      return data?.onboarding_completed ?? false;
+    },
+    enabled: !!userId,
+  });
+
+  const seen = userId ? query.data ?? null : null;
 
   async function markSeen() {
     if (!userId) return;
     await supabase.from('users').update({ onboarding_completed: true }).eq('id', userId);
-    setSeen(true);
+    queryClient.setQueryData(['onboarding-completed', userId], true);
   }
 
   const value = useMemo(() => ({ seen, markSeen }), [seen, userId]);
