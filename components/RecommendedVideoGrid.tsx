@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ShadowCard } from '@/components/ShadowCard';
@@ -37,6 +38,11 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
   const accent = useAccentColor();
   const { t, language } = useTranslation();
   const styles = useMemo(() => createStyles(accent), [accent]);
+  // "추천 영상 → 내 그리드에 추가" 카테고리 선택 목록의 맨 아래 항목이 안드로이드 하단
+  // 내비게이션 바에 가려 안 눌리는 문제(edgeToEdgeEnabled로 내비바 높이가 기기마다 달라
+  // 고정 숫자로는 못 챙김 — 2026-10-06 FavoritePicker/CategoryVideoGrid와 같은 원인) —
+  // 기기의 실제 안전영역 값을 읽어 시트 아래 여백에 더해준다(2026-10-07)
+  const insets = useSafeAreaInsets();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
@@ -201,7 +207,7 @@ export function RecommendedVideoGrid({ onSelectVideo }: { onSelectVideo: (video:
       <Modal visible={!!pickerVideo} animationType="slide" transparent onRequestClose={() => setPickerVideo(null)}>
         <RNView style={styles.modalBackdrop}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setPickerVideo(null)} />
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { paddingBottom: 20 + insets.bottom }]}>
             <Text style={styles.modalTitle}>{t('recommendedVideoGrid.pickCategoryTitle')}</Text>
             {myCategories.length === 0 ? (
               <Text style={styles.modalDesc}>{t('recommendedVideoGrid.pickCategoryEmpty')}</Text>

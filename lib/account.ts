@@ -20,6 +20,13 @@ export async function deleteAccount(): Promise<void> {
         // 본문을 못 읽으면 기본 메시지로 폴백
       }
     }
+    // "본인 확인 실패"(JWT sub이 auth.users에 없음) — 이 세션이 가리키는 계정이 서버에
+    // 이미 존재하지 않는 상태라, 지울 계정 자체가 없는 것과 같다. 에러는 그대로 보여주되,
+    // 로컬 세션은 정리해서 로그인 화면으로 돌아가게 한다 — 안 그러면 이 죽은 세션을 계속
+    // 들고 있어서 앱이 온보딩 화면만 반복해서 보여주는 루프에 빠진다(2026-10-07)
+    if (message.includes('본인 확인 실패')) {
+      await supabase.auth.signOut({ scope: 'local' });
+    }
     throw new Error(message);
   }
   if (data?.error) throw new Error(data.error);

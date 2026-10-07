@@ -4,9 +4,8 @@ import {
   ActivityIndicator,
   Alert,
   Image,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -73,6 +72,28 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
   // 고정값만 쓰기로 단순화해서 키보드 열고 닫을 때 다른 움직임이 전혀 안 섞이게 한다
   const insets = useSafeAreaInsets();
   const modalSheetBottomPadding = 8 + insets.bottom;
+  // ⚠️ 2026-10-07 — KeyboardAvoidingView(behavior="height")로 안드로이드 키보드를 피하던
+  // 방식이 "뒤로가기로 키보드만 내릴 때" 제대로 안 복구되는 버그가 있었음 — 키보드가 사라진
+  // 뒤에도 이 View의 높이가 줄어든 채로 안 돌아와서, Modal(transparent)이라 그 빈 자리로
+  // 뒤에 있는(흰 배경) 화면이 그대로 비쳐 보였음(안드로이드에서 Modal이 자체 네이티브
+  // 창(Dialog)을 띄우는 구조라, 뒤로가기로 키보드가 닫힐 때 resize 이벤트가 그 창에 안정적으로
+  // 전달되지 않는 경우가 있는 것으로 보임). 더 이상 전체 배경(modalBackdrop)의 높이 자체를
+  // 흔들지 않고, 항상 화면 전체를 덮어둔 채로 시트(modalSheet)만 Keyboard 이벤트로 직접
+  // 추적한 키보드 높이만큼 marginBottom으로 밀어올린다 — 이벤트가 씹혀도 배경은 절대
+  // 안 줄어드니 뒤에 있는 화면이 비쳐 보일 일이 없다
+  const [modalKeyboardOffset, setModalKeyboardOffset] = useState(0);
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => setModalKeyboardOffset(e.endCoordinates?.height ?? 0));
+    const changeFrameSub = Keyboard.addListener('keyboardDidChangeFrame', (e) =>
+      setModalKeyboardOffset(e.endCoordinates?.height ?? 0)
+    );
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setModalKeyboardOffset(0));
+    return () => {
+      showSub.remove();
+      changeFrameSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   const categoriesQueryKey = ['video-categories', userId] as const;
   const gridScrollRef = useAnimatedRef<Animated.ScrollView>();
 
@@ -347,6 +368,39 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
       runOnJS(handleCategorySwipeEnd)(e.translationX);
     });
 
+  // 한국어/영어 레이아웃이 서로 다르게 이 버튼들을 배치해야 해서(아래 return문 참고),
+  // 중복 작성하지 않도록 먼저 만들어두고 양쪽에서 재사용한다
+  const addVideoButton = userId && selectedId !== null && (
+    <AnimatedPressable style={styles.addButton} onPress={() => setShowAddModal(true)}>
+      <Text style={styles.addButtonText} numberOfLines={1}>
+        {t('categoryVideoGrid.addMyVideo')}
+      </Text>
+    </AnimatedPressable>
+  );
+  const renameButton = selectedCategory?.user_id === userId && (
+    <AnimatedPressable style={styles.categoryActionButton} onPress={openRenameCategoryModal}>
+      <Ionicons name="create-outline" size={14} color={accent} />
+      <Text style={styles.categoryActionText} numberOfLines={1}>
+        {t('categoryVideoGrid.renameCategory')}
+      </Text>
+    </AnimatedPressable>
+  );
+  const deleteButton = selectedCategory && (
+    <AnimatedPressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
+      <Ionicons name="trash-outline" size={14} color={accent} />
+      <Text style={styles.categoryActionText} numberOfLines={1}>
+        {t('myRoutines.delete')}
+      </Text>
+    </AnimatedPressable>
+  );
+  const trashLinkButton = (
+    <AnimatedPressable style={styles.trashLinkButton} onPress={openTrash}>
+      <Text style={styles.trashLinkText} numberOfLines={1}>
+        {t('categoryVideoGrid.deletedCategoriesLink')}
+      </Text>
+    </AnimatedPressable>
+  );
+
   return (
     <View style={styles.container}>
       <ScrollView
@@ -369,28 +423,35 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         </AnimatedPressable>
       </ScrollView>
 
-      <View style={styles.actionsRow}>
-        {userId && selectedId !== null && (
-          <AnimatedPressable style={styles.addButton} onPress={() => setShowAddModal(true)}>
-            <Text style={styles.addButtonText}>{t('categoryVideoGrid.addMyVideo')}</Text>
-          </AnimatedPressable>
-        )}
-        {selectedCategory?.user_id === userId && (
-          <AnimatedPressable style={styles.categoryActionButton} onPress={openRenameCategoryModal}>
-            <Ionicons name="create-outline" size={14} color={accent} />
-            <Text style={styles.categoryActionText}>{t('categoryVideoGrid.renameCategory')}</Text>
-          </AnimatedPressable>
-        )}
-        <AnimatedPressable style={styles.trashLinkButton} onPress={openTrash}>
-          <Text style={styles.trashLinkText}>{t('categoryVideoGrid.deletedCategoriesLink')}</Text>
-        </AnimatedPressable>
-        {selectedCategory && (
-          <AnimatedPressable style={styles.categoryActionButton} onPress={handleDeleteCategory}>
-            <Ionicons name="trash-outline" size={14} color={accent} />
-            <Text style={styles.categoryActionText}>{t('myRoutines.delete')}</Text>
-          </AnimatedPressable>
-        )}
-      </View>
+      {/* ⚠️ 2026-10-07 — 영어는 "+ Add my video/Rename/Deleted categories/Delete" 네 개가
+          원래 한 줄(actionsRow)에 다 안 들어가 "Delete"가 다음 줄로 밀리는 문제가 있었다
+          (가로 스크롤로도 시도했지만 "이상해 보인다"는 피드백으로 폐기) — 한국어는 네 개가
+          원래도 한 줄에 다 들어가서 건드릴 이유가 없다는 요청으로, 영어일 때만 "+영상 추가"를
+          별도 줄로 분리하고(새로 만드는 동작과 지금 고른 카테고리를 다루는 동작이라 원래
+          성격도 다름) 한국어는 기존 한 줄 레이아웃을 그대로 유지한다.
+          ⚠️ 처음엔 "renameButton이나 deleteButton 둘 중 하나라도 있으면 두 줄" 조건으로
+          했는데, 기본(관리자) 카테고리도 "삭제"(실제로는 숨김) 버튼은 뜬다는 걸 놓쳤음 —
+          기본 카테고리는 "이름수정"만 없고(= renameButton만 owner 전용), "+ 영상추가/삭제/
+          삭제된 카테고리" 세 개는 영어로도 한 줄에 들어가서 가만히 둬도 됐는데 deleteButton
+          때문에 불필요하게 두 줄로 쪼개지고 있었음. "이름수정까지 같이 뜰 때"(=내가 만든
+          카테고리)만 두 줄로 나누도록 renameButton 기준으로만 분기(2026-10-07 재수정) */}
+      {language === 'ko' || !renameButton ? (
+        <View style={styles.actionsRow}>
+          {addVideoButton}
+          {renameButton}
+          {trashLinkButton}
+          {deleteButton}
+        </View>
+      ) : (
+        <>
+          {addVideoButton && <View style={styles.addButtonRow}>{addVideoButton}</View>}
+          <View style={styles.actionsRow}>
+            {renameButton}
+            {deleteButton}
+            {trashLinkButton}
+          </View>
+        </>
+      )}
 
       <GestureDetector gesture={categorySwipeGesture}>
         <View style={styles.swipeArea}>
@@ -440,11 +501,16 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
 
       <Modal visible={showAddModal} animationType="slide" transparent onRequestClose={() => setShowAddModal(false)}>
         {/* 저장/취소 버튼이 하단 내비바에 가려지고, 입력 중 키보드가 입력창을 가리던 문제(2026-10-06)
-            — KeyboardAvoidingView로 키보드가 뜨면 시트 전체를 밀어올리고, insets.bottom으로
-            시트 자체의 아래 여백도 기기에 맞게 챙긴다 */}
-        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            — 배경(modalBackdrop)은 항상 화면 전체를 덮어두고, 시트(modalSheet)만 추적한 키보드
+            높이(modalKeyboardOffset)만큼 밀어올린다. insets.bottom으로 시트 자체의 아래
+            여백도 기기에 맞게 챙긴다 */}
+        <RNView style={styles.modalBackdrop}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowAddModal(false)} />
-          <View style={[styles.modalSheet, { paddingBottom: modalSheetBottomPadding }]}>
+          <View
+            style={[
+              styles.modalSheet,
+              { paddingBottom: modalSheetBottomPadding, marginBottom: modalKeyboardOffset },
+            ]}>
             <Text style={styles.modalTitle}>{t('categoryVideoGrid.addVideoModalTitle')}</Text>
             <Text style={styles.modalDesc}>{t('categoryVideoGrid.addVideoModalDesc')}</Text>
             <View style={styles.inputWrap}>
@@ -478,7 +544,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
               </AnimatedPressable>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </RNView>
       </Modal>
 
       <Modal
@@ -486,9 +552,13 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
         animationType="slide"
         transparent
         onRequestClose={() => setShowCategoryModal(false)}>
-        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <RNView style={styles.modalBackdrop}>
           <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowCategoryModal(false)} />
-          <View style={[styles.modalSheet, { paddingBottom: modalSheetBottomPadding }]}>
+          <View
+            style={[
+              styles.modalSheet,
+              { paddingBottom: modalSheetBottomPadding, marginBottom: modalKeyboardOffset },
+            ]}>
             <Text style={styles.modalTitle}>
               {categoryModalMode === 'create'
                 ? t('categoryVideoGrid.categoryModalTitleCreate')
@@ -510,7 +580,7 @@ export function CategoryVideoGrid({ onSelectVideo }: { onSelectVideo: (video: Vi
               </AnimatedPressable>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </RNView>
       </Modal>
 
       <Modal visible={showTrashModal} animationType="slide" transparent onRequestClose={() => setShowTrashModal(false)}>
@@ -730,9 +800,17 @@ function createStyles(accent: string) {
     fontSize: 13,
     color: accent,
   },
+  addButtonRow: {
+    // alignItems 기본값(stretch)을 두면 버튼이 줄 전체 폭으로 늘어나버려서, 원래 크기(글자
+    // 길이만큼의 알약 모양)를 유지하도록 flex-start로 고정
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    // 한국어는 네 버튼이 원래도 한 줄에 다 들어가지만, 혹시 모를 좁은 화면 대비 안전장치로
+    // flexWrap은 그대로 둔다(한국어 레이아웃은 2026-10-07 이전과 동일하게 유지하라는 요청)
     flexWrap: 'wrap',
     gap: 10,
     marginBottom: 12,
@@ -743,6 +821,11 @@ function createStyles(accent: string) {
     gap: 4,
     paddingVertical: 6,
     paddingHorizontal: 4,
+    // 영어는 "Edit name"/"Delete"처럼 한글보다 글자가 길어서, flex 행 안에서 자리가 모자라면
+    // 버튼 하나가 다음 줄로 넘어가는 대신 글자 자체가 눌려서 두 줄로 쪼개지는 문제가 있었다
+    // (2026-10-07) — 버튼이 줄어들지 않게 고정해서, 모자라면 actionsRow의 flexWrap이 버튼
+    // 전체를 다음 줄로 넘기게 한다
+    flexShrink: 0,
   },
   categoryActionText: {
     color: accent,
@@ -750,9 +833,12 @@ function createStyles(accent: string) {
     fontWeight: '600',
   },
   trashLinkButton: {
+    // "이름수정"/"삭제"는 지금 고른 카테고리를 다루는 동작이라 왼쪽에 묶어두고, "삭제된
+    // 카테고리"는 휴지통으로 이동하는 별개 링크라 오른쪽 끝에 떨어뜨려 구분한다
     marginLeft: 'auto',
     paddingVertical: 6,
     paddingHorizontal: 4,
+    flexShrink: 0,
   },
   trashLinkText: {
     fontSize: 12,

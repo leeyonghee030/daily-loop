@@ -13,7 +13,8 @@ import { useAuth } from '@/lib/auth-context';
 import { useKoreanFont, type KoreanFontValue } from '@/lib/korean-font';
 import { useTranslation } from '@/lib/language';
 import { fetchLlmQuota, parseRoutine, LlmUnavailableError, QuotaExceededError, type LlmQuota } from '@/lib/llm';
-import type { ParsedRoutineDraft } from '@/lib/parse-routine-input';
+import { parseRoutineInput, type ParsedRoutineDraft } from '@/lib/parse-routine-input';
+import { parseRoutineInputEn } from '@/lib/parse-routine-input-en';
 
 type ErrorState = 'none' | 'quota' | 'error' | 'overloaded';
 
@@ -57,9 +58,6 @@ export default function LlmInputScreen() {
   const [loadingMode, setLoadingMode] = useState<'none' | 'auto' | 'ai'>('none');
   const isLoading = loadingMode !== 'none';
   const [errorState, setErrorState] = useState<ErrorState>('none');
-  // "AI로 정확하게 분석"이 사용자 몰림 등으로 실패했을 때, 이미 계산해둔 정규식 결과를
-  // "정규식으로 진행" 버튼에서 바로 쓸 수 있게 들고 있는다
-  const [pendingRegexDraft, setPendingRegexDraft] = useState<ParsedRoutineDraft | null>(null);
 
   const quotaQuery = useQuery({
     queryKey: llmQuotaQueryKey,
@@ -104,7 +102,6 @@ export default function LlmInputScreen() {
       if (err instanceof QuotaExceededError) {
         setErrorState('quota');
       } else if (err instanceof LlmUnavailableError) {
-        setPendingRegexDraft(err.regexDraft);
         setErrorState('overloaded');
       } else {
         setErrorState('error');
@@ -118,9 +115,15 @@ export default function LlmInputScreen() {
     router.replace('/routine-form');
   }
 
+  // "규칙으로 진행"을 누른 "그 순간"의 입력창 내용으로 다시 계산한다 — 예전엔 AI 강제 호출이
+  // 실패한 시점에 미리 계산해둔 정규식 결과(err.regexDraft)를 그대로 썼는데, 안내창이 떠 있는
+  // 동안에도 입력창은 계속 수정 가능해서(editable이 안 막혀있음) 그 사이 문장을 고치고 눌러도
+  // 고치기 전 문장 기준으로 만들어지는 버그가 있었다(2026-10-07)
   function useRegexDraftInstead() {
-    if (!pendingRegexDraft) return;
-    router.push({ pathname: '/routine-form', params: draftToParams(pendingRegexDraft) });
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const draft = language === 'en' ? parseRoutineInputEn(trimmed) : parseRoutineInput(trimmed);
+    router.push({ pathname: '/routine-form', params: draftToParams(draft) });
   }
 
   // 한도 소진 상태 (4-13 요금제 안내)

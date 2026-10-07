@@ -38,7 +38,16 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         .eq('id', userId)
         .maybeSingle();
       if (error) throw error;
-      return data?.onboarding_completed ?? false;
+      // 세션은 있는데(userId 있음) 그 id로 users 행이 없는 경우 — 이미 탈퇴된 계정의 로그인
+      // 토큰이 기기에 그대로 남아있는 상태다(탈퇴 트리거로 공급계정 행 자체가 cascade로
+      // 지워졌지만, Supabase 토큰은 만료 전까지 로컬에선 여전히 "유효"해 보인다). 이걸 그냥
+      // "온보딩 미완료"(false)로 취급하면 온보딩 화면만 영원히 반복해서 보여주는 루프에 빠진다
+      // (2026-10-07) — 로컬 세션을 정리해서 로그인 화면으로 돌려보낸다
+      if (!data) {
+        await supabase.auth.signOut({ scope: 'local' });
+        return false;
+      }
+      return data.onboarding_completed ?? false;
     },
     enabled: !!userId,
   });

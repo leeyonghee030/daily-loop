@@ -110,6 +110,11 @@ function RootLayoutNav() {
     // 상관없이 무조건 기다리면 로그아웃 상태일 때 아래 로그인 화면 리다이렉트 자체가 영원히
     // 실행되지 않는 버그가 있었음 — 세션이 있을 때만 온보딩 조회가 끝나길 기다린다
     if (session && onboardingSeen === null) return;
+    // 화면 전환이 진행되는 바로 그 찰나에 useSegments()가 아주 짧게 빈 배열을 돌려주는
+    // 경우가 있다(2026-10-07) — 이때 segments[0]이 undefined가 되어 "온보딩도 투어도 아닌
+    // 화면"으로 잘못 판정되면서 온보딩으로 도로 튕겨 보낸 적이 있었다. 이 모호한 신호에는
+    // 반응하지 않고 다음 안정된 렌더링을 기다린다
+    if (!segments[0]) return;
 
     const inAuthFlow = segments[0] === 'login' || segments[0] === 'auth';
 
@@ -124,6 +129,20 @@ function RootLayoutNav() {
     // "아직 안 끝난 것으로 보고 리다이렉트하지 않을" 예외 화면으로 취급해야 한다(2026-09-27)
     if (session && !onboardingSeen && segments[0] !== 'onboarding' && segments[0] !== 'feature-tour') {
       router.replace('/onboarding');
+      return;
+    }
+
+    // ⚠️ 2026-10-07 — 투어 마지막 화면이 markSeen() 직후 자기 스스로 router.replace('/(tabs)')를
+    // 부르고 있었는데, 그 호출이 "markSeen이 서버/캐시에 쓴 onboarding_completed=true"가 이
+    // 레이아웃까지 리렌더로 전파되기 *전에* 먼저 도착하는 경우가 있었다(adb logcat으로 실제
+    // 순서 확인함) — segments는 이미 "(tabs)"로 바뀌었는데 onboardingSeen은 아직 낡은 false를
+    // 보고 있어서, 바로 위 조건에 걸려 다시 온보딩으로 튕겨 보내고 있었던 것(그래서 "시작하기"를
+    // 두 번 눌러야 했음). 투어 쪽의 수동 이동을 없애고, "온보딩을 끝냈다(onboardingSeen===true)
+    // + 아직 온보딩/투어 화면에 있다"는 조건 하나로 이 레이아웃이 직접 오늘 탭으로 보내도록
+    // 통일했다 — onboardingSeen이 실제로 true로 바뀌는 그 렌더링에서만 효과가 실행되므로,
+    // 다른 신호(segments)가 먼저 도착해서 아직 안 바뀐 값을 보고 판단하는 경쟁 자체가 없어진다
+    if (session && onboardingSeen && (segments[0] === 'onboarding' || segments[0] === 'feature-tour')) {
+      router.replace('/(tabs)');
       return;
     }
 

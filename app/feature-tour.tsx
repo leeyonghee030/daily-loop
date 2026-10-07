@@ -1,7 +1,7 @@
-import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Dimensions, ScrollView, StyleSheet, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Text, View } from '@/components/Themed';
@@ -167,11 +167,14 @@ function MockCalendarStats({ accent, styles }: { accent: string; styles: ReturnT
 }
 
 export default function FeatureTourScreen() {
-  const router = useRouter();
   const accent = useAccentColor();
   const koreanFont = useKoreanFont();
   const { t } = useTranslation();
   const { markSeen } = useOnboarding();
+  // "다음"/"시작" 버튼이 안드로이드 하단 내비게이션 바에 가려지는 문제(edgeToEdgeEnabled로
+  // 기기마다 내비바 높이가 달라 고정 숫자로는 못 챙김 — 이 세션에서 여러 번 겪은 것과 같은
+  // 원인, 2026-10-07) — 기기의 실제 안전영역 값을 읽어 하단 여백에 더해준다
+  const insets = useSafeAreaInsets();
   const [index, setIndex] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const styles = createStyles(accent, koreanFont.fontFamily);
@@ -184,9 +187,14 @@ export default function FeatureTourScreen() {
     <MockCalendarStats key="calendar-stats" accent={accent} styles={styles} />,
   ];
 
+  // 오늘 탭으로의 이동은 여기서 직접 하지 않는다 — markSeen() 완료(=onboarding_completed가
+  // true로 바뀜) 직후 이 화면이 스스로 router.replace('/(tabs)')를 부르면, 그 세션/온보딩
+  // 상태 변경이 app/_layout.tsx까지 리렌더로 전파되기 *전에* 이 이동이 먼저 반영되는 경쟁이
+  // 생겨서 "시작하기를 두 번 눌러야 넘어가는" 버그로 이어졌다(2026-10-07, adb logcat으로
+  // 확인). onboardingSeen이 true로 바뀌는 걸 감지해 _layout.tsx가 직접 오늘 탭으로 보내도록
+  // 일원화해서 이 경쟁 자체를 없앴다
   async function finish() {
     await markSeen();
-    router.replace('/(tabs)');
   }
 
   function goNext() {
@@ -202,7 +210,7 @@ export default function FeatureTourScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: 40 + insets.bottom }]}>
       <AnimatedPressable style={styles.skipButton} onPress={finish} hitSlop={8}>
         <Text style={styles.skipButtonText}>{t('featureTour.skip')}</Text>
       </AnimatedPressable>
@@ -240,7 +248,6 @@ function createStyles(accent: string, fontFamily: string | undefined) {
     container: {
       flex: 1,
       justifyContent: 'flex-end',
-      paddingBottom: 40,
     },
     skipButton: {
       position: 'absolute',

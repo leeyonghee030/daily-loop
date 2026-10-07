@@ -1,4 +1,5 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { Calendar, type DateData } from 'react-native-calendars';
 import { useNavigation } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -14,7 +15,6 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  Switch,
   TextInput,
   TouchableWithoutFeedback,
   View as RNView,
@@ -24,6 +24,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { Chip } from '@/components/Chip';
 import { FavoritePicker } from '@/components/FavoritePicker';
+import { CustomSwitch } from '@/components/CustomSwitch';
 import { ShadowCard } from '@/components/ShadowCard';
 import { Text, View } from '@/components/Themed';
 import { VideoPicker } from '@/components/VideoPicker';
@@ -146,6 +147,26 @@ export default function RoutineFormScreen() {
   );
   const DAY_LABELS = useMemo(() => DAY_LABEL_KEYS.map((key) => t(key)), [t]);
   const TRACKING_UNIT_PRESETS = useMemo(() => TRACKING_UNIT_KEYS.map((key) => t(key)), [t]);
+  // 일회성 날짜 선택 — 안드로이드 기본 달력(DatePickerDialog)은 accentColor 등 색상 속성을
+  // 줘도 지금 설치된 라이브러리 버전의 네이티브 쪽에 그 부분이 구현돼 있지 않아 전혀 안 먹혔다
+  // (2026-10-07, 코드로 확인 — 타입 정의에만 있고 android 네이티브 코드엔 없음). 색을 입히려면
+  // 네이티브를 직접 고쳐 새로 빌드해야 하는데, 이 앱은 테마색을 유저가 직접 고르는 구조라
+  // 네이티브에 고정색을 박아넣는 방식도 안 맞음 — 그래서 네이티브 달력 대신 캘린더 탭에서 이미
+  // 쓰고 있는 react-native-calendars로 자체 달력을 그려서 테마 주색을 직접 입힌다
+  const scheduledDateCalendarTheme = useMemo(
+    () => ({
+      calendarBackground: '#fff',
+      dayTextColor: '#222',
+      monthTextColor: '#222',
+      textDisabledColor: '#ccc',
+      arrowColor: accent,
+      todayTextColor: accent,
+      selectedDayBackgroundColor: accent,
+      selectedDayTextColor: '#fff',
+      textMonthFontWeight: '700' as const,
+    }),
+    [accent]
+  );
   const params = useLocalSearchParams<{
     id?: string;
     // "내 루틴"의 "복제" 버튼에서 넘어옴 — id는 안 주고 이 값만 준다. isEditing은 그대로
@@ -803,18 +824,9 @@ export default function RoutineFormScreen() {
       )}
 
       {repeatType === 'once' && (
-        <>
-          <AnimatedPressable style={styles.timeButton} onPress={() => setShowDatePicker(true)}>
-            <Text>{formatLocalDate(scheduledDate)}</Text>
-          </AnimatedPressable>
-          {showDatePicker && (
-            <DateTimePicker
-              value={scheduledDate}
-              mode="date"
-              onChange={handleTimeChange(setScheduledDate, () => setShowDatePicker(false))}
-            />
-          )}
-        </>
+        <AnimatedPressable style={styles.timeButton} onPress={() => setShowDatePicker(true)}>
+          <Text>{formatLocalDate(scheduledDate)}</Text>
+        </AnimatedPressable>
       )}
 
       <Text style={styles.label}>{t('favoriteForm.timeLabel')}</Text>
@@ -940,7 +952,7 @@ export default function RoutineFormScreen() {
 
       <View style={styles.switchRow}>
         <Text style={styles.label}>{t('common.required')}</Text>
-        <Switch value={isRequired} onValueChange={setIsRequired} />
+        <CustomSwitch value={isRequired} onValueChange={setIsRequired} />
       </View>
 
       <Text style={styles.label}>{t('routineForm.videoConnectLabel')}</Text>
@@ -1004,7 +1016,7 @@ export default function RoutineFormScreen() {
 
       <View style={styles.switchRow}>
         <Text style={styles.label}>{t('presetForm.skipHolidays')}</Text>
-        <Switch value={skipHolidays} onValueChange={setSkipHolidays} />
+        <CustomSwitch value={skipHolidays} onValueChange={setSkipHolidays} />
       </View>
 
       {/* 1회성 루틴은 그날 한 번만 쓰는 일정이라 "재사용할 템플릿"인 즐겨찾기와 개념이 맞지 않아 제외 */}
@@ -1077,6 +1089,31 @@ export default function RoutineFormScreen() {
       {keyboardHeight > 0 && <View style={{ height: keyboardHeight + 40 }} />}
     </ScrollView>
     </TouchableWithoutFeedback>
+
+    <Modal visible={showDatePicker} transparent animationType="fade" onRequestClose={() => setShowDatePicker(false)}>
+      <RNView style={styles.confirmBackdrop}>
+        <AnimatedPressable style={StyleSheet.absoluteFill} onPress={() => setShowDatePicker(false)} />
+        <ShadowCard style={styles.confirmCardOuter} contentStyle={styles.dateModalCard}>
+          <Calendar
+            // react-native-calendars의 Calendar는 current를 "처음 마운트될 때"만 반영하고
+            // 그 뒤로는 prop이 바뀌어도 화면에 보이는 달을 스스로 안 바꾼다 — Modal은 visible이
+            // false여도 내부 컴포넌트를 계속 마운트해두는 구조라, scheduledDate가 바뀔 때마다
+            // key로 강제 재마운트시켜서 다시 열 때마다 항상 "지금 고른 날짜"의 달부터 보이게 한다
+            key={formatLocalDate(scheduledDate)}
+            current={formatLocalDate(scheduledDate)}
+            onDayPress={(day: DateData) => {
+              setScheduledDate(new Date(`${day.dateString}T00:00:00`));
+              setShowDatePicker(false);
+            }}
+            markedDates={{
+              [formatLocalDate(scheduledDate)]: { selected: true },
+            }}
+            theme={scheduledDateCalendarTheme}
+            style={styles.dateModalCalendar}
+          />
+        </ShadowCard>
+      </RNView>
+    </Modal>
 
     <Modal
       visible={showDeleteConfirm}
@@ -1388,6 +1425,12 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   confirmCard: {
     padding: 24,
     alignItems: 'center',
+  },
+  dateModalCard: {
+    padding: 12,
+  },
+  dateModalCalendar: {
+    borderRadius: cardRadius,
   },
   confirmTitle: {
     fontSize: 16,

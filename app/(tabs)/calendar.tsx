@@ -17,6 +17,7 @@ import Colors from '@/constants/Colors';
 import {
   border,
   cardRadius,
+  darkenForText,
   fontDisplay,
   fontMono,
   statusDone,
@@ -1583,7 +1584,7 @@ export default function CalendarScreen() {
                     <View style={styles.detailMain}>
                       <Text style={styles.detailTitle}>
                         {routine.title}
-                        {routine.is_required && <Text style={styles.detailRequired}> *필수</Text>}
+                        {routine.is_required && <Text style={styles.detailRequired}> *{t('common.required')}</Text>}
                       </Text>
                       <Text style={styles.detailTime}>{timeLabel(routine, t)}</Text>
                     </View>
@@ -1634,7 +1635,7 @@ export default function CalendarScreen() {
                             ✓ {completion.tracking_value} {truncateTrackingUnit(routine.tracking_unit)}
                           </Text>
                         ) : isTrackingEditable ? (
-                          <Text style={styles.detailTrackingPlaceholder}>탭해서 입력</Text>
+                          <Text style={styles.detailTrackingPlaceholder}>{t('calendar.tapToEnter')}</Text>
                         ) : null)}
                     </View>
                   );
@@ -2102,7 +2103,9 @@ function createStyles(accent: string, fontKorean: KoreanFontValue) {
   },
   detailRequired: {
     fontSize: 12,
-    color: '#FF6B6B',
+    // 고정 빨간색이었는데, 테마색과 무관하게 튀어 보인다는 피드백으로 지금 고른 테마 주색의
+    // 진한 버전으로 교체(2026-10-07)
+    color: darkenForText(accent),
   },
   detailTime: {
     fontSize: 12,
