@@ -1,5 +1,5 @@
 {
-  "name": "dailyloop-expo",
+  "name": "daily-routy-expo",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {

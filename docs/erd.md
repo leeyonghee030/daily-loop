@@ -1,4 +1,4 @@
-# Daily Loop — ERD
+# Daily Routy — ERD
 
 > `domain-model.md`를 실제 테이블로 옮긴 것. DB는 Supabase(PostgreSQL) 기준. 타입/제약은 초안이며 구현 단계에서 마이그레이션 파일로 확정.
 

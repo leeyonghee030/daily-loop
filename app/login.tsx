@@ -40,7 +40,7 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Daily Loop</Text>
+      <Text style={styles.title}>Daily Routy</Text>
       <Text style={styles.subtitle}>{t('login.subtitle')}</Text>
 
       <AnimatedPressable style={styles.googleButton} onPress={handleGoogleSignIn} disabled={!!isSigningIn}>

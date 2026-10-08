@@ -1,4 +1,4 @@
-# Daily Loop — 도메인 모델
+# Daily Routy — 도메인 모델
 
 > `project-spec.md`, `user-flow.md`에서 확정된 내용을 기반으로 한 엔티티/관계/비즈니스 규칙 정리. DB 컬럼 타입 등 구현 상세는 `erd.md` 참고.
 

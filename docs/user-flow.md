@@ -1,4 +1,4 @@
-# Daily Loop — 유저플로우
+# Daily Routy — 유저플로우
 
 > `project-spec.md`에서 확정된 화면/기능을 실제 사용자 이동 순서로 정리한 문서. 화면 번호(4-N)는 `project-spec.md`의 해당 섹션을 가리킴.
 
