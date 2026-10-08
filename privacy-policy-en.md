@@ -1,12 +1,12 @@
 ---
-title: Daily Loop Privacy Policy
+title: Daily Routy Privacy Policy
 ---
 
-# Daily Loop Privacy Policy
+# Daily Routy Privacy Policy
 
 **Effective date: September 9, 2026**
 
-Daily Loop (the "App") is a routine-management service operated by an individual developer. We value your privacy and publish this Privacy Policy to comply with applicable data protection laws, including South Korea's Personal Information Protection Act.
+Daily Routy (the "App") is a routine-management service operated by an individual developer. We value your privacy and publish this Privacy Policy to comply with applicable data protection laws, including South Korea's Personal Information Protection Act.
 
 ## 1. Information We Collect
 
