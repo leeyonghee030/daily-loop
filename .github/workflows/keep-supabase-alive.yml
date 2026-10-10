@@ -7,7 +7,7 @@ name: Keep Supabase Alive
 # 남겨 저장소 활동도 같이 유지한다(매번 커밋하지 않고, 조용할 때만).
 on:
   schedule:
-    - cron: '40 14 * * *' # TEMP: 자동 스케줄 트리거 검증용, 확인 후 원복 예정
+    - cron: '0 3 */3 * *'
   workflow_dispatch:
     inputs:
       force_commit:
