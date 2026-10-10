@@ -14,6 +14,6 @@ jobs:
       - name: Ping Supabase REST API
         run: |
           curl -sf -o /dev/null \
-            "${{ secrets.KEEPALIVE_SUPABASE_URL }}/rest/v1/holidays?select=id&limit=1" \
+            "${{ secrets.KEEPALIVE_SUPABASE_URL }}/rest/v1/holidays?select=date&limit=1" \
             -H "apikey: ${{ secrets.KEEPALIVE_SUPABASE_ANON_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.KEEPALIVE_SUPABASE_ANON_KEY }}"
