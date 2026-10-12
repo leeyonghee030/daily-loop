@@ -23,7 +23,7 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.dailyloop.app",
+      "package": "com.leeyonghee030.dailyroutey",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -32,6 +32,9 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.SCHEDULE_EXACT_ALARM"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_VIDEO"
       ]
     },
     "web": {
